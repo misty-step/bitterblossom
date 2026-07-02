@@ -303,6 +303,8 @@ pub struct TaskBudget {
     pub max_runs_per_day: Option<u32>,
     pub max_cost_per_run_usd: Option<f64>,
     pub turn_cap: Option<u32>,
+    pub tool_action_cap: Option<u32>,
+    pub output_bytes_cap: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -889,6 +891,20 @@ fn bounded_budget(
             cap.max_cost_per_run_usd,
         )?,
         turn_cap: cap_u32(repo, task, "turn_cap", req.turn_cap, cap.turn_cap)?,
+        tool_action_cap: cap_u32(
+            repo,
+            task,
+            "tool_action_cap",
+            req.tool_action_cap,
+            cap.tool_action_cap,
+        )?,
+        output_bytes_cap: cap_u64(
+            repo,
+            task,
+            "output_bytes_cap",
+            req.output_bytes_cap,
+            cap.output_bytes_cap,
+        )?,
     })
 }
 

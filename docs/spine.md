@@ -47,6 +47,8 @@ timeout_minutes = 30
 max_runs_per_day = 10
 max_cost_per_run_usd = 2.0
 turn_cap = 50
+tool_action_cap = 100
+output_bytes_cap = 50000
 ```
 
 Repo-owned `task.toml` owns the card, triggers, adapter commands, verdict
@@ -97,9 +99,17 @@ provider_key_name = "openrouter-reviewer"
 provider_spend_cap_usd = 10.0      # mapped to OpenRouter key `limit`
 model_allowlist = ["moonshotai/kimi-k2.6"]
 trigger_bindings = ["manual", "webhook"]
-iteration_cap = 1
-side_effect_policy = "kill"        # kill | quarantine | log on in-flight overrun
+iteration_cap = 24                 # composed with task turn_cap; strictest wins
+turn_cap = 40                      # enforced via harness flags or stream monitor
+tool_action_cap = 80               # enforced for JSONL tool-call harnesses
+output_bytes_cap = 30000           # enforced by streaming stdout/stderr monitor
+wall_clock_minutes = 30            # composed with task timeout; strictest wins
+side_effect_policy = "kill"        # kill | quarantine | log on in-flight/policy overrun
 ```
+
+Unsupported loop caps fail before command construction. Generic `command`
+agents may use wall-clock and output-byte caps; turn, iteration, and tool-action
+caps belong to harnesses with native flags or streamed machine-readable progress.
 
 Swapping a task's agent is a one-line edit to `task.toml`; the ledger
 records which agent name + version produced every attempt.
@@ -150,7 +160,9 @@ checkpoint = "v3"                 # optional snapshot; ignored by adapters witho
 timeout_minutes = 30              # enforced: wall-clock cancel
 max_runs_per_day = 10             # enforced pre-dispatch
 max_cost_per_run_usd = 2.0        # enforced in-flight when usage streams
-turn_cap = 50                     # enforced only where the harness streams turns
+turn_cap = 50                     # composed with agent policy caps; strictest wins
+tool_action_cap = 100             # enforced for JSONL tool-call harnesses
+output_bytes_cap = 50000          # enforced by streaming stdout/stderr monitor
 
 [[trigger]]
 kind = "manual"                   # `bb run <task>`; the degenerate trigger

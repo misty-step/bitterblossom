@@ -24,6 +24,25 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
 sleep 2
 "#;
 
+const STREAMING_OUTPUT_OVERRUN_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+yes x | head -c 2000
+sleep 2
+"#;
+
+const STREAMING_TURN_OVERRUN_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"turn_end"}\n'
+printf '{"type":"turn_end"}\n'
+sleep 2
+"#;
+
+const STREAMING_TOOL_OVERRUN_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"},{"type":"toolCall","name":"write"}]}}\n'
+sleep 2
+"#;
+
 /// Notify transport stub: swallow curl-style args, append the JSON body
 /// (stdin) to $BB_NOTIFY_LOG.
 const NOTIFY_STUB: &str = r#"#!/bin/sh
@@ -124,6 +143,70 @@ fn setup_streaming_overrun(root: &Path) -> Plane {
     Plane::load(root).unwrap()
 }
 
+fn setup_streaming_output_overrun(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    let stub = root.join("streaming-output-overrun.sh");
+    write_executable(&stub, STREAMING_OUTPUT_OVERRUN_STUB);
+    fs::write(
+        root.join("agents/a.toml"),
+        format!(
+            "version = 1\nharness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\n\
+             [policy]\noutput_bytes_cap = 64\nside_effect_policy = \"kill\"\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+    )
+    .unwrap();
+    Plane::load(root).unwrap()
+}
+
+fn setup_streaming_turn_overrun(root: &Path) -> Plane {
+    setup_streaming_policy_overrun(root, STREAMING_TURN_OVERRUN_STUB, "turn_cap = 1")
+}
+
+fn setup_streaming_tool_overrun(root: &Path) -> Plane {
+    setup_streaming_policy_overrun(root, STREAMING_TOOL_OVERRUN_STUB, "tool_action_cap = 1")
+}
+
+fn setup_streaming_policy_overrun(root: &Path, stub: &str, cap_toml: &str) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    let stub_path = root.join("streaming-policy-overrun.sh");
+    write_executable(&stub_path, stub);
+    fs::write(
+        root.join("agents/a.toml"),
+        format!(
+            "version = 1\nharness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\n\
+             [policy]\n{cap_toml}\nside_effect_policy = \"kill\"\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+    )
+    .unwrap();
+    Plane::load(root).unwrap()
+}
+
 fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
     // Env vars are process-global; tests touching BB_NOTIFY_BIN must not
     // overlap.
@@ -147,6 +230,53 @@ fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
     std::env::remove_var("BB_NOTIFY_BIN");
     std::env::remove_var("BB_NOTIFY_LOG");
     (out, text)
+}
+
+fn assert_policy_cap_kills_running_harness(plane: &Plane, root: &Path, cap_kind: &str) {
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let notify_stub = root.join("notify-stub.sh");
+    write_executable(&notify_stub, NOTIFY_STUB);
+    let log = root.join("notify.log");
+    std::env::set_var("BB_NOTIFY_BIN", &notify_stub);
+    std::env::set_var("BB_NOTIFY_LOG", &log);
+    std::env::set_var("BB_IN_FLIGHT_MONITOR_MS", "50");
+
+    let started = std::time::Instant::now();
+    let run = run_task(plane, &mut ledger);
+
+    std::env::remove_var("BB_NOTIFY_BIN");
+    std::env::remove_var("BB_NOTIFY_LOG");
+    std::env::remove_var("BB_IN_FLIGHT_MONITOR_MS");
+
+    assert_eq!(run.state, "failure");
+    let reason = run.state_reason.as_deref().unwrap_or_default();
+    assert!(reason.contains(cap_kind), "reason={reason}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "run should be killed before the harness exits normally"
+    );
+
+    let attempts = ledger.attempts(&run.id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].outcome.as_deref(), Some("failure"));
+    assert!(attempts[0]
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains(cap_kind));
+
+    let notify_log = fs::read_to_string(&log).unwrap_or_default();
+    assert!(notify_log.contains("run_policy_cap_killed"), "{notify_log}");
+    let outbox = ledger.list_notification_outbox(10).unwrap();
+    assert_eq!(outbox[0].event, "run_policy_cap_killed");
+    assert_eq!(outbox[0].status, "delivered");
+
+    let guard_counts = ledger.guard_event_counts().unwrap();
+    assert!(guard_counts
+        .iter()
+        .any(|count| count.kind == "policy_cap_killed" && count.total == 1));
 }
 
 #[test]
@@ -339,6 +469,27 @@ fn in_flight_cost_cap_kills_running_harness_and_notifies() {
     assert!(guard_counts
         .iter()
         .any(|count| count["kind"] == "in_flight_cap_killed" && count["total"] == 1));
+}
+
+#[test]
+fn output_bytes_policy_cap_kills_running_harness_and_notifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup_streaming_output_overrun(dir.path());
+    assert_policy_cap_kills_running_harness(&plane, dir.path(), "output_bytes_cap");
+}
+
+#[test]
+fn turn_policy_cap_kills_running_harness_and_notifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup_streaming_turn_overrun(dir.path());
+    assert_policy_cap_kills_running_harness(&plane, dir.path(), "turn_cap");
+}
+
+#[test]
+fn tool_action_policy_cap_kills_running_harness_and_notifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup_streaming_tool_overrun(dir.path());
+    assert_policy_cap_kills_running_harness(&plane, dir.path(), "tool_action_cap");
 }
 
 #[test]

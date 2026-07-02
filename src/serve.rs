@@ -642,6 +642,9 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
             "max_runs_per_day": task.spec.budget.max_runs_per_day,
             "max_cost_per_run_usd": task.spec.budget.max_cost_per_run_usd,
             "timeout_minutes": task.spec.budget.timeout_minutes,
+            "turn_cap": task.spec.budget.turn_cap,
+            "tool_action_cap": task.spec.budget.tool_action_cap,
+            "output_bytes_cap": task.spec.budget.output_bytes_cap,
             "policy": serde_json::to_value(&task.agent.policy)?,
         }));
     }

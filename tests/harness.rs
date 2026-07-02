@@ -1,4 +1,5 @@
-use bitterblossom::harness::{build_command, parse_output};
+use bitterblossom::harness::{build_command, parse_output, parse_partial_progress};
+use bitterblossom::spec::TaskBudget;
 
 #[test]
 fn parse_claude_bare_object() {
@@ -29,6 +30,80 @@ fn pi_command_carries_provider_and_model() {
     assert_eq!(cmd[0], "sh");
     assert!(joined.contains("while IFS= read -r line"), "{joined}");
     assert!(joined.contains("message_update"), "{joined}");
+}
+
+#[test]
+fn claude_command_uses_strictest_policy_turn_or_iteration_cap() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "claude"
+model = "claude-fable-5"
+[policy]
+iteration_cap = 3
+turn_cap = 5
+"#,
+    )
+    .unwrap();
+    let budget = TaskBudget {
+        turn_cap: Some(10),
+        ..TaskBudget::default()
+    };
+    let cmd = build_command(&agent, &budget).unwrap();
+    let max_turns = cmd
+        .windows(2)
+        .find(|pair| pair[0] == "--max-turns")
+        .map(|pair| pair[1].as_str());
+    assert_eq!(max_turns, Some("3"), "{cmd:?}");
+}
+
+#[test]
+fn unsupported_tool_action_cap_fails_before_command_build() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "command"
+model = ""
+bin = "/bin/true"
+[policy]
+tool_action_cap = 1
+"#,
+    )
+    .unwrap();
+    let err = build_command(&agent, &TaskBudget::default()).unwrap_err();
+    assert!(format!("{err:#}").contains("tool_action_cap is not enforceable"));
+}
+
+#[test]
+fn unsupported_task_tool_action_cap_fails_before_command_build() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "command"
+model = ""
+bin = "/bin/true"
+"#,
+    )
+    .unwrap();
+    let budget = TaskBudget {
+        tool_action_cap: Some(1),
+        ..TaskBudget::default()
+    };
+    let err = build_command(&agent, &budget).unwrap_err();
+    assert!(format!("{err:#}").contains("tool_action_cap is not enforceable"));
+}
+
+#[test]
+fn unsupported_iteration_cap_fails_before_command_build() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "command"
+model = ""
+bin = "/bin/true"
+[policy]
+iteration_cap = 1
+"#,
+    )
+    .unwrap();
+    let err = build_command(&agent, &TaskBudget::default()).unwrap_err();
+    assert!(format!("{err:#}").contains("turn_cap/iteration_cap is not enforceable"));
 }
 
 #[test]
@@ -76,6 +151,18 @@ fn parse_pi_jsonl_events_sums_usage_across_messages() {
     assert_eq!(parsed.stats.tokens_out, Some(71));
     assert_eq!(parsed.stats.turns, Some(2));
     assert_eq!(parsed.stats.cost_usd, Some(0.0018));
+}
+
+#[test]
+fn partial_progress_counts_streamed_tool_actions() {
+    let out = concat!(
+        r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"thinking"},{"type":"toolCall","name":"bash"}],"usage":{"input":10,"output":5,"cost":{"total":0.001}}}}"#,
+        "\n",
+        r#"{"type":"turn_end"}"#,
+    );
+    let progress = parse_partial_progress("pi", out);
+    assert_eq!(progress.stats.turns, Some(1));
+    assert_eq!(progress.tool_actions, Some(1));
 }
 
 #[test]
