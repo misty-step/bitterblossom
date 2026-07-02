@@ -47,6 +47,7 @@ db_path=${BB_LITESTREAM_DB_PATH:-"$plane_dir/.bb/plane.db"}
 config_path=${BB_LITESTREAM_CONFIG:-/tmp/bb-litestream.yml}
 replica_env_name=${BB_LITESTREAM_REPLICA_URL_ENV:-LITESTREAM_REPLICA_URL}
 heartbeat_path=${BB_LITESTREAM_HEARTBEAT_PATH:-"$plane_dir/.bb/backup-last-success"}
+socket_path=${BB_LITESTREAM_SOCKET_PATH:-/tmp/bb-litestream.sock}
 sync_interval=${BB_LITESTREAM_SYNC_INTERVAL_SECONDS:-60}
 sync_timeout=${BB_LITESTREAM_SYNC_TIMEOUT_SECONDS:-30}
 startup_timeout=${BB_LITESTREAM_STARTUP_TIMEOUT_SECONDS:-60}
@@ -55,6 +56,7 @@ valid_env_name "$replica_env_name" || fail "BB_LITESTREAM_REPLICA_URL_ENV must n
 require_absolute_path "BB_LITESTREAM_DB_PATH" "$db_path"
 require_absolute_path "BB_LITESTREAM_CONFIG" "$config_path"
 require_absolute_path "BB_LITESTREAM_HEARTBEAT_PATH" "$heartbeat_path"
+require_absolute_path "BB_LITESTREAM_SOCKET_PATH" "$socket_path"
 
 eval "replica_url=\${$replica_env_name:-}"
 if [ -z "$replica_url" ]; then
@@ -65,7 +67,8 @@ if [ -z "$replica_url" ]; then
   exec "$@"
 fi
 
-mkdir -p "$(dirname "$db_path")" "$(dirname "$config_path")" "$(dirname "$heartbeat_path")"
+mkdir -p "$(dirname "$db_path")" "$(dirname "$config_path")" "$(dirname "$heartbeat_path")" "$(dirname "$socket_path")"
+rm -f "$socket_path"
 
 if [ "$1" = "bb" ] && [ "${2:-}" = "serve" ]; then
   # Create the SQLite ledger before Litestream starts watching the path.
@@ -73,6 +76,9 @@ if [ "$1" = "bb" ] && [ "${2:-}" = "serve" ]; then
 fi
 
 {
+  printf '%s\n' 'socket:'
+  printf '%s\n' '  enabled: true'
+  printf '  path: %s\n' "$socket_path"
   printf '%s\n' 'dbs:'
   printf '  - path: %s\n' "$db_path"
   printf '%s\n' '    replica:'
@@ -83,7 +89,7 @@ litestream replicate -config "$config_path" >/dev/null 2>&1 &
 litestream_pid=$!
 
 sync_once() {
-  if litestream sync -wait -timeout "$sync_timeout" "$db_path" >/dev/null 2>&1; then
+  if litestream sync -socket "$socket_path" -wait -timeout "$sync_timeout" "$db_path" >/dev/null 2>&1; then
     date -u '+%Y-%m-%dT%H:%M:%SZ' >"$heartbeat_path"
     return 0
   fi

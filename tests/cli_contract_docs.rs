@@ -270,7 +270,8 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let entrypoint = read("scripts/bb-litestream-entrypoint.sh");
     assert!(entrypoint.contains("litestream replicate -config \"$config_path\""));
-    assert!(entrypoint.contains("litestream sync -wait -timeout \"$sync_timeout\""));
+    assert!(entrypoint
+        .contains("litestream sync -socket \"$socket_path\" -wait -timeout \"$sync_timeout\""));
     assert!(entrypoint.contains("url: ${%s}"));
     assert!(entrypoint.contains("date -u '+%Y-%m-%dT%H:%M:%SZ' >\"$heartbeat_path\""));
 

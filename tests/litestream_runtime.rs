@@ -23,6 +23,7 @@ fn litestream_entrypoint_uses_env_name_and_writes_replication_heartbeat() {
     let db_path = dir.path().join("plane/.bb/plane.db");
     let config_path = dir.path().join("litestream.yml");
     let heartbeat_path = dir.path().join("plane/.bb/backup-last-success");
+    let socket_path = dir.path().join("litestream.sock");
     let secret = "replica-url-value-that-must-not-leak";
 
     write_executable(
@@ -72,6 +73,7 @@ esac
         .env("BB_LITESTREAM_REPLICA_URL_ENV", "LITESTREAM_REPLICA_URL")
         .env("LITESTREAM_REPLICA_URL", secret)
         .env("BB_LITESTREAM_HEARTBEAT_PATH", &heartbeat_path)
+        .env("BB_LITESTREAM_SOCKET_PATH", &socket_path)
         .env("BB_LITESTREAM_SYNC_INTERVAL_SECONDS", "1")
         .env("BB_LITESTREAM_SYNC_TIMEOUT_SECONDS", "5")
         .args(["bb", "serve"])
@@ -92,12 +94,17 @@ esac
 
     let config = fs::read_to_string(config_path).unwrap();
     assert!(config.contains("replica:"));
+    assert!(config.contains("socket:"));
+    assert!(config.contains(&format!("path: {}", socket_path.display())));
     assert!(config.contains("url: ${LITESTREAM_REPLICA_URL}"));
     assert!(!config.contains(secret));
 
     let log = fs::read_to_string(log_path).unwrap();
     assert!(log.contains("litestream:replicate -config"));
-    assert!(log.contains("litestream:sync -wait -timeout 5"));
+    assert!(log.contains(&format!(
+        "litestream:sync -socket {} -wait -timeout 5",
+        socket_path.display()
+    )));
     assert!(log.contains("bb:serve"));
     assert!(!log.contains(secret));
 
@@ -117,6 +124,10 @@ fn litestream_entrypoint_fails_closed_when_required_secret_is_missing() {
         .env("BB_LITESTREAM_CONFIG", dir.path().join("litestream.yml"))
         .env("BB_LITESTREAM_REPLICA_URL_ENV", "LITESTREAM_REPLICA_URL")
         .env("BB_LITESTREAM_HEARTBEAT_PATH", dir.path().join("heartbeat"))
+        .env(
+            "BB_LITESTREAM_SOCKET_PATH",
+            dir.path().join("litestream.sock"),
+        )
         .args(["bb", "serve"])
         .output()
         .unwrap();
