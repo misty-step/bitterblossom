@@ -2,7 +2,7 @@ use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use bitterblossom::{
-    artifacts, budget, dispatch, ledger, mcp, provider_keys, recovery, serve, spec,
+    artifacts, budget, canary, dispatch, ledger, mcp, provider_keys, recovery, serve, spec,
 };
 use clap::{Parser, Subcommand};
 
@@ -390,7 +390,9 @@ enum McpCommand {
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     if let Err(e) = run() {
-        eprintln!("error: {e:#}");
+        let msg = format!("{e:#}");
+        eprintln!("error: {msg}");
+        canary::report_error("bb.startup", &msg);
         std::process::exit(1);
     }
 }

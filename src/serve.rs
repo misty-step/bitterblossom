@@ -12,7 +12,7 @@ use crate::ingress;
 use crate::ledger::{Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
 use crate::spec::{Plane, TriggerSpec};
-use crate::{dispatch, notify, progress};
+use crate::{canary, dispatch, notify, progress};
 
 const DISPATCH_POLL: Duration = Duration::from_millis(500);
 const CRON_POLL: Duration = Duration::from_secs(10);
@@ -76,6 +76,9 @@ pub fn serve(root: &Path) -> Result<()> {
             .spawn(move || watchdog_loop(&root))?;
     }
 
+    canary::check_in();
+    canary::start_health_loop();
+
     http_loop(&root_buf, &bind)
 }
 
@@ -96,7 +99,13 @@ fn cron_loop(root: &Path) {
                 if let TriggerSpec::Cron { schedule } = trigger {
                     match ingress::parse_schedule(schedule) {
                         Ok(s) => schedules.push((task.name.clone(), s)),
-                        Err(e) => eprintln!("cron: task {}: {e:#}", task.name),
+                        Err(e) => {
+                            eprintln!("cron: task {}: {e:#}", task.name);
+                            canary::report_error(
+                                "bb.cron.schedule_parse",
+                                &format!("task {}: {e:#}", task.name),
+                            );
+                        }
                     }
                 }
             }
@@ -139,6 +148,7 @@ fn run_cron_tick(
             }
             Err(e) => {
                 eprintln!("cron: task {task}: {e:#}");
+                canary::report_error("bb.cron.catchup", &format!("task {task}: {e:#}"));
             }
         }
     }
@@ -164,6 +174,7 @@ fn dispatch_loop(root: &Path) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("dispatch: {e:#}");
+                canary::report_error("bb.dispatch.pending", &format!("{e:#}"));
                 continue;
             }
         };
@@ -187,10 +198,19 @@ fn dispatch_loop(root: &Path) {
                         .lock()
                         .expect("in_flight lock")
                         .remove(&task_name);
-                    panic.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                    panic.unwrap_or_else(|panic| {
+                        let msg = format!("{panic:?}");
+                        eprintln!("dispatch: thread panic in task {task_name} run {run_id}: {msg}");
+                        canary::report_error(
+                            "bb.dispatch.panic",
+                            &format!("task {task_name} run {run_id}: {msg}"),
+                        );
+                        std::panic::resume_unwind(panic);
+                    });
                 });
             if let Err(e) = spawned {
                 eprintln!("dispatch: spawn failed: {e}");
+                canary::report_error("bb.dispatch.spawn", &format!("{e:#}"));
                 in_flight.lock().expect("in_flight lock").remove(&run.task);
             }
         }
@@ -203,6 +223,7 @@ fn reflex_dispatch_paused(ledger: &Ledger) -> bool {
         Ok(None) => false,
         Err(e) => {
             eprintln!("dispatch: pause check: {e:#}");
+            canary::report_error("bb.dispatch.pause_check", &format!("{e:#}"));
             true
         }
     }
@@ -225,7 +246,10 @@ fn notify_loop(root: &Path) {
                 "notify retry: attempted={} delivered={} failed={}",
                 report.attempted, report.delivered, report.failed
             ),
-            Err(e) => eprintln!("notify retry: {e:#}"),
+            Err(e) => {
+                eprintln!("notify retry: {e:#}");
+                canary::report_error("bb.notify.retry", &format!("{e:#}"));
+            }
             _ => {}
         }
     }
@@ -242,7 +266,10 @@ fn watchdog_loop(root: &Path) {
         };
         match watchdog_scan(&plane, &ledger) {
             Ok(n) if n > 0 => eprintln!("watchdog: emitted {n} stale notification(s)"),
-            Err(e) => eprintln!("watchdog: {e:#}"),
+            Err(e) => {
+                eprintln!("watchdog: {e:#}");
+                canary::report_error("bb.watchdog", &format!("{e:#}"));
+            }
             _ => {}
         }
     }
@@ -368,7 +395,9 @@ fn run_one(root: &Path, run_id: &str) {
         Ok(())
     })();
     if let Err(e) = result {
-        eprintln!("run {run_id}: {e:#}");
+        let msg = format!("{e:#}");
+        eprintln!("run {run_id}: {msg}");
+        canary::report_error("bb.run.dispatch", &format!("run {run_id}: {msg}"));
     }
 }
 
