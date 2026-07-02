@@ -97,6 +97,14 @@ Copyable workload templates beyond the demo live under `examples/`:
   filters, budgets, sample push payload, expected `REPORT.json`, and a local
   validation recipe.
 
+Use a template when the trigger shape, output contract, and side-effect policy
+already match the work: copy it into your runtime plane, change the org/repo/
+host/secret names, tune budgets, then run `bb check`. Author a custom task when
+the agent needs a different event schema, different allowed side effects, a
+different report contract, or a workload-specific lane card. New workloads
+should still be config only: plane/task/agent files plus lane cards and sample
+payloads, not Rust changes.
+
 ```bash
 ./target/debug/bb --config examples/review-factory-plane check --json
 ./target/debug/bb --config examples/canary-responder-plane check --json

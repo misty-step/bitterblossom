@@ -1,6 +1,6 @@
 # Create production-shaped workload templates beyond the demo plane
 
-Priority: P1 | Status: pending | Estimate: XL
+Priority: P1 | Status: done | Estimate: XL
 
 ## Goal
 
@@ -9,15 +9,15 @@ production-shaped workload templates after the control plane is hardened.
 
 ## Oracle
 
-- [ ] At least three templates exist beyond `examples/demo-plane`: review
+- [x] At least three templates exist beyond `examples/demo-plane`: review
       factory, canary/incident responder, and docs or monitor watcher.
-- [ ] Each template includes plane/task/agent files, lane card, budgets,
+- [x] Each template includes plane/task/agent files, lane card, budgets,
       trigger examples, containment filters, expected JSON outputs, and a
       local validation recipe.
-- [ ] Each template runs through `bb check`; dev/test versions do not require
+- [x] Each template runs through `bb check`; dev/test versions do not require
       live credentials.
-- [ ] The README points cold users to a template selection path.
-- [ ] No template adds workload-specific Rust code.
+- [x] The README points cold users to a template selection path.
+- [x] No template adds workload-specific Rust code.
 
 ## Children
 
@@ -25,7 +25,7 @@ production-shaped workload templates after the control plane is hardened.
 2. [x] Shape a canary/incident responder template from the Tansy direction.
 3. [x] Shape a docs-sync or monitor watcher template.
 4. [x] Add template validation to the repo gate where feasible.
-5. Document when to use a template versus authoring a custom task.
+5. [x] Document when to use a template versus authoring a custom task.
 
 ## Notes
 
@@ -71,3 +71,9 @@ filters, budgets, sample push payload, sample `REPORT.json`, and a README
 validation recipe. With this slice, `scripts/verify.sh` runs `bb check` across
 all three public workload templates, and the task-card contract test covers
 each template lane card.
+
+Closure landed the README selection rule: copy a template when the trigger
+shape, output contract, and side-effect policy match; author a custom config
+task when event schema, side effects, report contract, or lane card differ.
+The ticket is archived with three public templates and no workload-specific
+Rust changes.
