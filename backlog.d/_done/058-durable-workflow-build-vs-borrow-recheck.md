@@ -1,6 +1,6 @@
 # Re-test durable workflow and substrate build-vs-borrow decisions
 
-Priority: P2 | Status: pending | Estimate: M
+Priority: P2 | Status: done | Estimate: M
 
 ## Goal
 
@@ -11,22 +11,22 @@ wins.
 
 ## Oracle
 
-- [ ] A decision memo compares the hardened `bb` loop against Temporal,
+- [x] A decision memo compares the hardened `bb` loop against Temporal,
       Inngest, Trigger.dev, and Cloudflare-style worker/agent primitives.
-- [ ] A substrate bakeoff compares Fly/Sprites, Cloudflare Sandbox/Agents, E2B,
+- [x] A substrate bakeoff compares Fly/Sprites, Cloudflare Sandbox/Agents, E2B,
       Modal, and Daytona against the same coding-harness workload contract.
-- [ ] The workload contract prepares a real repo workspace, streams harness
+- [x] The workload contract prepares a real repo workspace, streams harness
       stdout/stderr, supports stdin/secrets without leaking payloads, captures
       artifacts, records cost, handles timeout/kill, and proves either
       persistence/checkpoint recovery or an explicit no-persistence tradeoff.
-- [ ] The comparison uses live stress evidence from 050/051, not speculation.
-- [ ] The memo names primitives that are worth borrowing, primitives that must
+- [x] The comparison uses live stress evidence from 050/051, not speculation.
+- [x] The memo names primitives that are worth borrowing, primitives that must
       remain bespoke because they dispatch coding harnesses to sandboxes, and
       migration costs.
-- [ ] The outcome is one of: keep custom spine and Fly/Sprites baseline with
+- [x] The outcome is one of: keep custom spine and Fly/Sprites baseline with
       explicit proof, borrow a narrow workflow primitive, add a second substrate
       adapter, replace the current substrate, or shape a migration epic.
-- [ ] No runtime dependency is added during the decision pass.
+- [x] No runtime dependency is added during the decision pass.
 
 ## Children
 
@@ -38,8 +38,9 @@ wins.
    affordances, secret handling, artifact extraction, network egress,
    concurrency/cost, failure recovery, and operator CLI ergonomics.
 4. [x] Prototype only the smallest adapter probes needed to score the candidates.
-5. Write the decision memo.
-6. Emit follow-up only if the memo changes the architecture.
+5. [x] Write the decision memo.
+6. [x] Emit follow-up only if the memo changes the architecture. No follow-up
+   emitted: the decision keeps the current architecture.
 
 ## Notes
 
@@ -66,3 +67,7 @@ Evidence:
 - 2026-07-02 child 4 added `scripts/build-vs-borrow-local-probe.sh` and
   recorded the local baseline evidence in
   `docs/build-vs-borrow/2026-07-02-local-probe-evidence.md`.
+- 2026-07-02 child 5 closed the decision memo in
+  `docs/build-vs-borrow/2026-07-02-decision.md`: keep the custom Rust spine and
+  Fly/Sprites baseline, add no runtime dependency, and emit no architecture
+  follow-up.
