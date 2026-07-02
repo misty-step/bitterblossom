@@ -33,7 +33,11 @@ the honest V1 terminal state:
 - post-deploy QA watched Canary after merge only when the repo already has
   established auto-deploy-on-merge;
 - otherwise the report and Canary writeback state that V1 stops at
-  merged-plus-locally-verified for that repo.
+  merged-plus-locally-verified for that repo;
+- or, if the incident was already escalated before this run started, the
+  report is `skipped_escalated` and no claim, branch, or PR was created;
+- or, if the iteration guard fired, the report is `escalation_needed` with a
+  confirmed `/escalate` call and no further work in this run.
 
 ## Boundaries
 
@@ -67,15 +71,45 @@ available, or the equivalent HTTP API:
 - CI result;
 - merge result;
 - post-deploy QA result or V1 no-auto-deploy stop;
-- escalation-needed after the iteration guard fires.
+- escalation after the iteration guard fires (see Escalation below).
+
+Before doing any investigation or fix work, check whether the incident is
+already escalated (`GET /api/v1/incidents/{incident_id}`). Escalated incidents
+are never worked by triage agents. If the incident is already escalated,
+write a `skipped_escalated` report and stop; do not claim, investigate, or
+open a PR.
+
+## Escalation
 
 The iteration guard is hard: maximum 3 fix attempts per incident. A fix attempt
 begins when you create or update a branch for a proposed change. If post-deploy
 verification fails after a merge and auto-deploy is established, revert only
 your own merged commit, let the reversion deploy through the repo's existing
 path, write the failure and revert to Canary, and retry. After the third failed
-attempt, stop. Write `escalation-needed` to Canary, request BB notification in
-`REPORT.json`, and do not continue.
+attempt, stop and call, at Level 1 report-only authority (same tier as
+creating a remediation claim — no repo or production mutation):
+
+```sh
+curl -fsS -X POST "$CANARY_ENDPOINT/api/v1/incidents/$incident_id/escalate" \
+  -H "Authorization: Bearer $CANARY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"hypothesis confidence high, no active claim from a higher-authority responder, iteration guard exhausted","owner":"bitterblossom/canary-triage","purpose":"triage_escalation","idempotency_key":"bb-run-<run_id>:<incident_id>:escalate"}'
+```
+
+Replaying the same `idempotency_key` returns the existing escalation instead
+of erroring — safe to call even if you are unsure whether an earlier attempt
+in this run already escalated. Set `status` to `escalation_needed`,
+`iteration_guard.stopped` to `true`, and fill the `escalation` block in
+`REPORT.json` with the exact response. Then do not continue: no further
+branches, PRs, or Canary writebacks for this incident in this run.
+
+The command wrapper independently re-derives your attempt count from
+`bb/incident-<incident-id>-attempt-<n>` branches in the checked-out repo and
+calls `/escalate` itself as a backstop if this run's `REPORT.json` shows the
+guard fired without a recorded escalation. It fails the run outright if the
+repo shows more attempt branches than `max_fix_attempts` allows. Reporting
+attempts accurately and escalating yourself keeps the run in your control
+instead of the backstop's.
 
 Cerberus review is advisory, not a merge veto by itself, but every blocking
 finding must be fixed, rejected with evidence, or filed as follow-up before
@@ -90,7 +124,7 @@ Write `REPORT.json` at workspace root using this schema:
 ```json
 {
   "schema": "bb.incident_triage_response.v1",
-  "status": "hypotheses_written|pr_opened|merged|verified_resolved|stopped_no_auto_deploy|escalation_needed|blocked",
+  "status": "hypotheses_written|pr_opened|merged|verified_resolved|stopped_no_auto_deploy|escalation_needed|blocked|skipped_escalated",
   "bb_run_id": "run id from RUN.json",
   "delivery_id": "delivery id from RUN.json trigger key",
   "incident": {
@@ -126,10 +160,17 @@ Write `REPORT.json` at workspace root using this schema:
   "iteration_guard": {"max_fix_attempts": 3, "attempts_used": 1, "stopped": false, "reason": null},
   "scope_honesty": {"auto_deploy_on_merge": true, "v1_stop": "verified_resolved|merged_verified_locally_no_auto_deploy|blocked"},
   "bb_notification": {"requested": false, "reason": null},
+  "escalation": {"escalated": false, "reason": null, "response": null},
   "artifact_paths": ["REPORT.json"],
   "residual_risk": ["unverified path"]
 }
 ```
+
+`escalation.escalated` is `true` only once `/escalate` has been called (by you
+or the wrapper backstop) and Canary has confirmed it; `escalation.response` is
+the exact Canary response body. Leave `escalation` at its default
+(`{"escalated": false, "reason": null, "response": null}`) when the incident
+never reached the iteration guard.
 
 `artifact_paths` must equal `["REPORT.json"]`. Do not include secrets.
 
