@@ -68,3 +68,10 @@ the remaining "visibility is not escalation" gap.
 - Final slice: attention-debt brake aggregates open DLQ, parked tasks, stale
   runs, awaiting recovery, and pending/failed notifications; webhook/cron reflex
   admission refuses while manual dispatch remains available.
+
+2026-07-02 backlog hygiene closeout:
+
+- Archived after verifying PRs #878, #879, #880, #881, and #882 are merged.
+- `083` and `087` are closed as consolidated children of this epic; their
+  pre-consolidation unchecked boxes are stale, not open work.
+- Verification: `./scripts/verify.sh` passed during backlog 100 closeout.

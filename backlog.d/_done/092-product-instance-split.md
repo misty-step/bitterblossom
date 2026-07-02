@@ -1,6 +1,6 @@
 # Epic: product/instance split and public-able repo
 
-Priority: P0 | Status: ready | Estimate: XL
+Priority: P0 | Status: done | Estimate: XL
 
 ## Goal
 
@@ -20,7 +20,7 @@ sprite hosts, budgets, and repo-specific secrets belong outside the product imag
 - [x] A tracked-file scan finds no private topology, tailnet names, personal
       paths, real repo allowlists, or instance data in product-owned files.
 - [x] Production deploy docs explain how an operator supplies an instance plane.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Children
 
@@ -57,3 +57,11 @@ disk for the operator. The repo now ignores `/plane/` and `/canary-services.toml
 `examples/demo-plane`, `examples/local-plane`, and the public fixture instead
 of the private runtime plane. Operations docs and the dogfood skill now require
 an explicit `BB_RUNTIME_PLANE` or Fly `BB_PLANE_DIR`.
+
+2026-07-02 final closeout:
+
+- PR #887 loaded the production plane from a runtime volume instead of the
+  product image.
+- PR #888 excised tracked production plane data and stale instance config from
+  Git while leaving local ignored runtime files on disk.
+- Verification: `./scripts/verify.sh` passed during backlog 100 closeout.
