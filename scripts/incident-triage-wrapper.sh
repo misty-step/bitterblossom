@@ -9,6 +9,7 @@ run_file="${BB_RUN_FILE:-RUN.json}"
 model="${INCIDENT_TRIAGE_MODEL:-z-ai/glm-5.2}"
 provider="${INCIDENT_TRIAGE_PROVIDER:-openrouter}"
 agent_bin="${INCIDENT_TRIAGE_AGENT_BIN:-pi}"
+agent_npx_package="${INCIDENT_TRIAGE_AGENT_NPX_PACKAGE:-@earendil-works/pi-coding-agent@0.80.3}"
 max_fix_attempts="${INCIDENT_TRIAGE_MAX_FIX_ATTEMPTS:-3}"
 agent_out_dir="${INCIDENT_TRIAGE_OUT_DIR:-incident-triage}"
 prompt_file="INCIDENT_TRIAGE_PROMPT.md"
@@ -191,6 +192,17 @@ if [ -z "${CANARY_ENDPOINT:-}" ] || [ -z "${CANARY_API_KEY:-}" ]; then
   exit 0
 fi
 
+agent_cmd=""
+agent_via_npx="0"
+if agent_cmd="$(command -v "$agent_bin" 2>/dev/null)"; then
+  :
+elif [ "$agent_bin" = "pi" ] && agent_cmd="$(command -v npx 2>/dev/null)"; then
+  agent_via_npx="1"
+else
+  write_blocked_report "agent binary '$agent_bin' not found and no supported fallback is available"
+  exit 0
+fi
+
 mkdir -p "$agent_out_dir"
 cat > "$prompt_file" <<EOF
 Read LANE_CARD.md first. It is the operator contract.
@@ -217,12 +229,23 @@ cat "$event_file" >> "$prompt_file"
 printf '\n\nRUN.json:\n\n' >> "$prompt_file"
 cat "$run_file" >> "$prompt_file"
 
-"$agent_bin" \
-  --provider "$provider" \
-  --model "$model" \
-  --no-session \
-  --mode json \
-  -p < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
+if [ "$agent_via_npx" = "1" ]; then
+  "$agent_cmd" \
+    -y \
+    "$agent_npx_package" \
+    --provider "$provider" \
+    --model "$model" \
+    --no-session \
+    --mode json \
+    -p < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
+else
+  "$agent_cmd" \
+    --provider "$provider" \
+    --model "$model" \
+    --no-session \
+    --mode json \
+    -p < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
+fi
 
 python3 - "$agent_out_dir/stdout.jsonl" "$max_fix_attempts" "$BB_TRIAGE_REPO" <<'PY'
 import json
