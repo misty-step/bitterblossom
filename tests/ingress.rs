@@ -45,6 +45,42 @@ fn headers(sig: &str, delivery: &str) -> Vec<(String, String)> {
     ]
 }
 
+fn make_canary_triage_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/canary-triage")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\nauth = \"api\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/canary-triage/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/canary-triage/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"canary-triage\"\nsecret_env = \"BB_TEST_CANARY_SECRET\"\n\
+         dedupe_key = \"header:X-Delivery-Id\"\n\n\
+         [[trigger.filter]]\npointer = \"/event\"\nany_of = [\"incident.opened\", \"incident.updated\"]\n\
+         [[trigger.filter]]\npointer = \"/incident/service\"\nany_of = [\"canary\"]\n",
+    )
+    .unwrap();
+    Plane::load(root).unwrap()
+}
+
+fn canary_headers(
+    secret: &str,
+    timestamp: &str,
+    delivery: &str,
+    body: &str,
+) -> Vec<(String, String)> {
+    let signature = sign_hmac(secret, format!("{timestamp}.{delivery}.{body}").as_bytes());
+    vec![
+        ("X-Canary-Signature".to_string(), signature),
+        ("X-Timestamp".to_string(), timestamp.to_string()),
+        ("X-Delivery-Id".to_string(), delivery.to_string()),
+    ]
+}
+
 #[test]
 fn webhook_valid_hmac_creates_durable_run_before_ack() {
     let dir = tempfile::tempdir().unwrap();
@@ -161,73 +197,56 @@ fn webhook_attention_debt_brake_refuses_without_ingesting() {
 #[test]
 fn webhook_accepts_canary_timestamped_signature_and_delivery_id() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    fs::create_dir_all(root.join("agents")).unwrap();
-    fs::create_dir_all(root.join("tasks/canary")).unwrap();
-    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
-    fs::write(
-        root.join("agents/a.toml"),
-        "harness = \"pi\"\nmodel = \"m\"\nauth = \"api\"\n",
-    )
-    .unwrap();
-    fs::write(root.join("tasks/canary/card.md"), "card\n").unwrap();
-    fs::write(
-        root.join("tasks/canary/task.toml"),
-        "agent = \"a\"\nsubstrate = \"local\"\n\n\
-         [[trigger]]\nkind = \"webhook\"\nroute = \"canary\"\nsecret_env = \"BB_TEST_CANARY_SECRET\"\n\
-         dedupe_key = \"header:X-Delivery-Id\"\n",
-    )
-    .unwrap();
-    let plane = Plane::load(root).unwrap();
+    let plane = make_canary_triage_plane(dir.path());
     let mut ledger = Ledger::open(&plane.db_path()).unwrap();
     std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
 
-    let body = r#"{"event":"incident.opened","subject":{"id":"INC-live","service":"canary"}}"#;
+    let body = include_str!("fixtures/contracts/canary.incident_event.v1.valid.json");
     let timestamp = "2026-07-01T17:00:00Z";
     let delivery = "DLV-canary-live";
-    let signature = sign_hmac(
-        "s3cret",
-        format!("{timestamp}.{delivery}.{body}").as_bytes(),
-    );
-    let resp = handle_webhook(
-        &plane,
-        &mut ledger,
-        "canary",
-        &[
-            ("X-Canary-Signature".to_string(), signature.clone()),
-            ("X-Timestamp".to_string(), timestamp.to_string()),
-            ("X-Delivery-Id".to_string(), delivery.to_string()),
-        ],
-        body,
-    )
-    .unwrap();
+    let headers = canary_headers("s3cret", timestamp, delivery, body);
+    let resp = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
     assert_eq!(resp.status, 202, "{}", resp.body);
+    assert!(!resp.body.contains("filtered"), "{}", resp.body);
 
-    let runs = ledger.list_runs(Some("canary"), None).unwrap();
+    let runs = ledger.list_runs(Some("canary-triage"), None).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(
         runs[0].idempotency_key.as_deref(),
-        Some("wh:canary:DLV-canary-live")
+        Some("wh:canary-triage:DLV-canary-live")
     );
     assert_eq!(
         ledger.run_payload(&runs[0].id).unwrap().as_deref(),
         Some(body)
     );
-    let duplicate = handle_webhook(
-        &plane,
-        &mut ledger,
-        "canary",
-        &[
-            ("X-Canary-Signature".to_string(), signature),
-            ("X-Timestamp".to_string(), timestamp.to_string()),
-            ("X-Delivery-Id".to_string(), delivery.to_string()),
-        ],
-        body,
-    )
-    .unwrap();
+    let duplicate = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
     assert_eq!(duplicate.status, 202);
     assert!(duplicate.body.contains("\"duplicate\":true"));
-    assert_eq!(ledger.list_runs(Some("canary"), None).unwrap().len(), 1);
+    assert_eq!(
+        ledger.list_runs(Some("canary-triage"), None).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn webhook_filters_subject_only_canary_payload_without_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_canary_triage_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
+
+    let body = r#"{"schema_version":"canary.incident_event.v1","event":"incident.opened","subject":{"type":"incident","id":"INC-live","service":"canary"}}"#;
+    let headers = canary_headers("s3cret", "2026-07-01T17:00:00Z", "DLV-subject-only", body);
+    let resp = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
+
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert!(resp.body.contains("filtered"), "{}", resp.body);
+    assert!(resp.body.contains("/incident/service"), "{}", resp.body);
+    assert!(ledger
+        .list_runs(Some("canary-triage"), None)
+        .unwrap()
+        .is_empty());
+    assert_eq!(ledger.ingress_event_count("canary-triage").unwrap(), 0);
 }
 
 #[test]
