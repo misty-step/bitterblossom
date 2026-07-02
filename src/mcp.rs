@@ -66,6 +66,35 @@ fn tools() -> Vec<Tool> {
             call: tasks_tool,
         },
         Tool {
+            name: "bb_runs_list",
+            description: "List recent runs, optionally filtered by task or state. \
+                Read-only. Same shape as `bb runs list --json` and `GET /api/runs`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string" },
+                    "state": { "type": "string" }
+                },
+                "additionalProperties": false,
+            }),
+            call: runs_list_tool,
+        },
+        Tool {
+            name: "bb_runs_show",
+            description: "Show one run bundle with attempts, events, and progress \
+                classification. Read-only. Same shape as `bb runs show --json` and \
+                `GET /api/runs/<id>`.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["run_id"],
+                "properties": {
+                    "run_id": { "type": "string" }
+                },
+                "additionalProperties": false,
+            }),
+            call: runs_show_tool,
+        },
+        Tool {
             name: "bb_dlq_list",
             description: "List dead letters with replay/acknowledgement status. \
                 Read-only. Same shape as `bb dlq list --json` and `GET /api/dlq`.",
@@ -86,6 +115,20 @@ fn tools() -> Vec<Tool> {
             }),
             call: preflight_tool,
         },
+        Tool {
+            name: "bb_gate",
+            description: "Evaluate the submission gate by submission id or change \
+                key. Read-only. Same shape as `bb gate --json` and `GET /api/gate`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "submission": { "type": "string" },
+                    "change": { "type": "string" }
+                },
+                "additionalProperties": false,
+            }),
+            call: gate_tool,
+        },
     ]
 }
 
@@ -105,6 +148,15 @@ fn tasks_tool(plane: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
     Ok(Value::Array(serve::tasks_view(plane, ledger)?))
 }
 
+fn runs_list_tool(_: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
+    serve::runs_view(ledger, string_arg(args, "task"), string_arg(args, "state"))
+}
+
+fn runs_show_tool(_: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
+    let run_id = required_string_arg(args, "run_id")?;
+    serve::run_view(ledger, run_id)
+}
+
 fn dlq_list_tool(_: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
     Ok(serde_json::to_value(ledger.list_dead_letters()?)?)
 }
@@ -115,6 +167,27 @@ fn preflight_tool(plane: &Plane, _: &Ledger, args: &Value) -> Result<Value> {
     Ok(serde_json::to_value(crate::preflight::run(
         plane, task, storm,
     )?)?)
+}
+
+fn gate_tool(plane: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
+    Ok(serde_json::to_value(serve::gate_view(
+        plane,
+        ledger,
+        string_arg(args, "submission"),
+        string_arg(args, "change"),
+    )?)?)
+}
+
+fn string_arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
+    args.get(name).and_then(Value::as_str)
+}
+
+fn required_string_arg<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
+    string_arg(args, name)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("argument '{name}' is required and must be a non-empty string")
+        })
 }
 /// Run the read-only MCP stdio server. Reads newline-delimited JSON-RPC from
 /// stdin and writes one response per request to stdout. No network listener.

@@ -2,7 +2,7 @@ use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use bitterblossom::{
-    artifacts, budget, dispatch, ledger, mcp, progress, provider_keys, recovery, serve, spec,
+    artifacts, budget, dispatch, ledger, mcp, provider_keys, recovery, serve, spec,
 };
 use clap::{Parser, Subcommand};
 
@@ -144,8 +144,8 @@ enum Command {
     },
     /// Read-only MCP (Model Context Protocol) stdio server. `serve` speaks
     /// JSON-RPC 2.0 over stdin/stdout with no network listener, exposing
-    /// read-only tools (`bb_status`, `bb_check`) backed by the same view
-    /// helpers as the CLI/API. No mutating tools in this slice.
+    /// read-only tools for status, check, tasks, runs, DLQ, preflight, and gate
+    /// evaluation. No mutating tools in this slice.
     Mcp {
         #[command(subcommand)]
         command: McpCommand,
@@ -906,17 +906,9 @@ fn run() -> Result<()> {
             change,
             json,
         } => {
-            let id = match (submission, change) {
-                (Some(id), _) => id,
-                (None, Some(change)) => {
-                    ledger
-                        .latest_submission(&change)?
-                        .ok_or_else(|| anyhow::anyhow!("no submissions for change '{change}'"))?
-                        .id
-                }
-                (None, None) => bail!("pass --submission or --change"),
-            };
-            let report = bitterblossom::submit::evaluate(&plane, &ledger, &id)?;
+            let report =
+                serve::gate_view(&plane, &ledger, submission.as_deref(), change.as_deref())
+                    .context("evaluate gate")?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1091,81 +1083,60 @@ fn selected_key_agents(plane: &Plane, agent: Option<String>, all: bool) -> Resul
 }
 
 fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serve::run_view(ledger, run_id)?)?
+        );
+        return Ok(());
+    }
     let run = ledger.run(run_id)?;
     let attempts = ledger.attempts(run_id)?;
     let events = ledger.events(run_id)?;
-    if json {
-        let latest_phase = attempts.last().map(|a| a.phase.as_str());
-        let last_progress_at = events
-            .iter()
-            .rev()
-            .find(|e| e.kind == "progress")
-            .map(|e| e.at.as_str());
-        let probe = events
-            .iter()
-            .rev()
-            .find(|e| e.kind == "boot_probe")
-            .and_then(|e| e.data.as_deref());
-        let view = progress::classify(
-            &run,
-            latest_phase,
-            last_progress_at,
-            probe,
-            time::OffsetDateTime::now_utc(),
-        );
-        let doc = serde_json::json!({
-            "run": run,
-            "attempts": attempts,
-            "events": events,
-            "progress": view,
-        });
-        println!("{}", serde_json::to_string_pretty(&doc)?);
-    } else {
+    println!(
+        "run {}  task={}  state={}  trigger={}",
+        run.id, run.task, run.state, run.trigger_kind
+    );
+    if let Some(reason) = &run.state_reason {
+        println!("reason: {reason}");
+    }
+    println!(
+        "trace={}  parent={}  cost={}  duration_ms={}",
+        run.trace_id,
+        run.parent_run_id.as_deref().unwrap_or("-"),
+        run.cost_usd
+            .map(|c| format!("${c:.4}"))
+            .unwrap_or_else(|| "-".into()),
+        run.duration_ms.unwrap_or(0),
+    );
+    if let Some(repo) = &run.config_source_repo {
         println!(
-            "run {}  task={}  state={}  trigger={}",
-            run.id, run.task, run.state, run.trigger_kind
+            "source={}@{}",
+            repo,
+            run.config_source_ref.as_deref().unwrap_or("-")
         );
-        if let Some(reason) = &run.state_reason {
-            println!("reason: {reason}");
-        }
+    }
+    for a in attempts {
         println!(
-            "trace={}  parent={}  cost={}  duration_ms={}",
-            run.trace_id,
-            run.parent_run_id.as_deref().unwrap_or("-"),
-            run.cost_usd
+            "  attempt {} {}@v{} {} {} phase={} outcome={} cost={} artifacts={}",
+            a.n,
+            a.agent_name,
+            a.agent_version,
+            a.harness,
+            a.model,
+            a.phase,
+            a.outcome.as_deref().unwrap_or("-"),
+            a.cost_usd
                 .map(|c| format!("${c:.4}"))
                 .unwrap_or_else(|| "-".into()),
-            run.duration_ms.unwrap_or(0),
+            a.artifact_dir.as_deref().unwrap_or("-"),
         );
-        if let Some(repo) = &run.config_source_repo {
-            println!(
-                "source={}@{}",
-                repo,
-                run.config_source_ref.as_deref().unwrap_or("-")
-            );
+        if let Some(err) = a.error {
+            println!("    error: {err}");
         }
-        for a in attempts {
-            println!(
-                "  attempt {} {}@v{} {} {} phase={} outcome={} cost={} artifacts={}",
-                a.n,
-                a.agent_name,
-                a.agent_version,
-                a.harness,
-                a.model,
-                a.phase,
-                a.outcome.as_deref().unwrap_or("-"),
-                a.cost_usd
-                    .map(|c| format!("${c:.4}"))
-                    .unwrap_or_else(|| "-".into()),
-                a.artifact_dir.as_deref().unwrap_or("-"),
-            );
-            if let Some(err) = a.error {
-                println!("    error: {err}");
-            }
-        }
-        for e in events {
-            println!("  {} {} {}", e.at, e.kind, e.data.as_deref().unwrap_or(""));
-        }
+    }
+    for e in events {
+        println!("  {} {} {}", e.at, e.kind, e.data.as_deref().unwrap_or(""));
     }
     Ok(())
 }

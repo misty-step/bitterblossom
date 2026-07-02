@@ -56,9 +56,25 @@ Implementation hint: extract shared view helpers for run bundles and task/status
   `bb dlq list --json`, and `bb preflight <task> --json`.
 - Updated `skills/bitterblossom/` and `docs/spine.md` to route agents MCP-first
   for task inventory, DLQ inspection, and pre-dispatch readiness.
-- Remaining tool gaps for this ticket: `bb_runs_list`, `bb_runs_show`,
-  `bb_gate`, and artifact read/list after the artifact MCP slice.
+- Remaining tool gaps for this ticket: artifact read/list after the artifact MCP
+  slice.
 - LOC tripwire: this is Rust spine mechanism (MCP adapter over existing read
   surfaces, no workload judgment). The cap moved narrowly from 9500 to 9600
   rather than golfing the adapter; expected source LOC after the slice is about
   9549.
+
+### 2026-07-02 runs/gate MCP slice
+
+- Added read-only MCP tools `bb_runs_list`, `bb_runs_show`, and `bb_gate`.
+- Extracted shared `serve::runs_view`, `serve::run_view`, and
+  `serve::gate_view` helpers so MCP, CLI, and API use the same shapes. This also
+  brings `/api/runs/<id>` up to the `bb runs show --json` progress view.
+- Extended the MCP smoke test to compare the new tools directly against
+  `bb runs list --json`, `bb runs show <id> --json`, and
+  `bb gate --change <key> --json`.
+- Remaining MCP gap for the read-only layer: artifact list/read, after backlog
+  079's artifact contract is finalized for MCP.
+- LOC tripwire: this is still Rust spine mechanism (MCP adapter plus shared
+  read helpers, no workload judgment). After trimming duplicated progress
+  classification, expected source LOC is about 9623, so the cap moves narrowly
+  from 9600 to 9650.

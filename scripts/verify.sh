@@ -73,7 +73,7 @@ if report.get("status") != "pass":
 PY
 rm -rf "$self_drill_tmp"
 
-SPINE_LOC_CAP=9600
+SPINE_LOC_CAP=9650
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
