@@ -71,7 +71,7 @@ Read the output for:
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
 | Run webhook/cron plane | `bb --config <plane> serve` |
 | Submission storm / review factory | `bb submit ...`, verdict `bb run <kind> ...`, then `bb gate --json` |
-| Read-only inspection for agents over MCP | `bb --config <plane> mcp serve` (stdio JSON-RPC; `bb_status`, `bb_check`) |
+| Read-only inspection for agents over MCP | `bb --config <plane> mcp serve` (stdio JSON-RPC; `bb_status`, `bb_check`, `bb_tasks`, `bb_dlq_list`, `bb_preflight`) |
 
 Detailed command recipes: `references/operator-recipes.md`.
 
@@ -169,9 +169,9 @@ Useful API mirrors:
 2.0 over stdin/stdout, no network listener, no external credentials for
 local-plane inspection. Consume it MCP-first where a host agent supports it;
 fall back to `bb ... --json` for anything the MCP tool table does not yet
-cover. The registered read tools (`bb_status`, `bb_check`) return exactly
-the same shapes as `bb status --json` / `bb check --json` and the HTTP
-`/api/*` mirrors — MCP is a typed adapter, not a second implementation.
+cover. The registered read tools (`bb_status`, `bb_check`, `bb_tasks`,
+`bb_dlq_list`, `bb_preflight`) return the same shapes as their CLI/API
+counterparts — MCP is a typed adapter, not a second implementation.
 
 This slice ships read-only tools only. No mutating MCP tool exists; a
 `tools/call` for an unknown or would-be mutating name is rejected with a
@@ -184,8 +184,10 @@ Routing:
 | Need | First choice | Fallback |
 |---|---|---|
 | Decision-ready plane health | MCP `bb_status` | `bb status --json` |
-| Config/task inventory | MCP `bb_check` | `bb check --json` |
-| Runs, DLQ, artifacts, submissions | (not yet MCP) | `bb runs/dlq/artifacts/submit ... --json` |
+| Config/task inventory | MCP `bb_check`, MCP `bb_tasks` | `bb check --json`; `bb task list --json` |
+| Dead letters | MCP `bb_dlq_list` | `bb dlq list --json` |
+| Pre-dispatch readiness | MCP `bb_preflight` | `bb preflight <task> --json` |
+| Runs, artifacts, submissions, gates | (not yet MCP) | `bb runs/artifacts/submit/gate ... --json` |
 
 ## Distribution
 

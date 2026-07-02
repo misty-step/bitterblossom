@@ -42,3 +42,23 @@ Promotion trigger: open a follow-up writable-MCP ticket only when the above metr
 Why: earlier docs said MCP was unnecessary unless BB ran its own LLM loop. The 2026-06-29 groom supersedes that premise. MCP is needed because external agents consume Bitterblossom; BB itself still should not run an LLM loop.
 
 Implementation hint: extract shared view helpers for run bundles and task/status projections before wiring the MCP server. Keep the protocol adapter boring.
+
+## Delivery Notes
+
+### 2026-07-02 read-tool expansion slice
+
+- Added MCP `tools/call` argument handling and three more read-only tools:
+  `bb_tasks`, `bb_dlq_list`, and `bb_preflight`.
+- The tools are adapters over canonical BB surfaces:
+  `serve::tasks_view`, `Ledger::list_dead_letters`, and `preflight::run`.
+- Extended the MCP smoke test to compare `bb_tasks`, `bb_dlq_list`, and
+  `bb_preflight` output directly against `bb task list --json`,
+  `bb dlq list --json`, and `bb preflight <task> --json`.
+- Updated `skills/bitterblossom/` and `docs/spine.md` to route agents MCP-first
+  for task inventory, DLQ inspection, and pre-dispatch readiness.
+- Remaining tool gaps for this ticket: `bb_runs_list`, `bb_runs_show`,
+  `bb_gate`, and artifact read/list after the artifact MCP slice.
+- LOC tripwire: this is Rust spine mechanism (MCP adapter over existing read
+  surfaces, no workload judgment). The cap moved narrowly from 9500 to 9600
+  rather than golfing the adapter; expected source LOC after the slice is about
+  9549.
