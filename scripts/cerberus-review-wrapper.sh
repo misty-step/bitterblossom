@@ -85,6 +85,16 @@ set -- review-pr \
   --timeout-seconds "$timeout_seconds" \
   --receipt-bundle "$out_dir/receipt-bundle.json"
 
+# Cerberus refuses ambient `gh` auth for both reads and posting; it requires
+# an explicit token source. GH_TOKEN is a declared agent secret (see
+# agents/cerberus-reviewer.toml), so it is present in this run's environment.
+gh_token_env="${CERBERUS_GH_TOKEN_ENV:-GH_TOKEN}"
+if [ -n "$(eval "printf '%s' \"\${${gh_token_env}:-}\"")" ]; then
+  set -- "$@" --gh-token-env "$gh_token_env"
+else
+  echo "warning: \$${gh_token_env} is unset; review-pr will refuse ambient gh auth" >&2
+fi
+
 if [ -n "${OPENROUTER_API_KEY:-}" ]; then
   set -- "$@" --allow-env OPENROUTER_API_KEY
 fi
