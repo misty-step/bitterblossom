@@ -1,6 +1,6 @@
 # Persist a head-version watermark so post-settle freshness survives
 
-Priority: P2 | Status: ready | Estimate: S
+Priority: P2 | Status: done | Estimate: S
 
 ## Goal
 
@@ -10,17 +10,17 @@ delivery that arrives *after* a submission has settled, and stop overloading
 
 ## Oracle
 
-- [ ] A submission stores the head freshness version (`pull_request/updated_at`)
+- [x] A submission stores the head freshness version (`pull_request/updated_at`)
       in a dedicated field that survives `settle_submission`, not in
       `report_json` (which `settle_submission` overwrites with the gate report).
-- [ ] An out-of-order delivery for an older head that arrives after the latest
+- [x] An out-of-order delivery for an older head that arrives after the latest
       submission for that change has settled is rejected (no new submission, no
       storm) when its version is not strictly newer than the last processed head.
-- [ ] A genuinely newer head after a settled round still opens the next
+- [x] A genuinely newer head after a settled round still opens the next
       submission and storm.
-- [ ] Tests cover: settle → stale older-head redelivery (no-op) and settle →
+- [x] Tests cover: settle → stale older-head redelivery (no-op) and settle →
       newer-head delivery (opens + storms).
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Notes
 
@@ -38,3 +38,15 @@ Keep the spine small: this is a single ledger column plus a comparison move out
 of `report_json`, not a new lifecycle. Do not add a version-history table.
 See `src/ingress.rs` `open_webhook_submission` / `version_is_newer` and
 `src/submit.rs` `open_submission` / `settle_submission`.
+
+## Delivery Notes
+
+### 2026-07-02
+
+- Added `submissions.head_version` and a migration for existing ledgers.
+- Moved webhook submission-storm freshness writes and comparisons off
+  `report_json`; `report_json` remains the gate-report field after settlement.
+- Added regression coverage for stale older-head delivery after settle and
+  genuinely newer-head delivery after settle.
+- Focused verification:
+  `cargo test --test ingress webhook_submission_storm_ -- --nocapture`.

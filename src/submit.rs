@@ -21,6 +21,7 @@ pub struct SubmissionRow {
     pub id: String,
     pub change_key: String,
     pub rev: String,
+    pub head_version: Option<String>,
     pub round: i64,
     pub state: String,
     pub context: Option<String>,
@@ -394,7 +395,7 @@ pub fn enforce_fingerprints(
     }
 }
 
-const SUBMISSION_SELECT: &str = "SELECT id, change_key, rev, round, state, context,
+const SUBMISSION_SELECT: &str = "SELECT id, change_key, rev, head_version, round, state, context,
   prior_report_json, report_json, created_at, updated_at FROM submissions";
 
 fn row_to_submission(r: &rusqlite::Row<'_>) -> rusqlite::Result<SubmissionRow> {
@@ -402,13 +403,14 @@ fn row_to_submission(r: &rusqlite::Row<'_>) -> rusqlite::Result<SubmissionRow> {
         id: r.get(0)?,
         change_key: r.get(1)?,
         rev: r.get(2)?,
-        round: r.get(3)?,
-        state: r.get(4)?,
-        context: r.get(5)?,
-        prior_report_json: r.get(6)?,
-        report_json: r.get(7)?,
-        created_at: r.get(8)?,
-        updated_at: r.get(9)?,
+        head_version: r.get(3)?,
+        round: r.get(4)?,
+        state: r.get(5)?,
+        context: r.get(6)?,
+        prior_report_json: r.get(7)?,
+        report_json: r.get(8)?,
+        created_at: r.get(9)?,
+        updated_at: r.get(10)?,
     })
 }
 

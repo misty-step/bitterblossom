@@ -227,35 +227,51 @@ fn open_webhook_submission(
             return Ok(None);
         }
         // Different head while one is open: supersede only on a non-duplicate, strictly
-        // newer delivery. report_json on an open row holds the freshness version.
+        // newer delivery.
         Some(l) if l.state == "open" => {
             if !allow_supersede
                 || version
-                    .zip(l.report_json.as_deref())
+                    .zip(submission_head_version(&l))
                     .is_some_and(|(new, old)| new <= old)
             {
                 return Ok(None);
             }
             ledger.settle_submission(&l.id, "abandoned", "{}")?;
         }
-        // No prior submission, or a settled one with a different head: open the next
-        // round below. (A stale older head arriving out of order after settle still
-        // opens here — see backlog 068.)
+        // Different head after settle: open only when it is newer than the last
+        // processed head.
+        Some(l)
+            if version
+                .zip(l.head_version.as_deref())
+                .is_some_and(|(new, old)| new <= old) =>
+        {
+            return Ok(None);
+        }
+        // No prior submission, or a settled one with a newer or unversioned head: open
+        // the next round below.
         _ => {}
     }
-    let submission = ledger.open_submission(change, rev, None)?;
+    let mut submission = ledger.open_submission(change, rev, None)?;
     remember_submission_version(ledger, &submission.id, version)?;
+    submission.head_version = version.map(ToOwned::to_owned);
     Ok(Some(submission))
 }
 
 fn remember_submission_version(ledger: &mut Ledger, id: &str, version: Option<&str>) -> Result<()> {
     if let Some(version) = version {
         ledger.conn.execute(
-            "UPDATE submissions SET report_json = ?2 WHERE id = ?1 AND state = 'open'",
+            "UPDATE submissions SET head_version = ?2 WHERE id = ?1 AND state = 'open'",
             rusqlite::params![id, version],
         )?;
     }
     Ok(())
+}
+
+fn submission_head_version(submission: &crate::submit::SubmissionRow) -> Option<&str> {
+    submission
+        .head_version
+        .as_deref()
+        .or(submission.report_json.as_deref())
 }
 
 pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -> Result<String> {

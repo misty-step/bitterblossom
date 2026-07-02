@@ -803,3 +803,114 @@ fn webhook_submission_storm_is_idempotent_after_settle() {
     );
     assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
 }
+
+#[test]
+fn webhook_submission_storm_rejects_stale_older_head_after_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    let newest_body = pr_body_for_version(42, "sha-new", 12, "2026-06-17T04:01:00Z");
+    let newest_sig = sign_hmac("s3cret", newest_body.as_bytes());
+    handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&newest_sig, "delivery-new"),
+        &newest_body,
+    )
+    .unwrap();
+    let sub = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .expect("submission created");
+    assert_eq!(sub.head_version.as_deref(), Some("2026-06-17T04:01:00Z"));
+    assert!(ledger.settle_submission(&sub.id, "clear", "{}").unwrap());
+    let settled = ledger.submission(&sub.id).unwrap();
+    assert_eq!(
+        settled.head_version.as_deref(),
+        Some("2026-06-17T04:01:00Z")
+    );
+    assert_eq!(settled.report_json.as_deref(), Some("{}"));
+
+    let stale_body = pr_body_for_version(42, "sha-old", 12, "2026-06-17T04:00:00Z");
+    let stale_sig = sign_hmac("s3cret", stale_body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&stale_sig, "delivery-old-after-settle"),
+        &stale_body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 202, "{}", resp.body);
+
+    let submissions = ledger.list_submissions(10).unwrap();
+    assert_eq!(
+        submissions.len(),
+        1,
+        "stale older head after settle must not open a new submission"
+    );
+    assert_eq!(submissions[0].submission.rev, "sha-new");
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        1,
+        "stale older head after settle must not re-fire storm members"
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 1);
+}
+
+#[test]
+fn webhook_submission_storm_opens_newer_head_after_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+
+    let old_body = pr_body_for_version(42, "sha-old", 12, "2026-06-17T04:00:00Z");
+    let old_sig = sign_hmac("s3cret", old_body.as_bytes());
+    handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&old_sig, "delivery-old"),
+        &old_body,
+    )
+    .unwrap();
+    let sub = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .expect("submission created");
+    assert_eq!(sub.head_version.as_deref(), Some("2026-06-17T04:00:00Z"));
+    assert!(ledger.settle_submission(&sub.id, "clear", "{}").unwrap());
+
+    let newest_body = pr_body_for_version(42, "sha-new", 12, "2026-06-17T04:01:00Z");
+    let newest_sig = sign_hmac("s3cret", newest_body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&newest_sig, "delivery-new-after-settle"),
+        &newest_body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 202, "{}", resp.body);
+
+    let submissions = ledger.list_submissions(10).unwrap();
+    assert_eq!(submissions.len(), 2, "{submissions:#?}");
+    assert_eq!(submissions[0].submission.rev, "sha-new");
+    assert_eq!(submissions[0].submission.state, "open");
+    assert_eq!(
+        submissions[0].submission.head_version.as_deref(),
+        Some("2026-06-17T04:01:00Z")
+    );
+    assert_eq!(submissions[1].submission.rev, "sha-old");
+    assert_eq!(submissions[1].submission.state, "clear");
+    assert_eq!(
+        ledger.list_runs(Some("correctness"), None).unwrap().len(),
+        2,
+        "newer head after settle should fire a new storm"
+    );
+    assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 2);
+}
