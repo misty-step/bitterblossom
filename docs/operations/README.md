@@ -11,8 +11,10 @@ export BB_FLY_APP=bitterblossom-plane
 export BB_URL=https://bitterblossom-plane.fly.dev
 ```
 
-The production SQLite ledger lives on the Fly volume mounted at
-`/app/plane/.bb`, with the database path `/app/plane/.bb/plane.db`.
+The production instance plane lives on the Fly volume mounted at `/app/plane`.
+That volume contains runtime config (`plane.toml`, `agents/`, `tasks/`) plus
+state (`.bb/plane.db`, child-key metadata, run artifacts). The Docker image must
+not contain the production `plane/` directory.
 
 For the local reviewer dashboard served on Serenity over Tailscale, see
 [`bb-dashboard.md`](bb-dashboard.md). That service intentionally runs a local
@@ -63,6 +65,30 @@ git status --short --branch --untracked-files=all
 git rev-list --left-right --count master...origin/master
 flyctl deploy --app "$BB_FLY_APP" --remote-only
 ```
+
+For a first deploy or a migration from the old image-baked plane, stage the
+instance plane on the volume before deploying an image that expects
+`BB_PLANE_DIR=/app/plane`:
+
+```sh
+# Run against the old deployment where /app/plane is image-backed and
+# /app/plane/.bb is the mounted volume root.
+flyctl ssh console --app "$BB_FLY_APP" --command '
+  set -eu
+  cd /app/plane/.bb
+  mkdir -p .bb
+  find . -mindepth 1 -maxdepth 1 ! -name .bb -exec mv {} .bb/ \;
+  cp -a /app/plane/plane.toml /app/plane/agents /app/plane/tasks .
+  test -f plane.toml
+  test -d agents
+  test -d tasks
+  test -f .bb/plane.db
+'
+```
+
+After that migration, the Fly volume can be mounted at `/app/plane`; budget,
+task-card, and allowlist changes are applied by updating runtime config on the
+volume and restarting/recovering the plane, not by rebuilding the product image.
 
 Run the production smoke after deploy:
 

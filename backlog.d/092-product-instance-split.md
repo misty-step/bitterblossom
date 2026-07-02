@@ -10,8 +10,8 @@ sprite hosts, budgets, and repo-specific secrets belong outside the product imag
 
 ## Oracle
 
-- [ ] The Docker image no longer `COPY`s the production `plane/` directory.
-- [ ] Production config is loaded from an instance source: private repo, Fly
+- [x] The Docker image no longer `COPY`s the production `plane/` directory.
+- [x] Production config is loaded from an instance source: private repo, Fly
       volume, mounted secret bundle, or explicit `bb config pull` path.
 - [ ] `examples/demo-plane` remains the public reference plane and validates in
       the repo gate.
@@ -25,7 +25,7 @@ sprite hosts, budgets, and repo-specific secrets belong outside the product imag
 ## Children
 
 - [ ] Decide instance-config source and migration path for current `plane/`.
-- [ ] Dockerfile and Fly launch changes to mount/pull runtime config.
+- [x] Dockerfile and Fly launch changes to mount/pull runtime config.
 - [ ] Public-able scan/gate for tracked files.
 - [ ] Demo/reference plane cleanup so clone-onboarding still works.
 - [ ] Config reload or low-risk redeploy path for budget/filter changes.
@@ -37,3 +37,13 @@ sprite hosts, budgets, and repo-specific secrets belong outside the product imag
 The groom report found product/instance fusion: the product image bakes in the
 Misty Step plane. This epic is prerequisite to making the repo safely public and
 to letting other operators adopt the same shape without inheriting our instance.
+
+2026-07-02 slice: the product image no longer copies `plane/`, `.dockerignore`
+excludes `plane/` from remote build context, `fly.toml` mounts
+`bb_plane_data` at `/app/plane`, and `BB_PLANE_DIR=/app/plane` makes
+`plane.toml`, `agents/`, `tasks/`, and `.bb/plane.db` runtime volume data.
+`./scripts/verify.sh` now fails if `COPY plane` or a missing dockerignore
+exclusion reintroduces image/context leakage. Docker proof built the image with
+a 1 kB context and confirmed `/app/plane` is empty of `plane.toml`, `tasks/`,
+and `agents/` until a runtime volume supplies them. The repo still tracks
+`plane/`; public-able tracked-file excision remains the next child.

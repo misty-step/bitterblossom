@@ -1,6 +1,7 @@
 target
 .git
 .bb
+plane
 .env
 .env.*
 .DS_Store

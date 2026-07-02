@@ -17,6 +17,16 @@ cargo test
 echo "==> OpenRouter model catalog fixture"
 scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json --json >/dev/null
 
+echo "==> product/instance split guard"
+if grep -Eq '^[[:space:]]*COPY[[:space:]]+plane([[:space:]]|$)' Dockerfile; then
+  echo "Dockerfile must not COPY production plane/ into the product image"
+  exit 1
+fi
+grep -qx 'plane' .dockerignore || {
+  echo ".dockerignore must exclude plane/ so remote image builds do not upload instance config"
+  exit 1
+}
+
 echo "==> plane configs validate (bb check)"
 cargo run --quiet -- --config plane check
 cargo run --quiet -- --config examples/demo-plane check
