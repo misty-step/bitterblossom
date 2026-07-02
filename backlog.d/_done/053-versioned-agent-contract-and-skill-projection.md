@@ -1,6 +1,6 @@
 # Make the agent-facing bb contract versioned and schema-backed
 
-Priority: P0 | Status: ready | Estimate: L
+Priority: P0 | Status: done | Estimate: L
 
 ## Goal
 
@@ -11,15 +11,15 @@ choosing a durable Harness Kit projection path for the agent-friendly layer v1
 
 ## Oracle
 
-- [ ] Versioned schemas or fixtures exist for key agent surfaces:
+- [x] Versioned schemas or fixtures exist for key agent surfaces:
       `task list --json`, `runs list --json`, `runs show --json`,
       `dlq list --json`, `gate --json`, and `/api/*` mirrors.
-- [ ] Tests validate required fields and types, not only string presence.
-- [ ] `skills/bitterblossom/` recipes are checked against live help and schema
+- [x] Tests validate required fields and types, not only string presence.
+- [x] `skills/bitterblossom/` recipes are checked against live help and schema
       fixtures.
-- [ ] A source-of-truth projection decision is documented: symlink, bootstrap
+- [x] A source-of-truth projection decision is documented: symlink, bootstrap
       source entry, or other no-drift path into Harness Kit.
-- [ ] Lane-card/task-card quality requirements are validated or explicitly
+- [x] Lane-card/task-card quality requirements are validated or explicitly
       deferred with a shaped follow-up.
 
 ## Verification System
@@ -33,11 +33,11 @@ choosing a durable Harness Kit projection path for the agent-friendly layer v1
 
 ## Children
 
-1. Inventory current JSON outputs and API mirrors.
-2. Add schema/fixture tests for the smallest stable set.
-3. Strengthen `tests/skill_artifacts.rs` beyond string contains.
-4. Decide and document the Harness Kit projection path for the skill folder.
-5. Add a task-card contract check for Goal, Oracle, Boundaries, Output, and
+1. [x] Inventory current JSON outputs and API mirrors.
+2. [x] Add schema/fixture tests for the smallest stable set.
+3. [x] Strengthen `tests/skill_artifacts.rs` beyond string contains.
+4. [x] Decide and document the Harness Kit projection path for the skill folder.
+5. [x] Add a task-card contract check for Goal, Oracle, Boundaries, Output, and
    Receipt, or file the exact follow-up.
 
 ## Notes
