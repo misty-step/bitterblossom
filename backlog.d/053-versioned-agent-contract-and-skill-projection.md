@@ -83,3 +83,11 @@ serves epic 076.
 - Strengthened `tests/skill_artifacts.rs` to gate the ADR, source path, and
   duplicate-alias invariant while keeping `.agents/skills/bb-dogfood/` as the
   repo-local dogfood interface.
+
+### 2026-07-02 public task-card contract slice
+
+- Added `tests/task_card_contract.rs`, requiring public-plane task cards to
+  carry `Goal`, `Oracle`, `Boundaries`, `Output`, and `Receipt` sections and
+  to name `REPORT.json`.
+- Reshaped the public fixture cards under `tests/fixtures/public-plane/tasks/`
+  to the contract without touching private runtime plane data.
