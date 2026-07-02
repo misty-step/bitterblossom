@@ -287,3 +287,21 @@ fn sprite_probe_treats_malformed_pidfile_as_unknown() {
     std::env::remove_var("SPRITE_STUB_LOG");
     std::env::remove_var("SPRITE_FAKE_HOME");
 }
+
+#[test]
+fn sprite_probe_command_failure_is_unknown() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing-sprite-binary");
+    std::env::set_var("BB_SPRITE_BIN", &missing);
+
+    let probe = SpritesSubstrate.probe("test-sprite", dir.path(), "bb-missing-sprite-bin");
+    match probe {
+        ProbeResult::Unknown(reason) => {
+            assert!(reason.contains("probe failed"), "{reason}");
+        }
+        other => panic!("probe command failure must be unknown, got {other:?}"),
+    }
+
+    std::env::remove_var("BB_SPRITE_BIN");
+}

@@ -480,10 +480,18 @@ recovery semantic:
   `awaiting_recovery`; replay is an explicit operator act.
 - On boot, inherited `running` runs are classified by probing the host and
   reading attempt artifacts — never blindly orphaned.
-- Probe results are explicit: `alive` remains `running`, `dead` moves to
-  `awaiting_recovery` and releases the host lease, and `unknown: ...` moves to
-  `awaiting_recovery` while retaining the lease because the plane cannot prove
-  the agent process is gone. Missing or malformed pidfiles are unknown.
+- Probe results are explicit and machine-readable in `recover --json`:
+  `probe_state` is `alive`, `dead`, or `unknown`; `probe_reason` explains
+  unknowns; `lease_disposition` is `retained` or `released`; and
+  `operator_action` names the safe next step. The legacy human `probe` string
+  remains for compatibility.
+- State machine: local probes use the attempt-scoped `harness.pid`; sprite
+  probes use the attempt marker `/tmp/<attempt-id>.pid`. `alive` keeps the run
+  `running` and retains the lease. `dead` moves to `awaiting_recovery` and
+  releases the lease. `unknown` moves to `awaiting_recovery` while retaining
+  the lease because the plane cannot prove the agent process is gone. Missing
+  or malformed pidfiles, probe command failures, unknown substrates, and
+  unknown tasks are unknown.
 - `bb status --json` is the stale recovery visibility surface: after one hour,
   an `awaiting_recovery` run's safe action changes from
   `resolve_after_side_effect_inspection` to `escalate_stale_recovery`, with

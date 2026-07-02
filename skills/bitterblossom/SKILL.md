@@ -130,6 +130,9 @@ another cwd.
 ## Recovery
 
 - `bb recover` classifies inherited `running` rows after a host restart.
+- `bb recover --json` exposes `probe_state`, `probe_reason`,
+  `lease_disposition`, and `operator_action`; unknown probes retain the host
+  lease.
 - `bb runs resolve` is for `awaiting_recovery` after side-effect inspection.
 - `bb status --json` marks `awaiting_recovery` older than one hour as
   `escalate_stale_recovery`, with age fields, but the operator still resolves

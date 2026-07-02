@@ -48,6 +48,31 @@ pub enum ProbeResult {
     Unknown(String),
 }
 
+impl ProbeResult {
+    pub fn state(&self) -> &'static str {
+        match self {
+            ProbeResult::Alive => "alive",
+            ProbeResult::Dead => "dead",
+            ProbeResult::Unknown(_) => "unknown",
+        }
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            ProbeResult::Unknown(reason) => Some(reason.as_str()),
+            ProbeResult::Alive | ProbeResult::Dead => None,
+        }
+    }
+
+    pub fn description(&self) -> String {
+        match self {
+            ProbeResult::Alive => "alive".to_string(),
+            ProbeResult::Dead => "dead".to_string(),
+            ProbeResult::Unknown(reason) => format!("unknown: {reason}"),
+        }
+    }
+}
+
 pub trait Substrate {
     fn acquire(&self, host: &str, attempt_dir: &Path) -> Result<Box<dyn Session>>;
     fn probe(&self, host: &str, attempt_dir: &Path, marker: &str) -> ProbeResult;
