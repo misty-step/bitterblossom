@@ -1,6 +1,6 @@
 # Make run artifacts first-class for CLI and MCP consumers
 
-Priority: P1 · Status: ready · Estimate: M
+Priority: P1 · Status: done · Estimate: M
 
 ## Goal
 
@@ -8,13 +8,13 @@ Let humans and agents inspect run evidence directly through `bb` and MCP instead
 
 ## Oracle
 
-- [ ] `bb artifacts list <run-id> --json` returns artifact names, relative paths, sizes, content types where knowable, and safety metadata for a run's attempts.
-- [ ] `bb artifacts read <run-id> <path>` prints a safe text/JSON artifact such as `REPORT.json`, with binary/oversized artifacts rejected or summarized by contract.
-- [ ] `bb artifacts bundle <run-id> --out <path>` is implemented or explicitly deferred with a follow-up if bundling expands scope.
-- [ ] MCP exposes artifact resources or tools, e.g. `bb_artifacts_list` and `bb_artifact_read`, backed by the same helper as CLI.
-- [ ] The portable skill requires artifact inspection in closeout for any run that claims success.
-- [ ] Tests cover successful `REPORT.json` read, missing artifact, path traversal rejection, and multi-attempt behavior.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `bb artifacts list <run-id> --json` returns artifact names, relative paths, sizes, content types where knowable, and safety metadata for a run's attempts.
+- [x] `bb artifacts read <run-id> <path>` prints a safe text/JSON artifact such as `REPORT.json`, with binary/oversized artifacts rejected or summarized by contract.
+- [x] `bb artifacts bundle <run-id> --out <path>` is implemented or explicitly deferred with a follow-up if bundling expands scope.
+- [x] MCP exposes artifact resources or tools, e.g. `bb_artifacts_list` and `bb_artifact_read`, backed by the same helper as CLI.
+- [x] The portable skill requires artifact inspection in closeout for any run that claims success.
+- [x] Tests cover successful `REPORT.json` read, missing artifact, path traversal rejection, and multi-attempt behavior.
+- [x] `./scripts/verify.sh` passes.
 
 ## Verification System
 
@@ -35,7 +35,11 @@ This first slice is read-only artifact inspection. Do not add artifact mutation,
 - closeout receipts include artifact command transcripts for builder/storm/verifier runs;
 - a dogfood note records every time artifact access still required shell/file tools.
 
-Promotion trigger: only after those metrics are met should backlog 078 expose artifact resources over MCP, and only after MCP/read-only usage is stable should we consider artifact bundle/export automation.
+Promotion trigger: read-only MCP artifact inspection shipped in the 2026-07-02
+agent-friendly layer slice because backlog 078 had only this gap remaining and
+the adapter is bounded by the same path/size/binary helpers as CLI. Artifact
+bundle/export automation remains deferred until the usage metrics above are met
+and a concrete export consumer needs it.
 
 ## Notes
 
@@ -48,3 +52,23 @@ Why: run state says a task finished; artifacts prove whether it did useful work.
 2026-06-30 dogfood follow-up: local branch `bb-agent-friendly-layer-v1` now treats an incomplete UTF-8 codepoint at the fixed sniff boundary as text, while still marking complete invalid UTF-8 and NUL bytes as binary; `cargo test --locked --test artifacts_cli` covers the oversized split-boundary case.
 
 2026-06-30 Thermo review follow-up: Cursor Thermo-Nuclear review caught that the sniff-boundary fix had reused one helper for both full artifact reads and partial oversized sniffing, which could make a small file ending in an incomplete UTF-8 byte report `io_error` instead of `binary`. Commit `eca7e24` split full-buffer and sniff-buffer classifiers and added `artifacts_read_incomplete_utf8_tail_is_binary_not_io_error`.
+
+### 2026-07-02 artifact MCP slice
+
+- Added MCP read-only tools `bb_artifacts_list` and `bb_artifact_read`, backed
+  directly by `artifacts::list` and `artifacts::read` so the adapter cannot
+  drift from the CLI helper.
+- Extended `tests/mcp_cli.rs` to seed a `REPORT.json`, compare MCP artifact
+  list/read output against `bb artifacts ... --json`, and assert traversal
+  paths are rejected through the MCP tool boundary.
+- Preserved the existing CLI artifact tests for `REPORT.json`, missing
+  artifacts, traversal rejection, binary/oversized summaries, and multi-attempt
+  newest-first behavior.
+- Updated `docs/spine.md` and `skills/bitterblossom/SKILL.md` so consuming
+  agents prefer MCP artifact inspection and fall back to CLI JSON.
+- Explicitly deferred archive/bundle export to backlog 101. This slice is
+  inspection only: no artifact mutation, deletion, redaction rewrite, or
+  publication surface.
+- LOC tripwire: adding artifact tools is Rust spine mechanism (read-only MCP
+  adapter over existing artifact helpers, no workload judgment). The cap moves
+  narrowly from 9650 to 9700 for measured source LOC around 9666.

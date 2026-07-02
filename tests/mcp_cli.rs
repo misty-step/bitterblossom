@@ -114,6 +114,16 @@ fn mcp_serve_read_only_tools_list_and_call() {
         &["run", "demo", "--payload", "{\"ok\":true}", "--json"],
     );
     let run_id = seed_run["run"]["id"].as_str().unwrap().to_string();
+    let artifact_dir = std::path::Path::new(
+        seed_run["attempts"][0]["artifact_dir"]
+            .as_str()
+            .expect("attempt artifact_dir"),
+    );
+    fs::write(
+        artifact_dir.join("REPORT.json"),
+        "{\"status\":\"ok\",\"source\":\"mcp\"}\n",
+    )
+    .unwrap();
     let _submission = bb_json(
         root,
         &["submit", "open", "--change", "c1", "--rev", "r1", "--json"],
@@ -154,6 +164,8 @@ fn mcp_serve_read_only_tools_list_and_call() {
             "bb_tasks",
             "bb_runs_list",
             "bb_runs_show",
+            "bb_artifacts_list",
+            "bb_artifact_read",
             "bb_dlq_list",
             "bb_preflight",
             "bb_gate"
@@ -286,12 +298,90 @@ fn mcp_serve_read_only_tools_list_and_call() {
         "MCP bb_runs_show shape drifted from `bb runs show --json`"
     );
 
-    // tools/call bb_dlq_list -> same shape as `bb dlq list --json`.
+    // tools/call bb_artifacts_list -> same shape as
+    // `bb artifacts list <id> --json`.
     writeln!(
         stdin,
         "{}",
         req(
             Some(8),
+            "tools/call",
+            Some(json!({ "name": "bb_artifacts_list", "arguments": { "run_id": run_id } }))
+        )
+    )
+    .unwrap();
+    let artifacts_list_call = read_response(&mut stdout);
+    let artifacts_list = tool_json(&artifacts_list_call);
+    assert!(artifacts_list
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["path"] == "REPORT.json"));
+    assert_eq!(
+        artifacts_list,
+        bb_json(root, &["artifacts", "list", &run_id, "--json"]),
+        "MCP bb_artifacts_list shape drifted from `bb artifacts list --json`"
+    );
+
+    // tools/call bb_artifact_read -> same shape as
+    // `bb artifacts read <id> REPORT.json --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(9),
+            "tools/call",
+            Some(json!({
+                "name": "bb_artifact_read",
+                "arguments": { "run_id": run_id, "path": "REPORT.json" }
+            }))
+        )
+    )
+    .unwrap();
+    let artifact_read_call = read_response(&mut stdout);
+    let artifact_read = tool_json(&artifact_read_call);
+    assert_eq!(artifact_read["kind"], "text");
+    assert!(artifact_read["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"source\":\"mcp\""));
+    assert_eq!(
+        artifact_read,
+        bb_json(
+            root,
+            &["artifacts", "read", &run_id, "REPORT.json", "--json"]
+        ),
+        "MCP bb_artifact_read shape drifted from `bb artifacts read --json`"
+    );
+
+    // Unsafe artifact paths are rejected at the MCP boundary through the same
+    // artifact helper, not normalized by the adapter.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(10),
+            "tools/call",
+            Some(json!({
+                "name": "bb_artifact_read",
+                "arguments": { "run_id": run_id, "path": "../escape" }
+            }))
+        )
+    )
+    .unwrap();
+    let traversal = read_response(&mut stdout);
+    assert_eq!(traversal["result"]["isError"], true);
+    assert!(traversal["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("must be a non-empty relative path"));
+
+    // tools/call bb_dlq_list -> same shape as `bb dlq list --json`.
+    writeln!(
+        stdin,
+        "{}",
+        req(
+            Some(11),
             "tools/call",
             Some(json!({ "name": "bb_dlq_list" }))
         )
@@ -317,7 +407,7 @@ fn mcp_serve_read_only_tools_list_and_call() {
         stdin,
         "{}",
         req(
-            Some(9),
+            Some(12),
             "tools/call",
             Some(json!({ "name": "bb_preflight", "arguments": { "task": "demo" } }))
         )
@@ -345,7 +435,7 @@ fn mcp_serve_read_only_tools_list_and_call() {
         stdin,
         "{}",
         req(
-            Some(10),
+            Some(13),
             "tools/call",
             Some(json!({ "name": "bb_gate", "arguments": { "change": "c1" } }))
         )
@@ -363,7 +453,7 @@ fn mcp_serve_read_only_tools_list_and_call() {
         stdin,
         "{}",
         req(
-            Some(11),
+            Some(14),
             "tools/call",
             Some(json!({ "name": "bb_runs_cancel" }))
         )

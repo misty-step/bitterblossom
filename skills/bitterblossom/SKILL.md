@@ -71,7 +71,7 @@ Read the output for:
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
 | Run webhook/cron plane | `bb --config <plane> serve` |
 | Submission storm / review factory | `bb submit ...`, verdict `bb run <kind> ...`, then `bb gate --json` |
-| Read-only inspection for agents over MCP | `bb --config <plane> mcp serve` (stdio JSON-RPC; `bb_status`, `bb_check`, `bb_tasks`, `bb_runs_list`, `bb_runs_show`, `bb_dlq_list`, `bb_preflight`, `bb_gate`) |
+| Read-only inspection for agents over MCP | `bb --config <plane> mcp serve` (stdio JSON-RPC; `bb_status`, `bb_check`, `bb_tasks`, `bb_runs_list`, `bb_runs_show`, `bb_artifacts_list`, `bb_artifact_read`, `bb_dlq_list`, `bb_preflight`, `bb_gate`) |
 
 Detailed command recipes: `references/operator-recipes.md`.
 
@@ -170,9 +170,9 @@ Useful API mirrors:
 local-plane inspection. Consume it MCP-first where a host agent supports it;
 fall back to `bb ... --json` for anything the MCP tool table does not yet
 cover. The registered read tools (`bb_status`, `bb_check`, `bb_tasks`,
-`bb_runs_list`, `bb_runs_show`, `bb_dlq_list`, `bb_preflight`, `bb_gate`)
-return the same shapes as their CLI/API
-counterparts — MCP is a typed adapter, not a second implementation.
+`bb_runs_list`, `bb_runs_show`, `bb_artifacts_list`, `bb_artifact_read`,
+`bb_dlq_list`, `bb_preflight`, `bb_gate`) return the same shapes as their
+CLI/API counterparts — MCP is a typed adapter, not a second implementation.
 
 This slice ships read-only tools only. No mutating MCP tool exists; a
 `tools/call` for an unknown or would-be mutating name is rejected with a
@@ -187,10 +187,11 @@ Routing:
 | Decision-ready plane health | MCP `bb_status` | `bb status --json` |
 | Config/task inventory | MCP `bb_check`, MCP `bb_tasks` | `bb check --json`; `bb task list --json` |
 | Runs | MCP `bb_runs_list`, MCP `bb_runs_show` | `bb runs list --json`; `bb runs show <id> --json` |
+| Run artifacts | MCP `bb_artifacts_list`, MCP `bb_artifact_read` | `bb artifacts list <id> --json`; `bb artifacts read <id> <path> --json` |
 | Dead letters | MCP `bb_dlq_list` | `bb dlq list --json` |
 | Pre-dispatch readiness | MCP `bb_preflight` | `bb preflight <task> --json` |
 | Submission gate evaluation | MCP `bb_gate` | `bb gate --change <key> --json` |
-| Artifacts and submission mutation | (not yet MCP) | `bb artifacts/submit ... --json` |
+| Submission mutation | (not yet MCP) | `bb submit ... --json` |
 
 ## Distribution
 

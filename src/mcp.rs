@@ -14,6 +14,7 @@ use std::io::{BufRead, Write};
 use anyhow::Result;
 use serde_json::{json, Value};
 
+use crate::artifacts;
 use crate::ledger::Ledger;
 use crate::serve;
 use crate::spec::Plane;
@@ -95,6 +96,37 @@ fn tools() -> Vec<Tool> {
             call: runs_show_tool,
         },
         Tool {
+            name: "bb_artifacts_list",
+            description: "List top-level artifact files across a run's attempts, \
+                including size, content type, and binary metadata. Read-only. Same \
+                shape as `bb artifacts list <run-id> --json`.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["run_id"],
+                "properties": {
+                    "run_id": { "type": "string" }
+                },
+                "additionalProperties": false,
+            }),
+            call: artifacts_list_tool,
+        },
+        Tool {
+            name: "bb_artifact_read",
+            description: "Read one safe text/JSON artifact from a run's attempts. \
+                Binary, oversized, missing, and unsafe paths are returned or rejected \
+                by the same contract as `bb artifacts read <run-id> <path> --json`.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["run_id", "path"],
+                "properties": {
+                    "run_id": { "type": "string" },
+                    "path": { "type": "string" }
+                },
+                "additionalProperties": false,
+            }),
+            call: artifact_read_tool,
+        },
+        Tool {
             name: "bb_dlq_list",
             description: "List dead letters with replay/acknowledgement status. \
                 Read-only. Same shape as `bb dlq list --json` and `GET /api/dlq`.",
@@ -155,6 +187,19 @@ fn runs_list_tool(_: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
 fn runs_show_tool(_: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
     let run_id = required_string_arg(args, "run_id")?;
     serve::run_view(ledger, run_id)
+}
+
+fn artifacts_list_tool(_: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
+    let run_id = required_string_arg(args, "run_id")?;
+    Ok(serde_json::to_value(artifacts::list(ledger, run_id)?)?)
+}
+
+fn artifact_read_tool(_: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
+    let run_id = required_string_arg(args, "run_id")?;
+    let path = required_string_arg(args, "path")?;
+    Ok(serde_json::to_value(artifacts::read(
+        ledger, run_id, path,
+    )?)?)
 }
 
 fn dlq_list_tool(_: &Plane, ledger: &Ledger, _: &Value) -> Result<Value> {
