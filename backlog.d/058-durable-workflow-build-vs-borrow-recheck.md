@@ -30,7 +30,7 @@ wins.
 
 ## Children
 
-1. Capture stress and recovery evidence after 050/051.
+1. [x] Capture stress and recovery evidence after 050/051.
 2. Compare required primitives: queues, retries, leases, recovery, visibility,
    cost tracking, sandbox dispatch, and file-first workload config.
 3. Define one repeatable coding-harness workload and scoring rubric: cold start,
@@ -57,3 +57,5 @@ Evidence:
   unsupervised reflex work; substrate choice is an adapter decision, not product
   identity.
 - 050/051 will produce the stress evidence needed for a fair re-check.
+- 2026-07-02 child 1 captured the post-050/051 evidence baseline in
+  `docs/build-vs-borrow/2026-07-02-stress-recovery-evidence.md`.
