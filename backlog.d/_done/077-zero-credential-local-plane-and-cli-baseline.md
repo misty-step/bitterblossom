@@ -1,6 +1,6 @@
 # Add a zero-credential local plane and self-teaching CLI baseline
 
-Priority: P0 · Status: ready · Estimate: M
+Priority: P0 · Status: done · Estimate: M
 
 ## Goal
 
@@ -8,13 +8,13 @@ Give cold humans and agents a one-minute Bitterblossom golden path that validate
 
 ## Oracle
 
-- [ ] `examples/local-plane/` exists with `dev = true`, `substrate = "local"`, a `command` harness, and a `hello` or `report` task that writes a small `REPORT.json`.
-- [ ] README quick start uses `examples/local-plane` first; Sprites/OpenRouter demo moves to the next section.
-- [ ] These commands pass from a clean checkout with no BB-related secrets: `bb --config examples/local-plane check --json`, `bb --config examples/local-plane preflight hello --json`, `bb --config examples/local-plane run hello --payload '{"ok":true}' --json`, `bb --config examples/local-plane status --json`, and `bb --config examples/local-plane runs show <id> --json`.
-- [ ] CLI help for every top-level command and high-use subcommand states purpose, side-effect level, JSON behavior, and common examples.
-- [ ] `bb run --payload` validates JSON before creating a run row; invalid JSON exits non-zero with no new run.
-- [ ] A `--payload-file` path exists or is explicitly deferred with a shaped follow-up.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `examples/local-plane/` exists with `dev = true`, `substrate = "local"`, a `command` harness, and a `hello` or `report` task that writes a small `REPORT.json`.
+- [x] README quick start uses `examples/local-plane` first; Sprites/OpenRouter demo moves to the next section.
+- [x] These commands pass from a clean checkout with no BB-related secrets: `bb --config examples/local-plane check --json`, `bb --config examples/local-plane preflight hello --json`, `bb --config examples/local-plane run hello --payload '{"ok":true}' --json`, `bb --config examples/local-plane status --json`, `bb --config examples/local-plane runs show <id> --json`, and `bb --config examples/local-plane artifacts read <id> REPORT.json --json`.
+- [x] CLI help for every top-level command and high-use subcommand states purpose, side-effect level, JSON behavior, and common examples.
+- [x] `bb run --payload` validates JSON before creating a run row; invalid JSON exits non-zero with no new run.
+- [x] A `--payload-file` path exists or is explicitly deferred with a shaped follow-up.
+- [x] `./scripts/verify.sh` passes.
 
 ## Verification System
 
@@ -34,3 +34,7 @@ This ticket should stay thin. It is not a new workflow. It is the local proof su
 Swarm evidence 2026-06-29: the current `plane/` has 30 tasks and all are Sprite-backed; `preflight build`, `build-glm`, `build-kimi`, and `gardener` report missing `OPENROUTER_API_KEY` / `GH_TOKEN` in this shell, and `gardener` also wants `BB_API_TOKEN`. Use repo-local `./target/debug/bb` in verification because host `bb` may resolve to `/opt/homebrew/bin/bb` rather than the checked-out binary.
 
 2026-06-30 dogfood review note: the local-plane invalid-payload smoke in `scripts/verify.sh` currently compares run counts with a brittle text grep over JSON. Before treating that smoke as a reusable agent-interface oracle, replace it with a typed/shape-aware count (or a small Rust/JSON fixture) so formatting or future fields cannot create a false pass/fail.
+
+2026-07-02 closure note: the 076 closure slice replaced the grep count with a
+JSON length parser and extended the golden path to read the successful run's
+`REPORT.json` through `bb artifacts read <run-id> REPORT.json --json`.
