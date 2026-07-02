@@ -1,5 +1,10 @@
 # ADR-002: Architecture Minimalism — Thin CLI, Thick Skills
 
+> Superseded for current Bitterblossom operation by
+> [ADR-005: Rust Event Plane](005-rust-event-plane.md) and
+> [docs/spine.md](../spine.md). This record is retained as historical prior
+> art, not current operator guidance.
+
 - **Status:** Accepted
 - **Date:** 2026-02-15
 - **Related:** ADR-001 (Claude Code as canonical harness)

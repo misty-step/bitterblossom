@@ -25,7 +25,7 @@ or superseded.
 ## Children
 
 1. [x] Build the stale-doc inventory.
-2. Mark old ADRs as superseded by ADR 005 and the spine contract.
+2. [x] Mark old ADRs as superseded by ADR 005 and the spine contract.
 3. Archive or remove duplicate terminal walkthrough transcripts.
 4. Audit remaining live CLI snippets after 050's parity checks.
 5. Extend the stale-command regression check only for gaps not already covered
@@ -54,3 +54,8 @@ exact scan commands, current surfaces already covered by
 `tests/cli_contract_docs.rs`, archive-safe historical hits, current-looking
 historical ADR/walkthrough files, terminal transcript duplicates, and the
 follow-up owner for each remaining child.
+
+Child 2 added explicit supersession banners to historical ADRs 001, 002, 003,
+both 004 records, pointing readers to ADR 005 and `docs/spine.md` as the
+current Rust-plane contract. `tests/cli_contract_docs.rs` now guards that those
+ADR banners remain present.

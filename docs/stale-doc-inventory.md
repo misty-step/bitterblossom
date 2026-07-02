@@ -57,15 +57,16 @@ a later slice moves a current-looking document behind an archive boundary.
 ## Historical But Still Too Current-Looking
 
 These files live outside `docs/archive/` and still mention Go/Python/Elixir or
-conductor-era contracts. They should be marked superseded by ADR 005 and
-`docs/spine.md`, or moved under an archive boundary in later 057 slices:
+conductor-era contracts. Historical ADRs now carry explicit supersession
+banners pointing to ADR 005 and `docs/spine.md`; walkthroughs remain for a
+later archive-boundary slice:
 
 - `docs/adr/001-claude-code-canonical-harness.md`
 - `docs/adr/002-architecture-minimalism.md`
 - `docs/adr/003-conductor-control-plane.md`
 - `docs/adr/004-bounded-review-governance.md`
 - `docs/adr/004-elixir-conductor-architecture.md`
-- `docs/walkthroughs/*.md`
+- `docs/walkthroughs/*.md` (still current-looking; handle in child 3)
 
 The current ADR exception is `docs/adr/005-rust-event-plane.md`, which is the
 current superseding record and intentionally names prior systems as negative
@@ -87,8 +88,7 @@ why paired terminal transcripts remain in the live walkthrough directory.
 
 ## Follow-Up Slices
 
-- Child 2: add explicit superseded banners to historical ADRs or move them
-  behind an archive boundary.
+- Child 2: explicit superseded banners on historical ADRs landed.
 - Child 3: archive or justify walkthrough terminal transcript duplicates.
 - Child 4: re-audit live CLI snippets after the ADR/walkthrough move.
 - Child 5: extend `tests/cli_contract_docs.rs` with path-aware stale-command

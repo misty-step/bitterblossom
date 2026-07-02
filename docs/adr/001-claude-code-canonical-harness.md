@@ -1,5 +1,10 @@
 # ADR-001: Claude Code as Canonical Sprite Harness
 
+> Superseded for current Bitterblossom operation by
+> [ADR-005: Rust Event Plane](005-rust-event-plane.md) and
+> [docs/spine.md](../spine.md). This record is retained as historical prior
+> art, not current operator guidance.
+
 - **Status:** Accepted
 - **Date:** 2026-02-10
 - **Supersedes:** OpenCode-only decision (2026-02-09)
