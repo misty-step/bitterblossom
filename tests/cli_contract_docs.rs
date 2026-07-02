@@ -91,6 +91,12 @@ fn live_help_exposes_current_agent_cli_contract() {
     assert!(gate.contains("--submission <SUBMISSION>"));
     assert!(gate.contains("--change <CHANGE>"));
     assert!(gate.contains("--json"));
+
+    let keys = help(&["keys", "--help"]);
+    assert!(keys.contains("sync"));
+    let key_sync = help(&["keys", "sync", "--help"]);
+    assert!(key_sync.contains("--check"));
+    assert!(key_sync.contains("--json"));
 }
 
 #[test]
@@ -115,16 +121,19 @@ fn current_docs_and_skills_match_live_cli_contract() {
     assert!(spine.contains("bb task list [--json]"));
     assert!(spine.contains("bb runs export"));
     assert!(spine.contains("bb gate --change K | --submission ID [--json]"));
+    assert!(spine.contains("bb keys sync <agent> | --all [--check] [--json]"));
 
     let skill = read("skills/bitterblossom/SKILL.md");
     assert!(skill.contains("bb --config <plane> run <task> --payload '<json>' --json"));
     assert!(skill.contains("bb --config <plane> runs export"));
     assert!(skill.contains("bb --config <plane> gate --submission <submission> --json"));
+    assert!(skill.contains("bb --config <plane> keys sync --all --check --json"));
 
     let recipes = read("skills/bitterblossom/references/operator-recipes.md");
     assert!(recipes.contains("bb --config <plane> runs export"));
     assert!(recipes.contains("bb --config <plane> dlq replay <id> --json"));
     assert!(recipes.contains("curl --config -"));
+    assert!(recipes.contains("bb --config <plane> keys sync --all --check --json"));
     assert!(!recipes.contains("curl -H \"Authorization: Bearer $BB_API_TOKEN\""));
 
     let dogfood = read(".agents/skills/bb-dogfood/SKILL.md");

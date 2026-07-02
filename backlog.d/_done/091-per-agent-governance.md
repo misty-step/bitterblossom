@@ -1,6 +1,6 @@
 # Epic: per-agent governance and real circuit breakers
 
-Priority: P0 | Status: ready | Estimate: XL
+Priority: P0 | Status: done | Estimate: XL
 
 ## Goal
 
@@ -30,7 +30,7 @@ loops before they consume budget or authority.
 - [x] Agent policy schema: authority, provider key name, budget cap, iteration
       caps, timeout, and side-effect policy.
 - [x] OpenRouter key provisioning or audited manual import path.
-- [ ] Provider cap sync and drift check.
+- [x] Provider cap sync and drift check.
 - [x] In-flight kill/quarantine mechanism for overrun policies.
 - [x] Status/API/readiness projection of governance state.
 - [x] Fixtures proving an infinite loop is stopped by code, not by operator luck.
@@ -64,4 +64,15 @@ of becoming pretend guardrails on generic `command` agents. Live proof fixtures:
 `tool_action_policy_cap_kills_running_harness_and_notifies`, and
 `output_bytes_policy_cap_kills_running_harness_and_notifies`; full proof:
 `./scripts/verify.sh` green with `src LOC: 9913` under the raised 9950 mechanism
-tripwire. Remaining child: provider cap sync and drift check.
+tripwire.
+
+2026-07-02 slice: `bb keys sync <agent>|--all --check --json` refreshes
+plane-side non-secret OpenRouter key metadata from the management list endpoint,
+compares policy caps to the remote `limit`, and exits non-zero with a structured
+drift report when caps, missing keys, disabled state, or local key material do
+not match. `bb check --json`, `bb task list --json`, `/api/tasks`, and
+`bb status --json` now expose last-synced provider key status without requiring
+the management key on ordinary read calls. Focused proof fixture:
+`key_sync_detects_remote_cap_drift_and_updates_local_metadata_without_printing_secret`.
+Full proof: `./scripts/verify.sh` green with `src LOC: 10318` under the raised
+10500 mechanism tripwire. Epic complete.

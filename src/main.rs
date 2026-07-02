@@ -291,6 +291,19 @@ enum KeysCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Sync local non-secret metadata from OpenRouter's key list and report
+    /// drift between agent policy caps, stored records, and remote limits.
+    /// With `--check`, exits non-zero when any selected key is missing or
+    /// drifted after printing the report.
+    Sync {
+        agent: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -813,6 +826,43 @@ fn run() -> Result<()> {
                             );
                         }
                     }
+                }
+            }
+            KeysCommand::Sync {
+                agent,
+                all,
+                check,
+                json,
+            } => {
+                let agents = selected_key_agents(&plane, agent, all)?;
+                let report = provider_keys::sync_agents(&plane, &agents)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!(
+                        "synced {} provider key(s); ok={}",
+                        report.keys.len(),
+                        report.ok
+                    );
+                    for key in &report.keys {
+                        println!(
+                            "{:<24} {:<14} configured=${:.2} remote={} hash={}",
+                            key.local.agent,
+                            key.local.status,
+                            key.local.configured_spend_cap_usd,
+                            key.local
+                                .remote_limit_usd
+                                .map(|v| format!("${v:.2}"))
+                                .unwrap_or_else(|| "-".into()),
+                            key.local.stored_hash.as_deref().unwrap_or("-")
+                        );
+                        for drift in &key.local.drift {
+                            println!("  drift: {drift}");
+                        }
+                    }
+                }
+                if check && !report.ok {
+                    bail!("provider key drift detected");
                 }
             }
         },

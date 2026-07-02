@@ -125,14 +125,23 @@ fn start_openrouter_fake() -> (String, thread::JoinHandle<()>) {
 }
 
 fn key_data(disabled: bool) -> serde_json::Value {
+    key_data_with_limit(disabled, 12.5, 12.5, 0.0)
+}
+
+fn key_data_with_limit(
+    disabled: bool,
+    limit: f64,
+    limit_remaining: f64,
+    usage: f64,
+) -> serde_json::Value {
     serde_json::json!({
         "hash": KEY_HASH,
         "name": "bb:test:a:openrouter-a:2026-07-02T00:00:00Z",
         "label": "bb scoped key",
-        "limit": 12.5,
-        "limit_remaining": 12.5,
+        "limit": limit,
+        "limit_remaining": limit_remaining,
         "limit_reset": null,
-        "usage": 0.0,
+        "usage": usage,
         "disabled": disabled,
         "created_at": "2026-07-02T00:00:00Z",
         "updated_at": null,
@@ -147,6 +156,58 @@ fn key_data(disabled: bool) -> serde_json::Value {
         "usage_weekly": 0.0,
         "workspace_id": "00000000-0000-0000-0000-000000000000"
     })
+}
+
+fn start_openrouter_list_fake(rows: Vec<serde_json::Value>) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let addr = format!("http://{}/api/v1", server.server_addr());
+    let handle = thread::spawn(move || {
+        let req = server.recv().unwrap();
+        let auth = req
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.as_str())
+            .unwrap_or("");
+        assert_eq!(auth, "Bearer fake-management-key");
+        assert_eq!(req.method(), &Method::Get);
+        assert_eq!(req.url(), "/api/v1/keys?include_disabled=true");
+        req.respond(json_response(
+            StatusCode(200),
+            serde_json::json!({"data": rows}),
+        ))
+        .unwrap();
+    });
+    (addr, handle)
+}
+
+fn write_stored_child_key(root: &Path, spend_cap_usd: f64) {
+    let dir = root.join(".bb/provider-keys/openrouter");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("a.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "provider": "openrouter",
+            "agent": "a",
+            "provider_key_name": "openrouter-a",
+            "name": "bb:test:a:openrouter-a:2026-07-02T00:00:00Z",
+            "hash": KEY_HASH,
+            "label": "bb scoped key",
+            "spend_cap_usd": spend_cap_usd,
+            "limit_remaining_usd": spend_cap_usd,
+            "limit_reset": null,
+            "usage_usd": 0.0,
+            "disabled": false,
+            "created_at": "2026-07-02T00:00:00Z",
+            "updated_at": null,
+            "minted_at": "2026-07-02T00:00:01Z",
+            "revoked_at": null,
+            "api_key": CHILD_KEY
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 fn json_response(
@@ -236,6 +297,73 @@ fn openrouter_child_key_mint_lists_injects_and_revokes_without_printing_secret()
     assert_eq!(revoked_doc["revoked"], true);
     assert_eq!(revoked_doc["secret_available"], false);
     assert!(!String::from_utf8_lossy(&revoked.stdout).contains(CHILD_KEY));
+
+    server.join().unwrap();
+}
+
+#[test]
+fn key_sync_detects_remote_cap_drift_and_updates_local_metadata_without_printing_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    setup_plane(dir.path());
+    write_stored_child_key(dir.path(), 12.5);
+    let (base_url, server) =
+        start_openrouter_list_fake(vec![key_data_with_limit(false, 10.0, 9.25, 0.75)]);
+
+    let synced = bb(
+        dir.path(),
+        &["keys", "sync", "a", "--check", "--json"],
+        &base_url,
+    );
+    assert!(
+        !synced.status.success(),
+        "check should fail on drift\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&synced.stdout),
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&synced.stdout);
+    assert!(!stdout.contains(CHILD_KEY));
+    let doc: serde_json::Value = serde_json::from_slice(&synced.stdout).unwrap();
+    assert_eq!(doc["operation"], "sync");
+    assert_eq!(doc["ok"], false);
+    assert_eq!(doc["keys"][0]["agent"], "a");
+    assert_eq!(doc["keys"][0]["status"], "drift");
+    assert_eq!(doc["keys"][0]["configured_spend_cap_usd"], 12.5);
+    assert_eq!(doc["keys"][0]["remote_limit_usd"], 10.0);
+    assert_eq!(doc["keys"][0]["limit_remaining_usd"], 9.25);
+    assert_eq!(doc["keys"][0]["usage_usd"], 0.75);
+    let drift = doc["keys"][0]["drift"].as_array().unwrap();
+    assert!(drift.iter().any(|item| item
+        .as_str()
+        .unwrap()
+        .contains("remote provider limit $10.0000")));
+    assert!(String::from_utf8_lossy(&synced.stderr).contains("provider key drift detected"));
+
+    let listed = bb(dir.path(), &["keys", "list", "--json"], &base_url);
+    assert!(listed.status.success());
+    let local: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(local[0]["remote_limit_usd"], 10.0);
+    assert_eq!(local[0]["limit_remaining_usd"], 9.25);
+    assert_eq!(local[0]["usage_usd"], 0.75);
+    assert!(local[0]["last_synced_at"].is_string());
+    assert!(!String::from_utf8_lossy(&listed.stdout).contains(CHILD_KEY));
+
+    let check = bb(dir.path(), &["check", "--json"], &base_url);
+    assert!(check.status.success());
+    let check_doc: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(check_doc["provider_keys"][0]["status"], "drift");
+    assert_eq!(
+        check_doc["task_details"][0]["provider_key"]["remote_limit_usd"],
+        10.0
+    );
+
+    let status = bb(dir.path(), &["status", "--json"], &base_url);
+    assert!(status.status.success());
+    let status_doc: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status_doc["tasks"][0]["provider_key"]["status"], "drift");
+    assert_eq!(
+        status_doc["tasks"][0]["provider_key"]["limit_remaining_usd"],
+        9.25
+    );
 
     server.join().unwrap();
 }

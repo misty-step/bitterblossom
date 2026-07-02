@@ -646,6 +646,7 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
             "tool_action_cap": task.spec.budget.tool_action_cap,
             "output_bytes_cap": task.spec.budget.output_bytes_cap,
             "policy": serde_json::to_value(&task.agent.policy)?,
+            "provider_key": crate::provider_keys::local_status_for_task(plane, task)?,
         }));
     }
     Ok(out)
@@ -719,6 +720,7 @@ pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
         "backup": &plane.spec.backup,
         "agents": plane.agents.keys().collect::<Vec<_>>(),
         "agent_policy": agent_policy,
+        "provider_keys": crate::provider_keys::local_statuses(plane)?,
         "tasks": plane.tasks.keys().collect::<Vec<_>>(),
         "task_details": tasks_view(plane, ledger)?,
     }))

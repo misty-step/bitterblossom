@@ -86,12 +86,15 @@ not be copied into argv, payloads, cards, or logs:
 ```bash
 bb --config <plane> keys mint <agent> --json
 bb --config <plane> keys list --remote --json
+bb --config <plane> keys sync --all --check --json
 ```
 
 The remote list output should show the minted key hash/name with `limit` equal
-to the agent policy cap. `bb keys rotate <agent> --json` creates a replacement
-key with the current cap and revokes the old one; `bb keys revoke <agent>
---json` disables the stored child key and clears local key material. Policy-bound
+to the agent policy cap. The sync command refreshes local non-secret usage/cap
+metadata and exits non-zero if a provider-side limit, disabled state, or missing
+key drifts from policy. `bb keys rotate <agent> --json` creates a replacement key
+with the current cap and revokes the old one; `bb keys revoke <agent> --json`
+disables the stored child key and clears local key material. Policy-bound
 OpenRouter agents do not fall back to a shared `OPENROUTER_API_KEY`.
 
 ## In-Flight Cap Enforcement

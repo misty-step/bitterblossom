@@ -105,6 +105,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                     "source": "task.max_cost_per_run_usd plus agent.policy.side_effect_policy",
                 },
             },
+            "provider_key": crate::provider_keys::local_status_for_task(plane, task)?,
             "runs": {
                 "recent": task_runs.len(),
                 "by_state": by_state,
