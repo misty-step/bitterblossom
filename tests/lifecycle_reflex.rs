@@ -215,6 +215,101 @@ fn canary_triage_task_is_report_only_sprite_reflex_contract() {
 }
 
 #[test]
+fn incident_triage_task_is_glm_command_responder_contract() {
+    let plane = Plane::load(&public_plane_root()).unwrap();
+    let task = plane.task("incident-triage").unwrap();
+
+    assert_eq!(task.agent_name, "incident-triager");
+    assert_eq!(task.agent.harness, "command");
+    assert_eq!(task.agent.model, "z-ai/glm-5.2");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("incident-responder"));
+    assert_eq!(
+        task.agent.bin.as_deref(),
+        Some("bitterblossom/scripts/incident-triage-wrapper.sh")
+    );
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
+    assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
+    assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
+    assert_eq!(task.agent.policy.authority.as_deref(), Some("merge"));
+    assert!(task
+        .agent
+        .policy
+        .model_allowlist
+        .contains(&"z-ai/glm-5.2".to_string()));
+    assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(3));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(5.0));
+    assert_eq!(task.spec.budget.timeout_minutes, Some(120));
+    assert_eq!(task.spec.workspace.repos.len(), 4);
+
+    let webhook = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Webhook {
+                route,
+                dedupe_key,
+                filter,
+                action,
+                ..
+            } => Some((route, dedupe_key, filter, action)),
+            TriggerSpec::Manual | TriggerSpec::Cron { .. } => None,
+        })
+        .expect("incident-triage webhook trigger");
+    assert_eq!(webhook.0, "incident-triage");
+    assert_eq!(webhook.1.as_deref(), Some("header:X-Delivery-Id"));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/event"
+            && f.any_of.as_ref().is_some_and(|values| {
+                values.contains(&serde_json::json!("incident.opened"))
+                    && values.contains(&serde_json::json!("incident.updated"))
+            })
+    }));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/incident/service"
+            && f.any_of.as_ref().is_some_and(|values| {
+                values.contains(&serde_json::json!("canary"))
+                    && values.contains(&serde_json::json!("bastion"))
+                    && values.contains(&serde_json::json!("powder"))
+            })
+    }));
+    assert!(
+        webhook.3.is_none(),
+        "incident triage should create only the responder task run"
+    );
+
+    for required in [
+        "GLM",
+        "z-ai/glm-5.2",
+        "misty-step/canary",
+        "misty-step/bastion",
+        "misty-step/powder",
+        "Cerberus",
+        "CI green is mandatory",
+        "maximum 3 fix attempts",
+        "escalation-needed",
+        "auto-deploy-on-merge",
+        "\"bb.incident_triage_response.v1\"",
+        "\"progress_writebacks\"",
+        "\"hypotheses\"",
+        "\"experiments\"",
+        "\"fix_attempts\"",
+        "\"iteration_guard\"",
+        "\"bb_notification\"",
+        "\"artifact_paths\": [\"REPORT.json\"]",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
 fn deploy_prod_verify_task_is_report_only_reflex_contract() {
     let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("deploy-prod-verify").unwrap();

@@ -49,13 +49,13 @@ pub struct LocalSession {
 }
 
 impl LocalSession {
-    fn run_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+    fn run_workload_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
         run_with_timeout(
             &["sh".into(), "-c".into(), script.into()],
             None,
             &self.workspace,
-            &[],
-            false,
+            &self.workload_env()?,
+            self.hermetic,
             timeout,
             RunControl::default(),
         )
@@ -107,7 +107,8 @@ impl Session for LocalSession {
                 url = shell_quote(&repo.url),
                 dest = shell_quote(&dest),
             );
-            let out = self.run_shell(&clone, Duration::from_secs(300))?;
+            let clone = format!("{}\n{clone}", git_auth_setup_script());
+            let out = self.run_workload_shell(&clone, Duration::from_secs(300))?;
             if out.exit_code != 0 {
                 anyhow::bail!("clone {} failed: {}", repo.url, out.stderr.trim());
             }
@@ -187,6 +188,22 @@ fn repo_dir_name(url: &str) -> String {
 
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub(crate) fn git_auth_setup_script() -> &'static str {
+    r#"export GIT_TERMINAL_PROMPT=0
+if [ -n "${GH_TOKEN:-}" ]; then
+  cat > .bb-git-askpass <<'BB_GIT_ASKPASS'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' x-access-token ;;
+  *Password*) printf '%s\n' "$GH_TOKEN" ;;
+  *) printf '\n' ;;
+esac
+BB_GIT_ASKPASS
+  chmod 700 .bb-git-askpass
+  export GIT_ASKPASS="$PWD/.bb-git-askpass"
+fi"#
 }
 
 #[derive(Default)]

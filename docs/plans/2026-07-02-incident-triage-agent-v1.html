@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en" data-ae-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Incident Triage Agent V1</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/misty-step/aesthetic@v2.5.1/aesthetic.css">
+  <style>
+    .plan-wide .ae-bar,
+    .plan-wide .ae-stage { width: min(92rem, 100% - 4rem); }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(24em, 0.74fr); gap: 3em; align-items: end; }
+    .grid-2, .grid-3, .grid-5 { display: grid; gap: 1px; background: var(--ae-line); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .cell { min-width: 0; background: var(--ae-surface); padding: 1.15em 1.3em; }
+    .wash { background: var(--ae-wash); }
+    .phase { display: grid; grid-template-columns: 8em minmax(0, 1fr) minmax(17em, 0.7fr); gap: 1.2em; border-top: 1px solid var(--ae-line); padding-top: 1em; margin-top: 1em; }
+    .phase:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+    .rule { border-top: 1px solid var(--ae-line); margin: 1.35em 0; }
+    @media (max-width: 980px) {
+      .plan-wide .ae-bar,
+      .plan-wide .ae-stage { width: min(100% - 2rem, 92rem); }
+      .hero, .grid-2, .grid-3, .grid-5, .phase { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="ae-screen plan-wide">
+  <header class="ae-bar">
+    <a class="ae-name" href="#">PLAN / INCIDENT TRIAGE AGENT V1</a>
+    <p class="ae-chrome">operator-decided design, 2026-07-02</p>
+  </header>
+
+  <main class="ae-stage ae-stage-scroll">
+    <article class="ae-view">
+      <section class="hero" aria-label="Plan contract">
+        <div>
+          <p class="ae-chrome">LANE triage-build</p>
+          <h1 class="ae-strong">Ship one dedicated Canary incident responder on the production BB plane.</h1>
+          <p class="ae-lede">The runtime task wakes on Canary incident webhooks, uses GLM 5.2 via OpenRouter, writes progress back to Canary, fixes allowed Misty Step repos through PR, asks Cerberus for advisory review, waits for CI, merges, and records the honest V1 stop point.</p>
+        </div>
+        <aside class="ae-panel">
+          <h2 class="ae-h">CHOSEN DESIGN</h2>
+          <p>Command-wrapper task plus model lane prompt. BB owns the iteration guard, environment validation, and artifacts; GLM owns incident reasoning and code work.</p>
+          <div class="rule"></div>
+          <h2 class="ae-h">QUALITY SYSTEM</h2>
+          <p>Live oracle: synthetic low-severity Canary incident triggers a production BB run through hypotheses and Canary writeback.</p>
+          <p>Structural gate: repo contract tests plus <code>./scripts/verify.sh</code>.</p>
+          <p>Critic: fresh artifact-only review if the diff touches runtime code beyond config/card/wrapper.</p>
+        </aside>
+      </section>
+
+      <section class="grid-5" style="margin-top: 2em" aria-label="Executive contract">
+        <article class="cell">
+          <h2 class="ae-h">STANDARDS</h2>
+          <p>Mechanism stays in BB; workload judgment stays in card/wrapper. Secrets travel through declared env only. No broad repo scope.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">ACCEPTANCE</h2>
+          <p>Production plane has task, agent, card, budget, and wrapper. Whitelist is canary, bastion, powder only.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">VERIFY</h2>
+          <p>Run check locally, validate production config, trigger drill, capture BB run id and Canary timeline/writeback evidence.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">COMMUNICATE</h2>
+          <p>Report shipped surfaces, live evidence, V1 scope limits, and friction tickets.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">STOP IF</h2>
+          <p>Production auth is actually unavailable, the model cannot write back, task config fails check, or the incident target is outside the whitelist.</p>
+        </article>
+      </section>
+
+      <section class="grid-3" style="margin-top: 1px" aria-label="State and proof">
+        <article class="cell">
+          <h2 class="ae-h">CURRENT STATE</h2>
+          <p><code>canary-triage</code> exists as report-only. Review agent uses command wrapper patterns with explicit GH token forwarding.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">CHANGE SHAPE</h2>
+          <p>Add <code>incident-triage</code> agent/task/card and wrapper, contract tests, public fixture copy, and production volume config.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">PROOF SURFACE</h2>
+          <p><code>bb check</code>, wrapper tests, production run receipt, Canary timeline annotation/claim events, and final git status.</p>
+        </article>
+      </section>
+
+      <section class="grid-2" style="margin-top: 2em" aria-label="Scope">
+        <article class="cell">
+          <h2 class="ae-h">SCOPE</h2>
+          <p><strong>Goal:</strong> full flow through merge for established auto-merge/CI repos; deploy and prod QA only where auto-deploy on merge is already real.</p>
+          <p><strong>Non-goals:</strong> new paging, broad repo rollout, new Canary APIs, or generic runtime service lookup.</p>
+          <p><strong>Invariant:</strong> maximum three fix attempts per incident, then write escalation-needed and notify BB.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">ANCHORS</h2>
+          <p><code>scripts/cerberus-review-wrapper.sh</code> for command-wrapper token handling.</p>
+          <p><code>docs/operations/README.md</code> for production volume update path.</p>
+          <p><code>docs/agent-inspection-cli.md</code> in Canary for claim and annotation writeback.</p>
+        </article>
+      </section>
+
+      <section class="ae-panel" style="margin-top: 2em" aria-label="Execution">
+        <h2 class="ae-h">EXECUTION PLAN</h2>
+        <div class="phase">
+          <strong class="ae-accent">1 frame</strong>
+          <p>Read live task, wrapper, Canary writeback, and production ops contracts. Confirm model id and production access.</p>
+          <p class="ae-dim">Evidence: docs and live OpenRouter model catalog.</p>
+        </div>
+        <div class="phase">
+          <strong class="ae-accent">2 build</strong>
+          <p>Add task/card/agent/wrapper and tests. Keep BB Rust changes limited to contract support only if needed.</p>
+          <p class="ae-dim">Evidence: diff, focused tests, full gate.</p>
+        </div>
+        <div class="phase">
+          <strong class="ae-accent">3 prod</strong>
+          <p>Copy config to <code>/app/plane</code>, run remote <code>bb check</code> / recover or restart path as required.</p>
+          <p class="ae-dim">Evidence: remote command output without secrets.</p>
+        </div>
+        <div class="phase">
+          <strong class="ae-accent">4 drill</strong>
+          <p>Use Canary drill machinery to emit a low-severity incident and watch BB run through hypotheses plus writeback.</p>
+          <p class="ae-dim">Evidence: BB run id, timeline entries, and residual V1 limits.</p>
+        </div>
+      </section>
+    </article>
+  </main>
+</div>
+</body>
+</html>
