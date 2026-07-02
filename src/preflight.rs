@@ -45,7 +45,7 @@ pub fn run(plane: &Plane, task: Option<&str>, storm: bool) -> Result<Report> {
         (None, false) => bail!("preflight needs a task or --storm"),
         (Some(name), false) => {
             let t = plane.task(name)?;
-            Ok(check_tasks(std::iter::once(t)))
+            Ok(check_tasks(plane, std::iter::once(t)))
         }
         (None, true) => {
             let Some(gate) = &plane.spec.gate else {
@@ -66,17 +66,29 @@ pub fn run(plane: &Plane, task: Option<&str>, storm: bool) -> Result<Report> {
                     })?;
                 members.push(t);
             }
-            Ok(check_tasks(members))
+            Ok(check_tasks(plane, members))
         }
     }
 }
 
-fn check_tasks<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> Report {
+fn check_tasks<'a>(plane: &Plane, tasks: impl IntoIterator<Item = &'a Task>) -> Report {
     let mut tasks_checked = Vec::new();
     let mut findings = Vec::new();
     for t in tasks {
         tasks_checked.push(t.name.clone());
         for name in &t.agent.secrets {
+            match crate::provider_keys::resolve_secret_for_task(plane, t, name) {
+                Ok(Some(_)) => continue,
+                Ok(None) => {}
+                Err(e) => {
+                    findings.push(Finding {
+                        task: t.name.clone(),
+                        kind: "missing_provider_key",
+                        detail: format!("{e:#}"),
+                    });
+                    continue;
+                }
+            }
             if std::env::var(name)
                 .map(|value| value.trim().is_empty())
                 .unwrap_or(true)

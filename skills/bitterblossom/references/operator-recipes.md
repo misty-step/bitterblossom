@@ -75,6 +75,24 @@ Expected side effects: a pushed `bb/build/<slug>` branch and a builder report
 in the run result. The builder never merges. Submit and gate the produced rev
 with the normal submission loop.
 
+## Scoped OpenRouter Keys
+
+For agents with `[policy] provider_key_name` and
+`provider_spend_cap_usd`, mint a child key with a provider-side cap before
+dispatching. The management key must come from the environment by name and must
+not be copied into argv, payloads, cards, or logs:
+
+```bash
+bb --config <plane> keys mint <agent> --json
+bb --config <plane> keys list --remote --json
+```
+
+The remote list output should show the minted key hash/name with `limit` equal
+to the agent policy cap. `bb keys rotate <agent> --json` creates a replacement
+key with the current cap and revokes the old one; `bb keys revoke <agent>
+--json` disables the stored child key and clears local key material. Policy-bound
+OpenRouter agents do not fall back to a shared `OPENROUTER_API_KEY`.
+
 ## Ledger Export
 
 Export run and attempt telemetry as versioned JSONL for downstream analysis:

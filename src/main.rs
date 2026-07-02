@@ -1,7 +1,9 @@
 use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use bitterblossom::{artifacts, budget, dispatch, ledger, mcp, progress, recovery, serve, spec};
+use bitterblossom::{
+    artifacts, budget, dispatch, ledger, mcp, progress, provider_keys, recovery, serve, spec,
+};
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
@@ -58,6 +60,14 @@ enum Command {
     Notify {
         #[command(subcommand)]
         command: NotifyCommand,
+    },
+    /// Scoped provider keys for API-auth agents. OpenRouter management calls
+    /// read `OPENROUTER_MANAGEMENT_KEY` from the environment and never print
+    /// child key material; child keys are stored under the configured plane's
+    /// `.bb/` state and injected per run as the declared provider secret.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
     },
     /// Task inventory and budget parking. `list --json` is the agent-facing
     /// task surface (agent, substrate, triggers, verdict, parked, caps).
@@ -240,6 +250,44 @@ enum NotifyCommand {
         id: i64,
         #[arg(long)]
         reason: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// Mint an OpenRouter child key for one policy-bound agent, or for every
+    /// eligible agent with `--all`. The provider `limit` is the agent policy's
+    /// `provider_spend_cap_usd`.
+    Mint {
+        agent: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rotate one agent's OpenRouter child key: create a replacement with the
+    /// current policy cap, store it plane-side, then revoke the old key.
+    Rotate {
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke one agent's stored OpenRouter child key and remove local key
+    /// material while preserving metadata for audit.
+    Revoke {
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List local plane-side key metadata, or `--remote` to read OpenRouter's
+    /// management list endpoint. No plaintext key material is printed.
+    List {
+        #[arg(long)]
+        remote: bool,
+        #[arg(long)]
+        include_disabled: bool,
         #[arg(long)]
         json: bool,
     },
@@ -677,6 +725,97 @@ fn run() -> Result<()> {
                 }
             }
         },
+        Command::Keys { command } => match command {
+            KeysCommand::Mint { agent, all, json } => {
+                let agents = selected_key_agents(&plane, agent, all)?;
+                let mut keys = Vec::new();
+                for agent in agents {
+                    keys.push(provider_keys::mint_agent(&plane, &agent)?);
+                }
+                let report = provider_keys::KeyOperationReport {
+                    operation: "mint".into(),
+                    keys,
+                };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("minted {} provider key(s)", report.keys.len());
+                    for key in report.keys {
+                        println!(
+                            "  {} {} cap=${:.2} hash={}",
+                            key.agent, key.provider_key_name, key.spend_cap_usd, key.hash
+                        );
+                    }
+                }
+            }
+            KeysCommand::Rotate { agent, json } => {
+                let report = provider_keys::rotate_agent(&plane, &agent)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    for key in report.keys {
+                        println!(
+                            "rotated {} {} cap=${:.2} hash={}",
+                            key.agent, key.provider_key_name, key.spend_cap_usd, key.hash
+                        );
+                    }
+                }
+            }
+            KeysCommand::Revoke { agent, json } => {
+                let key = provider_keys::revoke_agent(&plane, &agent)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&key)?);
+                } else {
+                    println!(
+                        "revoked {} {} hash={}",
+                        key.agent, key.provider_key_name, key.hash
+                    );
+                }
+            }
+            KeysCommand::List {
+                remote,
+                include_disabled,
+                json,
+            } => {
+                if remote {
+                    let rows = provider_keys::list_remote(include_disabled)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                    } else {
+                        for key in rows {
+                            println!(
+                                "{:<36} cap={} remaining={} disabled={} hash={}",
+                                key.name,
+                                key.limit
+                                    .map(|v| format!("${v:.2}"))
+                                    .unwrap_or_else(|| "-".into()),
+                                key.limit_remaining
+                                    .map(|v| format!("${v:.2}"))
+                                    .unwrap_or_else(|| "-".into()),
+                                key.disabled,
+                                key.hash
+                            );
+                        }
+                    }
+                } else {
+                    let rows = provider_keys::list_local(&plane)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                    } else {
+                        for key in rows {
+                            println!(
+                                "{:<24} {:<24} cap=${:.2} active={} hash={}",
+                                key.agent,
+                                key.provider_key_name,
+                                key.spend_cap_usd,
+                                key.secret_available && !key.revoked,
+                                key.hash
+                            );
+                        }
+                    }
+                }
+            }
+        },
         Command::Task { command } => match command {
             TaskCommand::List { json } => {
                 let rows = serve::tasks_view(&plane, &ledger)?;
@@ -925,6 +1064,27 @@ fn start_run_progress(db_path: PathBuf, run_id: String) {
             break;
         }
     });
+}
+
+fn selected_key_agents(plane: &Plane, agent: Option<String>, all: bool) -> Result<Vec<String>> {
+    match (agent, all) {
+        (Some(_), true) => bail!("pass an agent or --all, not both"),
+        (Some(agent), false) => {
+            plane
+                .agents
+                .get(&agent)
+                .with_context(|| format!("unknown agent '{agent}'"))?;
+            Ok(vec![agent])
+        }
+        (None, true) => {
+            let agents = provider_keys::eligible_agents(plane);
+            if agents.is_empty() {
+                bail!("no agents declare policy.provider_key_name");
+            }
+            Ok(agents)
+        }
+        (None, false) => bail!("pass an agent or --all"),
+    }
 }
 
 fn print_run(ledger: &Ledger, run_id: &str, json: bool) -> Result<()> {

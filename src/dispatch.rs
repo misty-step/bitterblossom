@@ -200,9 +200,19 @@ fn attempt_on_host(
 
     let mut secrets = Vec::new();
     for name in &task.agent.secrets {
-        let Ok(value) = std::env::var(name) else {
-            let _ = session.release();
-            return fail(false, format!("secret env var '{name}' not set"));
+        let value = match crate::provider_keys::resolve_secret_for_task(plane, task, name) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                let Ok(value) = std::env::var(name) else {
+                    let _ = session.release();
+                    return fail(false, format!("secret env var '{name}' not set"));
+                };
+                value
+            }
+            Err(e) => {
+                let _ = session.release();
+                return fail(false, format!("provider key: {e:#}"));
+            }
         };
         secrets.push((name.clone(), value));
     }

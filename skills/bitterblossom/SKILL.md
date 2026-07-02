@@ -66,6 +66,7 @@ Read the output for:
 | Inspect run artifacts | `bb --config <plane> artifacts list <run-id> --json` (top-level artifact files); `bb --config <plane> artifacts read <run-id> REPORT.json` (safe text/JSON read, including known nested relative paths; binary, oversized, and traversal paths refused) |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json`; `bb --config <plane> dlq ack <id> --reason <text> --json` to close a superseded DLQ |
 | Handle notification failures | `bb --config <plane> notify list --json`; `bb --config <plane> notify retry --json`; `bb --config <plane> notify ack <id> --reason <text> --json` |
+| Provision scoped OpenRouter child keys | `bb --config <plane> keys mint <agent> --json`; `bb --config <plane> keys rotate <agent> --json`; `bb --config <plane> keys revoke <agent> --json`; `bb --config <plane> keys list --remote --json` |
 | Park or unpark workload dispatch | `bb --config <plane> task park|unpark <task>` |
 | Classify inherited running rows after host restart | `bb --config <plane> recover` |
 | Run webhook/cron plane | `bb --config <plane> serve` |
@@ -135,8 +136,9 @@ another cwd.
   pre-execute dead letter without replaying it, recording reason + timestamp.
   Acknowledged DLQs cannot be replayed; `bb status --json` no longer counts
   them as open operator work.
-- `bb preflight <task> | --storm --json` checks missing declared secrets and
-  unspawnable `command`-harness binaries before dispatch creates run rows.
+- `bb preflight <task> | --storm --json` checks missing declared secrets,
+  missing policy-bound provider keys, and unspawnable `command`-harness
+  binaries before dispatch creates run rows.
 
 ## Serving
 
