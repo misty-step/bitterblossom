@@ -30,7 +30,7 @@ without adding semantic workflow logic to the Rust spine.
    first reflex; budget-free (the `gate.blocked` decision already exists).
 2. [x] Add the deploy/prod verifier event payload contract and manual dogfood
    fixture.
-3. Decide whether the lifecycle orchestrator is report-only or can create runs
+3. [x] Decide whether the lifecycle orchestrator is report-only or can create runs
    with a narrow plane token.
 4. Add status-surface joins if operators still need to correlate gate state,
    parked tasks, DLQs, and lifecycle recommendations manually.
@@ -58,3 +58,11 @@ payload contracts, and reference docs.
   and report fields, plus contract tests for the event fixture.
 - Verification:
   `cargo test --test deploy_verifier_contract --test lifecycle_reflex --test task_card_contract`.
+
+### 2026-07-02 lifecycle orchestrator authority
+
+- Decided the lifecycle orchestrator remains report-only: it may write exact
+  follow-up `bb run ... --payload-file ...` commands and run-plan artifacts, but
+  does not receive a plane mutation token.
+- Documented the allowed report shape, red lines, and revisit criteria in
+  `docs/lifecycle-orchestrator-authority.md`.
