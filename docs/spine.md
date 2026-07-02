@@ -320,8 +320,9 @@ The ledger is the system of record; everything reads from it:
 - `GET /api/runs[?task=&state=]`, `GET /api/runs/<id>` (run + attempts +
   events), `GET /api/dlq`, `GET /api/notify`, `GET /api/tasks`,
   `GET /api/submissions`
-  (submissions + verdicts + rejection reasons) — the agent-facing read
-  API, same shapes as the `--json` CLI.
+  (submissions + top-level `id/change_key/rev/round/state` summary fields +
+  nested submission details, verdicts, and rejection reasons) — the
+  agent-facing read API, same shapes as the `--json` CLI.
 - The required v1 read-surface fields are pinned in
   `tests/fixtures/contracts/bb.agent_read_surfaces.v1.schema.json` and
   validated against live CLI output plus HTTP API mirrors by
@@ -395,14 +396,17 @@ gate arithmetic); what a reviewer looks for lives in cards.
 submission: `open → clear | blocked | escalated | abandoned`, at most one
 non-terminal submission per change key (CAS-enforced). `bb submit list --json`
 returns recent submissions (default 20, `--limit` clamped to 1..=200 like
-`/api/submissions`) with verdict rows and rejection reasons, giving cron
-supervisors and agents a typed way to discover active or stale gate work
-without querying SQLite or guessing receipt shapes. The change key and rev are
-opaque strings (branch + SHA today; jj change IDs later, zero spine change).
-Round numbering is plane-owned: reopening after `blocked` increments the
-round and snapshots the prior gate report — the driver cannot soften or omit
-prior findings; verdict tasks receive the canonical report as `REPORT.json`
-next to `EVENT.json`.
+`/api/submissions`) with top-level `id`, `change_key`, `rev`, `round`, and
+`state` fields plus the nested `submission` details, verdict rows, and rejection
+reasons, giving cron supervisors and agents a typed way to discover active or
+stale gate work without querying SQLite or guessing receipt shapes. Summary
+recipe: `bb submit list --json | jq '.[] | {id, change_key, rev, state, round}'`
+(same row shape from `/api/submissions`). The change key and rev are opaque
+strings (branch + SHA today; jj change IDs later, zero spine change). Round
+numbering is plane-owned: reopening after `blocked` increments the round and
+snapshots the prior gate report — the driver cannot soften or omit prior
+findings; verdict tasks receive the canonical report as `REPORT.json` next to
+`EVENT.json`.
 
 **Verdict tasks.** A task with `verdict = "<kind>"` in task.toml is a
 storm member. Its payload is `{"submission": "<id>", ...}` and its parsed

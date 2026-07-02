@@ -210,6 +210,11 @@ fn list_submissions_includes_verdict_rows_for_gardener_api() {
 
     let listed = ledger.list_submissions(10).unwrap();
     assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, sub.id);
+    assert_eq!(listed[0].change_key, "feat/x");
+    assert_eq!(listed[0].rev, "sha1");
+    assert_eq!(listed[0].round, 1);
+    assert_eq!(listed[0].state, "open");
     assert_eq!(listed[0].submission.id, sub.id);
     assert_eq!(listed[0].verdicts.len(), 1);
     assert_eq!(listed[0].verdicts[0].kind, "correctness");
