@@ -6,10 +6,13 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::Mutex;
 
 use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 const CLAUDE_STUB: &str = r#"#!/bin/sh
 # Claude-shaped result object on stdout; ignores its arguments.
@@ -277,6 +280,7 @@ fn timeout_kills_the_harness_and_fails_the_run() {
 
 #[test]
 fn hermetic_exec_passes_secrets_but_never_the_planes_env() {
+    let _guard = ENV_LOCK.lock().unwrap();
     // The stub echoes back what it sees: a plane env var that must NOT
     // cross, the declared secret that must, and HOME which must be
     // workspace-local for api-auth (hermetic) agents.
@@ -325,6 +329,87 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
         result.contains("workspace/.home"),
         "HOME not hermetic: {result}"
     );
+}
+
+#[test]
+fn workspace_clone_can_use_declared_gh_token_without_url_credentials() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    const COMMAND_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"artifact_paths":["REPORT.json"]}\n' > REPORT.json
+printf '{"schema_version":"bb.command_result.v1","result":"ok"}\n'
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let fake_bin = root.join("bin");
+    fs::create_dir(&fake_bin).unwrap();
+    let git_log = root.join("git-auth.log");
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  clone)
+    dest=""
+    for arg in "$@"; do dest="$arg"; done
+    user="$("$GIT_ASKPASS" "Username for https://github.com")"
+    pass="$("$GIT_ASKPASS" "Password for https://github.com")"
+    printf '%s|%s|%s\n' "$user" "$pass" "${GIT_TERMINAL_PROMPT:-}" >> "$BB_GIT_AUTH_LOG"
+    mkdir -p "$dest/.git"
+    ;;
+  -C)
+    ;;
+  *)
+    printf 'unexpected git invocation: %s\n' "$*" >&2
+    exit 9
+    ;;
+esac
+"#,
+    );
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let old_gh_token = std::env::var_os("GH_TOKEN");
+    let old_git_auth_log = std::env::var_os("BB_GIT_AUTH_LOG");
+    std::env::set_var("PATH", format!("{}:{old_path}", fake_bin.display()));
+    std::env::set_var("GH_TOKEN", "test-gh-token");
+    std::env::set_var("BB_GIT_AUTH_LOG", &git_log);
+
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub_path = root.join("stub-command.sh");
+    write_executable(&stub_path, COMMAND_STUB);
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"command\"\nmodel = \"\"\nbin = \"{}\"\nsecrets = [\"GH_TOKEN\", \"BB_GIT_AUTH_LOG\"]\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\nrequired_artifacts = [\"REPORT.json\"]\n[workspace]\nrepos = [{ url = \"https://github.com/misty-step/bastion.git\", ref = \"master\" }]\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    std::env::set_var("PATH", old_path);
+    match old_gh_token {
+        Some(value) => std::env::set_var("GH_TOKEN", value),
+        None => std::env::remove_var("GH_TOKEN"),
+    }
+    match old_git_auth_log {
+        Some(value) => std::env::set_var("BB_GIT_AUTH_LOG", value),
+        None => std::env::remove_var("BB_GIT_AUTH_LOG"),
+    }
+
+    assert_eq!(run.state, "success", "{:?}", run.state_reason);
+    let log = fs::read_to_string(git_log).unwrap();
+    assert_eq!(log.trim(), "x-access-token|test-gh-token|0");
 }
 
 #[test]

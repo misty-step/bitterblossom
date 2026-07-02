@@ -1,0 +1,35 @@
+agent = "incident-triager"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/incident-triage-1"
+repos = [
+  { url = "https://github.com/example-org/canary-example.git", ref = "main" },
+  { url = "https://github.com/example-org/bastion-example.git", ref = "main" },
+  { url = "https://github.com/example-org/powder-example.git", ref = "main" },
+  { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 120
+max_runs_per_day = 3
+max_cost_per_run_usd = 5.00
+output_bytes_cap = 120000
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "incident-triage"
+secret_env = "BB_HOOK_INCIDENT_TRIAGE"
+dedupe_key = "header:X-Delivery-Id"
+
+[[trigger.filter]]
+pointer = "/event"
+any_of = ["incident.opened", "incident.updated"]
+
+[[trigger.filter]]
+pointer = "/incident/service"
+any_of = ["canary", "bastion", "powder"]

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::local::{run_with_timeout, shell_quote, RunControl};
+use super::local::{git_auth_setup_script, run_with_timeout, shell_quote, RunControl};
 use super::{
     ExecMonitor, ExecResult, ProbeResult, Session, Substrate, WorkspacePlan, CARD_FILENAME,
 };
@@ -129,6 +129,20 @@ impl SpriteSession {
             None,
         )
     }
+
+    fn remote_workload_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+        let exports: String = self
+            .secrets
+            .iter()
+            .map(|(k, v)| format!("export {k}={}\n", shell_quote(v)))
+            .collect();
+        self.sprite_exec(
+            &["setsid".into(), "-w".into(), "sh".into()],
+            Some(&format!("{exports}{script}")),
+            timeout,
+            None,
+        )
+    }
 }
 
 impl Session for SpriteSession {
@@ -174,18 +188,20 @@ impl Session for SpriteSession {
             let url = shell_quote(&repo.url);
             let r#ref = shell_quote(&repo.r#ref);
             let script = format!(
-                "if [ -d {dest}/.git ]; then \
+                "{git_auth}\n\
+                 if [ -d {dest}/.git ]; then \
                    git -C {dest} fetch origin {ref_} --depth 1 && \
                    git -C {dest} checkout -q FETCH_HEAD && \
                    git -C {dest} reset --hard && git -C {dest} clean -fd; \
                  else \
                    git clone --depth 1 --branch {ref_} {url} {dest}; \
                  fi",
+                git_auth = git_auth_setup_script(),
                 dest = dest,
                 url = url,
                 ref_ = r#ref,
             );
-            let out = self.remote_shell(&script, Duration::from_secs(600))?;
+            let out = self.remote_workload_shell(&script, Duration::from_secs(600))?;
             if out.exit_code != 0 {
                 bail!("repo sync {} failed: {}", repo.url, out.stderr.trim());
             }

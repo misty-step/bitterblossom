@@ -1,0 +1,21 @@
+version = 1
+role = "incident-responder"
+harness = "command"
+model = "z-ai/glm-5.2"
+auth = "api"
+bin = "bitterblossom/scripts/incident-triage-wrapper.sh"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "CANARY_ENDPOINT", "CANARY_API_KEY"]
+skills = [
+  "harness-kit/diagnose#incident-triage",
+  "harness-kit/deliver#builder",
+  "harness-kit/code-review#pr-review",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "merge"
+model_allowlist = ["z-ai/glm-5.2"]
+trigger_bindings = ["manual", "webhook"]
+output_bytes_cap = 120000
+wall_clock_minutes = 120
+side_effect_policy = "quarantine"
