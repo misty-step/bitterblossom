@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 const CANARY_INCIDENT_EVENT_SCHEMA_VERSION: &str = "canary.incident_event.v1";
+const CANARY_TRIAGE_REPORT_SCHEMA_VERSION: &str = "bb.canary_incident_response.report.v1";
 
 #[test]
 fn canary_incident_event_fixture_matches_pinned_contract() {
@@ -53,6 +54,15 @@ fn canary_incident_event_contract_rejects_unknown_major_version() {
     );
 }
 
+#[test]
+fn canary_triage_report_fixture_is_report_only_and_actionable() {
+    let report: Value = serde_json::from_str(include_str!(
+        "fixtures/contracts/bb.canary_triage_report.v1.valid.json"
+    ))
+    .unwrap();
+    assert_canary_triage_report(&report).unwrap();
+}
+
 fn assert_schema_requires(schema: &Value, fields: &[&str]) {
     let required = schema["required"].as_array().unwrap();
     for field in fields {
@@ -93,6 +103,55 @@ fn assert_canary_incident_event(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn assert_canary_triage_report(value: &Value) -> Result<(), String> {
+    let schema = required_string(value, "schema")?;
+    if schema != CANARY_TRIAGE_REPORT_SCHEMA_VERSION {
+        return Err(format!("unsupported schema {schema}"));
+    }
+    let subject = required_object(value, "canary_subject")?;
+    required_string_at(subject, "id", "canary_subject.id")?;
+    required_string_at(subject, "service", "canary_subject.service")?;
+    required_string_at(subject, "environment", "canary_subject.environment")?;
+    required_string_at(subject, "severity", "canary_subject.severity")?;
+    required_string_at(subject, "fingerprint", "canary_subject.fingerprint")?;
+    required_string_at(subject, "observed_at", "canary_subject.observed_at")?;
+    required_string(value, "delivery_id")?;
+    required_string(value, "bb_run_id")?;
+    required_string(value, "service")?;
+
+    let repo = required_object(value, "repo")?;
+    required_string_at(repo, "slug", "repo.slug")?;
+    required_string_at(repo, "mapping_source", "repo.mapping_source")?;
+    expect_bool(repo, "auto_merge", "repo.auto_merge", false)?;
+    expect_bool(repo, "auto_deploy", "repo.auto_deploy", false)?;
+
+    require_nonempty_array(value, "evidence")?;
+    require_nonempty_array(value, "hypotheses")?;
+    require_nonempty_array(value, "recommended_actions")?;
+    require_nonempty_array(value, "residual_uncertainty")?;
+
+    let constraints = required_object(value, "constraints")?;
+    expect_bool(constraints, "report_only", "constraints.report_only", true)?;
+    match constraints.get("mutations_performed") {
+        Some(Value::Array(items)) if items.is_empty() => Ok(()),
+        Some(other) => Err(format!(
+            "constraints.mutations_performed must be empty array, got {other}"
+        )),
+        None => Err("missing constraints.mutations_performed".into()),
+    }?;
+
+    let actions = value["recommended_actions"].as_array().unwrap();
+    if !actions.iter().any(|action| {
+        action
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| command.contains("bb --config plane run canary-triage"))
+    }) {
+        return Err("recommended_actions must include a concrete BB replay command".into());
+    }
+    Ok(())
+}
+
 fn required_object<'a>(value: &'a Value, key: &str) -> Result<&'a Value, String> {
     match value.get(key) {
         Some(value @ Value::Object(_)) => Ok(value),
@@ -117,5 +176,21 @@ fn expect_string(value: &Value, key: &str, label: &str, expected: &str) -> Resul
         Ok(())
     } else {
         Err(format!("expected {label}={expected}, got {actual}"))
+    }
+}
+
+fn expect_bool(value: &Value, key: &str, label: &str, expected: bool) -> Result<(), String> {
+    match value.get(key).and_then(Value::as_bool) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(format!("expected {label}={expected}, got {actual}")),
+        None => Err(format!("missing bool {label}")),
+    }
+}
+
+fn require_nonempty_array(value: &Value, key: &str) -> Result<(), String> {
+    match value.get(key) {
+        Some(Value::Array(items)) if !items.is_empty() => Ok(()),
+        Some(other) => Err(format!("{key} must be a non-empty array, got {other}")),
+        None => Err(format!("missing array {key}")),
     }
 }

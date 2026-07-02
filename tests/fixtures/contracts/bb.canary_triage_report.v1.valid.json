@@ -1,0 +1,64 @@
+{
+  "schema": "bb.canary_incident_response.report.v1",
+  "canary_subject": {
+    "id": "INC-example123",
+    "service": "canary",
+    "environment": "production",
+    "severity": "medium",
+    "fingerprint": "group-incident-a",
+    "observed_at": "2026-07-01T00:00:00Z"
+  },
+  "delivery_id": "delivery-example-001",
+  "bb_run_id": "run-example",
+  "service": "canary",
+  "repo": {
+    "slug": "misty-step/canary",
+    "mapping_source": "canary-services.toml",
+    "auto_merge": false,
+    "auto_deploy": false
+  },
+  "evidence": [
+    {
+      "source": "canary.timeline",
+      "url": "/api/v1/timeline?service=canary&window=1h",
+      "summary": "Error group group-incident-a crossed the medium threshold at 2026-07-01T00:00:00Z."
+    },
+    {
+      "source": "canary.incident",
+      "url": "/api/v1/incidents/INC-example123",
+      "summary": "Incident INC-example123 is still investigating for service canary."
+    }
+  ],
+  "hypotheses": [
+    {
+      "confidence": "medium",
+      "summary": "The incident may be tied to Canary incident aggregation or timeline replay rather than a target service outage.",
+      "owner_files": [
+        "canary-store/src/incidents.rs"
+      ],
+      "services": [
+        "canary"
+      ]
+    }
+  ],
+  "recommended_actions": [
+    {
+      "kind": "bb_run",
+      "command": "bb --config plane run canary-triage --payload-file incident.json --json",
+      "why": "Replay the incident after the operator verifies the service mapping and opens a low-risk dogfood window."
+    },
+    {
+      "kind": "human_review",
+      "command": "Inspect /api/v1/incidents/INC-example123 and /api/v1/timeline?service=canary&window=1h",
+      "why": "Confirm whether the timeline evidence is sufficient before granting remediation authority."
+    }
+  ],
+  "constraints": {
+    "report_only": true,
+    "mutations_performed": []
+  },
+  "residual_uncertainty": [
+    "Fixture report did not query a live Canary endpoint.",
+    "No remediation claim, annotation, issue, branch, PR, deploy, task park, or run resolution was created."
+  ]
+}
