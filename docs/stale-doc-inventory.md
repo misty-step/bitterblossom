@@ -58,15 +58,15 @@ a later slice moves a current-looking document behind an archive boundary.
 
 These files live outside `docs/archive/` and still mention Go/Python/Elixir or
 conductor-era contracts. Historical ADRs now carry explicit supersession
-banners pointing to ADR 005 and `docs/spine.md`; walkthroughs remain for a
-later archive-boundary slice:
+banners pointing to ADR 005 and `docs/spine.md`; `docs/walkthroughs/README.md`
+marks walkthrough prose as historical evidence, not current operator guidance:
 
 - `docs/adr/001-claude-code-canonical-harness.md`
 - `docs/adr/002-architecture-minimalism.md`
 - `docs/adr/003-conductor-control-plane.md`
 - `docs/adr/004-bounded-review-governance.md`
 - `docs/adr/004-elixir-conductor-architecture.md`
-- `docs/walkthroughs/*.md` (still current-looking; handle in child 3)
+- `docs/walkthroughs/*.md`
 
 The current ADR exception is `docs/adr/005-rust-event-plane.md`, which is the
 current superseding record and intentionally names prior systems as negative
@@ -91,7 +91,7 @@ the live walkthrough directory.
 
 - Child 2: explicit superseded banners on historical ADRs landed.
 - Child 3: walkthrough terminal transcript duplicates archived.
-- Child 4: re-audit live CLI snippets after the ADR/walkthrough move.
-- Child 5: extend `tests/cli_contract_docs.rs` with path-aware stale-command
-  checks for current docs only, avoiding archive, backlog-history, and test
-  fixtures.
+- Child 4: live CLI snippet re-audit landed in `tests/cli_contract_docs.rs`.
+- Child 5: path-aware stale-command regression landed in
+  `tests/cli_contract_docs.rs`, avoiding archive, backlog-history, walkthrough,
+  ADR-history, and test-fixture contexts.
