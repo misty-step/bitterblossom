@@ -72,3 +72,17 @@ Evidence:
   still require operator inspection and `bb runs resolve`.
 - Remaining 051 scope: full probe state-machine spec plus broader
   missing/probe-command-failure/stale fixture coverage.
+
+### 2026-07-02 structured probe contract slice
+
+- Added structured `recover --json` fields: `probe_state`, `probe_reason`,
+  `lease_disposition`, and `operator_action`, while preserving the legacy
+  human `probe` string.
+- Documented the local/sprite probe state machine in `docs/spine.md`:
+  `alive` retains a running lease, `dead` releases the lease but still requires
+  side-effect resolution, and `unknown` retains the lease because the plane has
+  not proven the process is dead.
+- Added recovery coverage for missing local pid markers and sprite probe
+  command failure. Malformed marker coverage already existed; the new tests
+  prove both missing/corrupt local evidence and failed remote probing remain
+  operator-visible unknowns rather than false-dead recovery.

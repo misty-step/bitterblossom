@@ -319,11 +319,13 @@ Resolve `awaiting_recovery` only after inspecting side effects:
 bb --config <plane> runs resolve <run-id> success --reason "<why>"
 ```
 
-`recover --json` reports `attempt_phase`, `probe`, and `disposition` for each
-inherited run. `probe: "unknown: ..."` means the substrate could not prove the
-agent process is dead; inspect `bb runs show <run-id> --json` for the
-`boot_probe` event and leave the host lease in place until side effects are
-understood. Missing or malformed pidfiles are unknown, not dead.
+`recover --json` reports `attempt_phase`, legacy human `probe`,
+`probe_state`, `probe_reason`, `lease_disposition`, `operator_action`, and
+`disposition` for each inherited run. `probe_state: "unknown"` means the
+substrate could not prove the agent process is dead; inspect
+`bb runs show <run-id> --json` for the `boot_probe` event and leave the host
+lease in place until side effects are understood. Missing or malformed
+pidfiles and probe command failures are unknown, not dead.
 
 `bb status --json` is the ongoing recovery queue. Fresh recovery rows suggest
 `resolve_after_side_effect_inspection`; after one hour the action becomes

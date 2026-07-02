@@ -90,6 +90,8 @@ fn executing_inherited_run_with_dead_process_awaits_recovery() {
     let reports = recover_inherited_runs(&plane, &mut ledger).unwrap();
     assert_eq!(reports[0].disposition, "awaiting_recovery");
     assert_eq!(reports[0].probe.as_deref(), Some("dead"));
+    assert_eq!(reports[0].probe_state.as_deref(), Some("dead"));
+    assert_eq!(reports[0].lease_disposition.as_deref(), Some("released"));
     assert_eq!(ledger.run_state(&run_id).unwrap(), "awaiting_recovery");
     // No mechanical replay path: executing attempts never dead-letter.
     assert!(ledger.list_dead_letters().unwrap().is_empty());
@@ -127,6 +129,13 @@ fn unknown_probe_evidence_is_visible_for_operator_resolution() {
     );
     let reports: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
     assert_eq!(reports[0]["disposition"], "awaiting_recovery");
+    assert_eq!(reports[0]["probe_state"], "unknown");
+    assert_eq!(reports[0]["probe_reason"], "unparseable pidfile");
+    assert_eq!(reports[0]["lease_disposition"], "retained");
+    assert_eq!(
+        reports[0]["operator_action"],
+        "inspect_side_effects_then_resolve"
+    );
     assert!(reports[0]["probe"]
         .as_str()
         .unwrap()
@@ -157,6 +166,35 @@ fn unknown_probe_evidence_is_visible_for_operator_resolution() {
 }
 
 #[test]
+fn missing_probe_marker_is_unknown_and_retains_host_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = running_run(&mut ledger, "demo");
+    let attempt = ledger
+        .create_attempt(&run_id, 1, "a", 1, "claude", "m")
+        .unwrap();
+    ledger.set_attempt_phase(attempt, "executing").unwrap();
+    fs::create_dir_all(attempt_dir(&plane, &run_id, 1)).unwrap();
+    assert!(ledger.try_acquire_host_lease("local", &run_id).unwrap());
+
+    let reports = recover_inherited_runs(&plane, &mut ledger).unwrap();
+    assert_eq!(reports[0].disposition, "awaiting_recovery");
+    assert_eq!(reports[0].probe_state.as_deref(), Some("unknown"));
+    assert!(reports[0]
+        .probe_reason
+        .as_deref()
+        .unwrap()
+        .contains("no pidfile"));
+    assert_eq!(reports[0].lease_disposition.as_deref(), Some("retained"));
+    assert_eq!(
+        ledger.lease_holder("local").unwrap().as_deref(),
+        Some(run_id.as_str())
+    );
+}
+
+#[test]
 fn executing_inherited_run_with_live_process_stays_running() {
     let dir = tempfile::tempdir().unwrap();
     let plane = make_plane(dir.path());
@@ -175,6 +213,8 @@ fn executing_inherited_run_with_live_process_stays_running() {
 
     let reports = recover_inherited_runs(&plane, &mut ledger).unwrap();
     assert_eq!(reports[0].disposition, "still_running");
+    assert_eq!(reports[0].probe_state.as_deref(), Some("alive"));
+    assert_eq!(reports[0].lease_disposition.as_deref(), Some("retained"));
     assert_eq!(ledger.run_state(&run_id).unwrap(), "running");
     // The host is genuinely busy: the lease must survive recovery.
     assert_eq!(

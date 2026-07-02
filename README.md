@@ -89,7 +89,9 @@ WebSocket exec.
 - Hosts never run two tasks at once (durable lease on substrate resource
   identity). Only pre-execute failures retry mechanically; everything
   after has side effects and is operator-resolved. Boot recovery probes
-  the host instead of blindly orphaning inherited runs.
+  the host instead of blindly orphaning inherited runs; `recover --json`
+  separates `probe_state`, `probe_reason`, lease disposition, and the safe
+  operator action.
 - Budgets are tiered honestly: runs/day and the global daily ceiling are
   enforced pre-dispatch, streaming harness usage is metered in-flight against
   `max_cost_per_run_usd`, and a breach follows the agent side-effect policy

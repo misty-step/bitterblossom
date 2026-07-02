@@ -142,6 +142,12 @@ Rows in `awaiting_recovery` require side-effect inspection before resolution:
 ./target/debug/bb --config "$BB_RUNTIME_PLANE" runs resolve <run-id> success --reason "<side effects inspected>"
 ```
 
+In `recover --json`, treat `probe_state` as the machine-readable recovery
+contract. `alive` keeps the run `running` and retains the lease. `dead` moves
+to `awaiting_recovery` and releases the lease. `unknown` moves to
+`awaiting_recovery` but retains the lease; read `probe_reason` and the
+`boot_probe` event before deciding whether the external side effect completed.
+
 Do not replay an at/after-execute run just because it is inconvenient. Only
 pre-execute dead letters are mechanically replayable.
 
