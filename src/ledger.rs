@@ -198,6 +198,7 @@ pub struct Ledger {
 }
 
 const SCHEMA: &str = include_str!("schema.sql");
+pub const LEDGER_SCHEMA_VERSION: i64 = 1;
 
 impl Ledger {
     pub fn open(path: &Path) -> Result<Self> {
@@ -209,6 +210,12 @@ impl Ledger {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000_i64)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        let existing_version = ledger_schema_version(&conn)?;
+        if existing_version > LEDGER_SCHEMA_VERSION {
+            bail!(
+                "ledger schema version {existing_version} is newer than this bb binary supports ({LEDGER_SCHEMA_VERSION}); roll forward or restore a compatible backup"
+            );
+        }
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "runs", "config_source_repo", "TEXT")?;
         ensure_column(&conn, "runs", "config_source_ref", "TEXT")?;
@@ -220,7 +227,12 @@ impl Ledger {
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
             [],
         )?;
+        conn.pragma_update(None, "user_version", LEDGER_SCHEMA_VERSION)?;
         Ok(Self { conn })
+    }
+
+    pub fn schema_version(&self) -> Result<i64> {
+        ledger_schema_version(&self.conn)
     }
 
     pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
@@ -1170,6 +1182,10 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Resu
         conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
     }
     Ok(())
+}
+
+fn ledger_schema_version(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
 }
 
 pub struct IngressRequest<'a> {

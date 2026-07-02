@@ -151,11 +151,36 @@ unprotected work.
 
 ## Rollback
 
-List recent releases, pick the previous known-good version, then rollback:
+Every `bb` binary stamps the SQLite ledger with `PRAGMA user_version` and
+refuses to open a ledger whose `ledger.schema_version` is newer than the binary
+supports. That is the old-binary/new-schema rollback contract: additive schema
+changes are rollback-safe only while the older binary supports the same ledger
+version; otherwise the safe moves are roll forward or restore a compatible
+backup. Do not edit `PRAGMA user_version` to force an old binary to write into a
+newer ledger.
+
+Before rolling back, capture the current app and ledger version:
+
+```sh
+flyctl releases --app "$BB_FLY_APP"
+{
+  printf '%s\n' 'fail'
+  printf '%s\n' 'silent'
+  printf '%s\n' 'show-error'
+  printf 'url = "%s/api/status"\n' "$BB_URL"
+  printf 'header = "Authorization: Bearer %s"\n' "$BB_API_TOKEN"
+} | curl --config -
+```
+
+If `ledger.schema_version` is newer than the rollback target supports, restore
+a backup from before that migration or roll forward to a binary that supports
+the new schema. If the schema is compatible, pick the previous known-good
+release, rollback, recover inherited runs, and run the smoke:
 
 ```sh
 flyctl releases --app "$BB_FLY_APP"
 flyctl releases rollback --app "$BB_FLY_APP" --yes
+flyctl ssh console --app "$BB_FLY_APP" --command 'BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json'
 BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh --remote
 ```
 
@@ -166,6 +191,10 @@ new work and inspect machine logs:
 flyctl logs --app "$BB_FLY_APP"
 flyctl status --app "$BB_FLY_APP"
 ```
+
+If logs contain `newer than this bb binary supports`, the rollback binary is
+correctly refusing a newer ledger. Roll forward or restore a compatible backup;
+do not force the schema version downward.
 
 ## Restart Recovery
 

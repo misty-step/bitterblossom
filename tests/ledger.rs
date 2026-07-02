@@ -1,4 +1,6 @@
-use bitterblossom::ledger::{phase_reached, IngressOutcome, IngressRequest, Ledger};
+use bitterblossom::ledger::{
+    phase_reached, IngressOutcome, IngressRequest, Ledger, LEDGER_SCHEMA_VERSION,
+};
 
 fn open_ledger() -> (tempfile::TempDir, Ledger) {
     let dir = tempfile::tempdir().unwrap();
@@ -222,4 +224,30 @@ fn attempt_phase_ordering() {
     assert!(phase_reached("released", "executing"));
     assert!(!phase_reached("prepared", "executing"));
     assert!(!phase_reached("bogus", "executing"));
+}
+
+#[test]
+fn open_stamps_current_schema_version() {
+    let (_dir, ledger) = open_ledger();
+    assert_eq!(ledger.schema_version().unwrap(), LEDGER_SCHEMA_VERSION);
+}
+
+#[test]
+fn open_refuses_newer_schema_before_running_migrations() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.pragma_update(None, "user_version", LEDGER_SCHEMA_VERSION + 1)
+        .unwrap();
+    drop(conn);
+
+    let err = match Ledger::open(&db) {
+        Ok(_) => panic!("newer schema should be refused"),
+        Err(err) => err.to_string(),
+    };
+    assert!(err.contains("newer than this bb binary supports"), "{err}");
+    assert!(
+        err.contains("roll forward or restore a compatible backup"),
+        "{err}"
+    );
 }

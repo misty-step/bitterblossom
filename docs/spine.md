@@ -302,6 +302,11 @@ Deployment contract:
   missing, starts `litestream replicate -config`, waits for the first
   `litestream sync -wait`, and writes the heartbeat only after sync confirms the
   volume-backed ledger has replicated.
+- Schema rollback: `bb` stamps SQLite `PRAGMA user_version` as
+  `ledger.schema_version` in `bb status --json`/`bb check --json` and refuses to
+  open a ledger newer than the binary supports. Rollbacks across a schema bump
+  must roll forward or restore a compatible backup; never force `user_version`
+  downward.
 - Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
   the pinned Linux Sprite CLI plus pinned Litestream; it must not `COPY plane`.
   [fly.toml](../fly.toml) sets `BB_PLANE_DIR`, `BB_SPRITE_BIN`, and the

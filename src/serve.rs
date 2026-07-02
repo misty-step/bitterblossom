@@ -9,7 +9,7 @@ use cron::Schedule;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ingress;
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
 use crate::spec::{Plane, TriggerSpec};
 use crate::{dispatch, notify, progress};
@@ -712,6 +712,10 @@ pub fn check_view(plane: &Plane, ledger: &Ledger) -> Result<serde_json::Value> {
     Ok(serde_json::json!({
         "root": plane.root,
         "db_path": plane.db_path(),
+        "ledger": {
+            "schema_version": ledger.schema_version()?,
+            "supported_schema_version": LEDGER_SCHEMA_VERSION,
+        },
         "backup": &plane.spec.backup,
         "agents": plane.agents.keys().collect::<Vec<_>>(),
         "agent_policy": agent_policy,

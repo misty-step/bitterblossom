@@ -17,7 +17,7 @@ it must be a drilled incident, not silent amnesia.
 - [x] A restore drill recreates a plane ledger from backup into a fresh volume or
       local fixture and proves `bb check`, `bb status --json`, `bb runs list`, and
       `bb gate` still work.
-- [ ] Deploy/rollback docs cover old-binary/new-schema behavior and the recovery
+- [x] Deploy/rollback docs cover old-binary/new-schema behavior and the recovery
       command sequence after a rollback.
 - [x] CI or a local drill verifies the backup configuration without needing
       production secrets.
@@ -28,9 +28,9 @@ it must be a drilled incident, not silent amnesia.
 - [x] Litestream config, container wiring, and Fly volume path integration.
 - [x] Backup health/readiness output for last successful replicate timestamp.
 - [x] Restore drill script against a copied or fixture SQLite DB.
-- [ ] Schema migration/rollback contract for forward-only and rollback-safe
+- [x] Schema migration/rollback contract for forward-only and rollback-safe
       releases.
-- [ ] Operations docs update with exact backup, restore, and rollback commands.
+- [x] Operations docs update with exact backup, restore, and rollback commands.
 
 ## Notes
 
@@ -64,3 +64,12 @@ Litestream dies. Added a fake-Litestream Rust integration test that proves
 env-name-only config generation, no secret leakage, and heartbeat creation
 without production credentials. Remaining: schema migration/rollback contract
 for old-binary/new-schema releases.
+
+2026-07-02 schema rollback slice: `bb` now stamps the SQLite ledger with
+`PRAGMA user_version = 1`, exposes `ledger.schema_version` and
+`ledger.supported_schema_version` in `bb status --json` and `bb check --json`,
+and refuses to open a ledger whose user_version is newer than the binary
+supports before running migrations. The rollback docs now require checking that
+schema version before rollback, running `bb recover --json` after rollback, and
+rolling forward or restoring a compatible backup instead of forcing
+`PRAGMA user_version` downward. This completes the 090 oracle.
