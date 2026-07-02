@@ -17,13 +17,13 @@ loops before they consume budget or authority.
 - [x] Agent budget lines map to provider-side spend caps where supported, and BB
       status shows configured cap, reserved spend, spent today, and enforcement
       mode.
-- [ ] Iteration/turn caps, max wall-clock, max output bytes, and max tool actions
+- [x] Iteration/turn caps, max wall-clock, max output bytes, and max tool actions
       are enforceable per agent/task before a run starts.
 - [x] In-flight overrun handling can kill or quarantine a run according to a
       configured side-effect policy, then records a recovery action.
 - [x] Per-agent policy is visible in `bb check --json`, `bb task list --json`,
       and `/api/tasks`.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Children
 
@@ -33,7 +33,7 @@ loops before they consume budget or authority.
 - [ ] Provider cap sync and drift check.
 - [x] In-flight kill/quarantine mechanism for overrun policies.
 - [x] Status/API/readiness projection of governance state.
-- [ ] Fixtures proving an infinite loop is stopped by code, not by operator luck.
+- [x] Fixtures proving an infinite loop is stopped by code, not by operator luck.
 
 ## Notes
 
@@ -53,3 +53,15 @@ run is executing. When observed cost exceeds `max_cost_per_run_usd`, `kill`
 terminates the harness and emits `run_in_flight_cap_killed`; `quarantine` moves
 the run to recovery; `log` records the breach and lets it continue. Focused
 proof fixture: `in_flight_cost_cap_kills_running_harness_and_notifies`.
+
+2026-07-02 slice: agent policy and task budgets now compose into one effective
+runtime budget before dispatch: wall-clock uses the strictest timeout, Claude
+gets the strictest native `--max-turns`, JSONL harnesses stream turn/tool/cost
+progress into the monitor, and output bytes are counted from stdout/stderr.
+Unsupported turn/iteration/tool caps fail before command construction instead
+of becoming pretend guardrails on generic `command` agents. Live proof fixtures:
+`turn_policy_cap_kills_running_harness_and_notifies`,
+`tool_action_policy_cap_kills_running_harness_and_notifies`, and
+`output_bytes_policy_cap_kills_running_harness_and_notifies`; full proof:
+`./scripts/verify.sh` green with `src LOC: 9913` under the raised 9950 mechanism
+tripwire. Remaining child: provider cap sync and drift check.

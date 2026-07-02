@@ -48,7 +48,7 @@ provider_key_name = "openrouter-a"
 provider_spend_cap_usd = 12.5
 model_allowlist = []
 trigger_bindings = ["manual"]
-iteration_cap = 1
+wall_clock_minutes = 1
 side_effect_policy = "log"
 "#,
             stub.display()

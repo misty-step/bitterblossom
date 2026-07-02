@@ -10,8 +10,29 @@ pub struct ParsedOutput {
     pub stats: AttemptStats,
 }
 
+#[derive(Clone, Default)]
+pub struct PartialProgress {
+    pub stats: AttemptStats,
+    pub tool_actions: Option<i64>,
+}
+
 pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "omp", "command"];
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
+    if effective_tool_action_cap(agent, budget).is_some()
+        && !supports_tool_action_cap(&agent.harness)
+    {
+        bail!(
+            "tool_action_cap is not enforceable for harness '{}' before execution",
+            agent.harness
+        );
+    }
+    let turn_cap = effective_turn_cap(agent, budget);
+    if turn_cap.is_some() && !supports_turn_cap(&agent.harness) {
+        bail!(
+            "turn_cap/iteration_cap is not enforceable for harness '{}' before execution",
+            agent.harness
+        );
+    }
     let bin = agent.bin.clone().unwrap_or_else(|| agent.harness.clone());
     let mut cmd = match agent.harness.as_str() {
         "command" => vec![bin],
@@ -25,7 +46,7 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
                 agent.model.clone(),
                 "--dangerously-skip-permissions".into(),
             ];
-            if let Some(turns) = budget.turn_cap {
+            if let Some(turns) = turn_cap {
                 c.push("--max-turns".into());
                 c.push(turns.to_string());
             }
@@ -82,6 +103,33 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
     cmd.extend(agent.args.iter().cloned());
     Ok(cmd)
 }
+
+fn effective_turn_cap(agent: &AgentSpec, budget: &TaskBudget) -> Option<u32> {
+    [
+        budget.turn_cap,
+        agent.policy.turn_cap,
+        agent.policy.iteration_cap,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
+fn effective_tool_action_cap(agent: &AgentSpec, budget: &TaskBudget) -> Option<u32> {
+    [budget.tool_action_cap, agent.policy.tool_action_cap]
+        .into_iter()
+        .flatten()
+        .min()
+}
+
+fn supports_tool_action_cap(harness: &str) -> bool {
+    matches!(harness, "codex" | "pi" | "omp")
+}
+
+fn supports_turn_cap(harness: &str) -> bool {
+    matches!(harness, "claude" | "codex" | "pi" | "omp")
+}
+
 pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     match harness {
         "claude" => parse_claude(stdout),
@@ -100,6 +148,55 @@ pub fn parse_partial_stats(harness: &str, stdout: &str) -> AttemptStats {
         "command" => partial_command_stats(stdout),
         _ => AttemptStats::default(),
     }
+}
+
+pub fn parse_partial_progress(harness: &str, stdout: &str) -> PartialProgress {
+    PartialProgress {
+        stats: parse_partial_stats(harness, stdout),
+        tool_actions: match harness {
+            "codex" | "pi" | "omp" => partial_tool_actions_jsonl(stdout),
+            "claude" | "command" => partial_tool_actions_last_json(stdout),
+            _ => None,
+        },
+    }
+}
+
+fn partial_tool_actions_jsonl(stdout: &str) -> Option<i64> {
+    let mut count = 0;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        count += count_tool_actions(&v);
+    }
+    (count > 0).then_some(count)
+}
+
+fn partial_tool_actions_last_json(stdout: &str) -> Option<i64> {
+    let count = last_json_object(stdout)
+        .as_ref()
+        .map(count_tool_actions)
+        .unwrap_or(0);
+    (count > 0).then_some(count)
+}
+
+fn count_tool_actions(value: &Value) -> i64 {
+    match value {
+        Value::Object(map) => {
+            let here = map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(is_tool_action_type) as i64;
+            here + map.values().map(count_tool_actions).sum::<i64>()
+        }
+        Value::Array(items) => items.iter().map(count_tool_actions).sum(),
+        _ => 0,
+    }
+}
+
+fn is_tool_action_type(kind: &str) -> bool {
+    let kind = kind.to_ascii_lowercase();
+    kind.contains("tool") && (kind.contains("call") || kind.contains("use"))
 }
 
 fn partial_agent_jsonl_stats(stdout: &str) -> AttemptStats {

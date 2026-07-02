@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use crate::budget;
 use crate::harness;
 use crate::ledger::{AttemptStats, Ledger, RunRow};
-use crate::spec::{Plane, Task};
+use crate::spec::{Plane, Task, TaskBudget};
 use crate::submit;
 use crate::substrate::{self, ExecSnapshot, WorkspacePlan, CARD_FILENAME};
 const MAX_RETRIES: i64 = 2;
@@ -26,10 +26,18 @@ enum AttemptOutcome {
 }
 
 #[derive(Clone, Debug)]
-struct InFlightCapBreach {
-    observed_cost_usd: f64,
-    cap_usd: f64,
-    policy: String,
+enum InFlightCapBreach {
+    Cost {
+        observed_cost_usd: f64,
+        cap_usd: f64,
+        policy: String,
+    },
+    Policy {
+        cap_kind: String,
+        observed: u64,
+        cap: u64,
+        policy: String,
+    },
 }
 
 pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<RunRow> {
@@ -98,38 +106,80 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                     started.elapsed().as_millis() as i64,
                 )?;
                 if let Some(breach) = cap_breach {
-                    let (state, event, budget_kind, guard_kind) = if breach.policy == "quarantine" {
-                        (
-                            "awaiting_recovery",
-                            "run_in_flight_cap_quarantined",
-                            "in_flight_cap_quarantined",
-                            "in_flight_cap_quarantined",
-                        )
-                    } else {
-                        (
-                            "failure",
-                            "run_in_flight_cap_killed",
-                            "in_flight_cap_killed",
-                            "in_flight_cap_killed",
-                        )
-                    };
-                    ledger.transition(run_id, state, Some(&error))?;
-                    ledger.record_budget_event(Some(&task.name), budget_kind, &error)?;
-                    ledger.record_guard_event(guard_kind, Some(&task.name), &error, 1)?;
-                    crate::notify::notify(
-                        plane,
-                        ledger,
-                        event,
-                        &serde_json::json!({
-                            "run_id": run_id,
-                            "task": task.name,
-                            "agent": task.agent_name,
-                            "observed_cost_usd": breach.observed_cost_usd,
-                            "cap_usd": breach.cap_usd,
-                            "policy": breach.policy,
-                            "detail": error,
-                        }),
-                    );
+                    match breach {
+                        InFlightCapBreach::Cost {
+                            observed_cost_usd,
+                            cap_usd,
+                            policy,
+                        } => {
+                            let (state, event, budget_kind, guard_kind) = if policy == "quarantine"
+                            {
+                                (
+                                    "awaiting_recovery",
+                                    "run_in_flight_cap_quarantined",
+                                    "in_flight_cap_quarantined",
+                                    "in_flight_cap_quarantined",
+                                )
+                            } else {
+                                (
+                                    "failure",
+                                    "run_in_flight_cap_killed",
+                                    "in_flight_cap_killed",
+                                    "in_flight_cap_killed",
+                                )
+                            };
+                            ledger.transition(run_id, state, Some(&error))?;
+                            ledger.record_budget_event(Some(&task.name), budget_kind, &error)?;
+                            ledger.record_guard_event(guard_kind, Some(&task.name), &error, 1)?;
+                            crate::notify::notify(
+                                plane,
+                                ledger,
+                                event,
+                                &serde_json::json!({
+                                    "run_id": run_id,
+                                    "task": task.name,
+                                    "agent": task.agent_name,
+                                    "observed_cost_usd": observed_cost_usd,
+                                    "cap_usd": cap_usd,
+                                    "policy": policy,
+                                    "detail": error,
+                                }),
+                            );
+                        }
+                        InFlightCapBreach::Policy {
+                            cap_kind,
+                            observed,
+                            cap,
+                            policy,
+                        } => {
+                            let (state, event, guard_kind) = if policy == "quarantine" {
+                                (
+                                    "awaiting_recovery",
+                                    "run_policy_cap_quarantined",
+                                    "policy_cap_quarantined",
+                                )
+                            } else {
+                                ("failure", "run_policy_cap_killed", "policy_cap_killed")
+                            };
+                            ledger.transition(run_id, state, Some(&error))?;
+                            ledger.record_guard_event(guard_kind, Some(&task.name), &error, 1)?;
+                            crate::notify::notify(
+                                plane,
+                                ledger,
+                                event,
+                                &serde_json::json!({
+                                    "run_id": run_id,
+                                    "task": task.name,
+                                    "agent": task.agent_name,
+                                    "cap_kind": cap_kind,
+                                    "observed": observed,
+                                    "cap": cap,
+                                    "policy": policy,
+                                    "detail": error,
+                                }),
+                            );
+                        }
+                    }
                 } else {
                     ledger.transition(run_id, "failure", Some(&error))?;
                 }
@@ -174,10 +224,9 @@ fn run_attempt(
     n: i64,
 ) -> Result<AttemptOutcome> {
     let host = task.host();
+    let effective_budget = effective_budget(task);
     let lease_wait = LEASE_WAIT.max(Duration::from_secs(
-        60 * task
-            .spec
-            .budget
+        60 * effective_budget
             .timeout_minutes
             .unwrap_or(DEFAULT_TIMEOUT_MINUTES),
     ));
@@ -311,7 +360,8 @@ fn attempt_on_host(
     ledger.set_attempt_phase(attempt_id, "prepared")?;
     ledger.record_progress(run_id, "phase:prepared")?;
 
-    let cmd = match harness::build_command(&task.agent, &task.spec.budget) {
+    let effective_budget = effective_budget(task);
+    let cmd = match harness::build_command(&task.agent, &effective_budget) {
         Ok(c) => c,
         Err(e) => {
             let _ = session.release();
@@ -322,9 +372,7 @@ fn attempt_on_host(
     ledger.set_attempt_phase(attempt_id, "executing")?;
     ledger.record_progress(run_id, "phase:executing")?;
     let timeout = Duration::from_secs(
-        60 * task
-            .spec
-            .budget
+        60 * effective_budget
             .timeout_minutes
             .unwrap_or(DEFAULT_TIMEOUT_MINUTES),
     );
@@ -332,7 +380,8 @@ fn attempt_on_host(
         "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it.\n\n{}",
         task.card
     );
-    let mut budget_monitor = InFlightBudgetMonitor::new(ledger, run_id, attempt_id, task);
+    let mut budget_monitor =
+        InFlightBudgetMonitor::new(ledger, run_id, attempt_id, task, &effective_budget);
     let exec = {
         let mut monitor_check =
             |snapshot: &ExecSnapshot<'_>| budget_monitor.observe(snapshot).map(|b| b.reason);
@@ -623,6 +672,37 @@ pub fn attempt_dir(plane: &Plane, run_id: &str, n: i64) -> PathBuf {
         .join(format!("attempt-{n}"))
 }
 
+fn effective_budget(task: &Task) -> TaskBudget {
+    let policy = &task.agent.policy;
+    let mut budget = task.spec.budget.clone();
+    budget.timeout_minutes = min_opt_u64(budget.timeout_minutes, policy.wall_clock_minutes);
+    budget.turn_cap = min_opt_u32(
+        min_opt_u32(budget.turn_cap, policy.turn_cap),
+        policy.iteration_cap,
+    );
+    budget.tool_action_cap = min_opt_u32(budget.tool_action_cap, policy.tool_action_cap);
+    budget.output_bytes_cap = min_opt_u64(budget.output_bytes_cap, policy.output_bytes_cap);
+    budget
+}
+
+fn min_opt_u32(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn min_opt_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 struct InFlightBudgetMonitor<'a> {
     ledger: &'a Ledger,
     run_id: &'a str,
@@ -630,6 +710,9 @@ struct InFlightBudgetMonitor<'a> {
     task_name: &'a str,
     harness: &'a str,
     max_cost_usd: Option<f64>,
+    turn_cap: Option<u32>,
+    tool_action_cap: Option<u32>,
+    output_bytes_cap: Option<u64>,
     policy: String,
     latest_stats: AttemptStats,
     last_recorded_cost: Option<f64>,
@@ -641,14 +724,23 @@ struct MonitorDecision {
 }
 
 impl<'a> InFlightBudgetMonitor<'a> {
-    fn new(ledger: &'a Ledger, run_id: &'a str, attempt_id: i64, task: &'a Task) -> Self {
+    fn new(
+        ledger: &'a Ledger,
+        run_id: &'a str,
+        attempt_id: i64,
+        task: &'a Task,
+        budget: &TaskBudget,
+    ) -> Self {
         Self {
             ledger,
             run_id,
             attempt_id,
             task_name: &task.name,
             harness: &task.agent.harness,
-            max_cost_usd: task.spec.budget.max_cost_per_run_usd,
+            max_cost_usd: budget.max_cost_per_run_usd,
+            turn_cap: budget.turn_cap,
+            tool_action_cap: budget.tool_action_cap,
+            output_bytes_cap: budget.output_bytes_cap,
             policy: task
                 .agent
                 .policy
@@ -662,18 +754,28 @@ impl<'a> InFlightBudgetMonitor<'a> {
     }
 
     fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<MonitorDecision> {
-        let stats = harness::parse_partial_stats(self.harness, snapshot.stdout);
-        if stats.cost_usd.is_none()
-            && stats.tokens_in.is_none()
-            && stats.tokens_out.is_none()
-            && stats.turns.is_none()
-        {
-            return None;
+        if let Some(decision) = self.observe_output_bytes(snapshot) {
+            return Some(decision);
         }
-        self.latest_stats = stats;
-        let _ = self
-            .ledger
-            .update_attempt_stats(self.attempt_id, &self.latest_stats);
+        let progress = harness::parse_partial_progress(self.harness, snapshot.stdout);
+        if !stats_empty(&progress.stats) {
+            self.latest_stats = progress.stats;
+            let _ = self
+                .ledger
+                .update_attempt_stats(self.attempt_id, &self.latest_stats);
+        }
+        if let Some(turns) = self.latest_stats.turns.and_then(|v| u64::try_from(v).ok()) {
+            if let Some(decision) = self.observe_policy_cap("turn_cap", turns, self.turn_cap) {
+                return Some(decision);
+            }
+        }
+        if let Some(tool_actions) = progress.tool_actions.and_then(|v| u64::try_from(v).ok()) {
+            if let Some(decision) =
+                self.observe_policy_cap("tool_action_cap", tool_actions, self.tool_action_cap)
+            {
+                return Some(decision);
+            }
+        }
         let cost = self.latest_stats.cost_usd?;
         let changed = match self.last_recorded_cost {
             Some(prior) => (prior - cost).abs() > f64::EPSILON,
@@ -697,7 +799,7 @@ impl<'a> InFlightBudgetMonitor<'a> {
             "in-flight cost cap {}: observed ${cost:.4} > max_cost_per_run_usd ${max:.2}",
             self.policy
         );
-        let breach = InFlightCapBreach {
+        let breach = InFlightCapBreach::Cost {
             observed_cost_usd: cost,
             cap_usd: max,
             policy: self.policy.clone(),
@@ -715,6 +817,42 @@ impl<'a> InFlightBudgetMonitor<'a> {
         }
     }
 
+    fn observe_output_bytes(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<MonitorDecision> {
+        let observed = (snapshot.stdout.len() + snapshot.stderr.len()) as u64;
+        self.observe_policy_cap("output_bytes_cap", observed, self.output_bytes_cap)
+    }
+
+    fn observe_policy_cap(
+        &mut self,
+        cap_kind: &str,
+        observed: u64,
+        cap: Option<impl Into<u64> + Copy>,
+    ) -> Option<MonitorDecision> {
+        let cap = cap.map(Into::into)?;
+        if observed <= cap || self.breach.is_some() {
+            return None;
+        }
+        let reason = format!(
+            "{cap_kind} {}: observed {observed} > cap {cap}",
+            self.policy
+        );
+        let _ =
+            self.ledger
+                .record_guard_event("policy_cap_observed", Some(self.task_name), &reason, 1);
+        let _ = self.ledger.record_progress(self.run_id, &reason);
+        self.breach = Some(InFlightCapBreach::Policy {
+            cap_kind: cap_kind.to_string(),
+            observed,
+            cap,
+            policy: self.policy.clone(),
+        });
+        match self.policy.as_str() {
+            "log" => None,
+            "kill" | "quarantine" => Some(MonitorDecision { reason }),
+            _ => Some(MonitorDecision { reason }),
+        }
+    }
+
     fn latest_stats(&self) -> AttemptStats {
         self.latest_stats.clone()
     }
@@ -722,6 +860,13 @@ impl<'a> InFlightBudgetMonitor<'a> {
     fn breach(&self) -> Option<InFlightCapBreach> {
         self.breach.clone()
     }
+}
+
+fn stats_empty(stats: &AttemptStats) -> bool {
+    stats.cost_usd.is_none()
+        && stats.tokens_in.is_none()
+        && stats.tokens_out.is_none()
+        && stats.turns.is_none()
 }
 
 fn in_flight_monitor_interval() -> Duration {

@@ -84,7 +84,6 @@ host = "local"
 timeout_minutes = 10
 max_runs_per_day = {max_runs_per_day}
 max_cost_per_run_usd = 1.0
-turn_cap = 20
 "#,
             target.display(),
         ),

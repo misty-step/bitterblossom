@@ -95,6 +95,9 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
                 "max_runs_per_day": task.spec.budget.max_runs_per_day,
                 "max_cost_per_run_usd": task.spec.budget.max_cost_per_run_usd,
                 "timeout_minutes": task.spec.budget.timeout_minutes,
+                "turn_cap": task.spec.budget.turn_cap,
+                "tool_action_cap": task.spec.budget.tool_action_cap,
+                "output_bytes_cap": task.spec.budget.output_bytes_cap,
                 "cost_enforcement": {
                     "mode": task.agent.policy.side_effect_policy.as_deref().unwrap_or("kill"),
                     "in_flight": task.spec.budget.max_cost_per_run_usd.is_some(),
