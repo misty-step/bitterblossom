@@ -135,7 +135,9 @@ through the OpenRouter management API using `OPENROUTER_MANAGEMENT_KEY`, stores
 the one-time plaintext child key under the plane's `.bb/` state, and sets the
 provider-side `limit` to the policy cap. Dispatch then injects that child key as
 the agent's declared `OPENROUTER_API_KEY`; it does not fall back to a shared
-key for policy-bound agents.
+key for policy-bound agents. `bb keys sync <agent>|--all --check --json`
+refreshes local non-secret usage/cap metadata from the provider and fails when
+the remote `limit` drifts from the agent policy cap.
 
 ### Model & auth policy (enforced at load — `bb check` fails, not dispatch)
 
@@ -591,6 +593,7 @@ bb keys mint <agent> | --all [--json]             # mint scoped OpenRouter child
 bb keys rotate <agent> [--json]                   # replace one stored child key, revoke the old key
 bb keys revoke <agent> [--json]                   # revoke one stored child key and clear local key material
 bb keys list [--remote] [--include-disabled] [--json] # local metadata or OpenRouter management list
+bb keys sync <agent> | --all [--check] [--json]   # refresh provider usage/cap metadata; fail on drift with --check
 bb preflight <task> | --storm [--json]            # missing secrets, local command bins, subscription auth readiness; pre-dispatch
 bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>

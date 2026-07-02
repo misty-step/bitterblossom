@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,6 +31,10 @@ pub struct StoredProviderKey {
     pub limit_remaining_usd: Option<f64>,
     pub limit_reset: Option<String>,
     pub usage_usd: f64,
+    #[serde(default)]
+    pub remote_limit_usd: Option<f64>,
+    #[serde(default)]
+    pub last_synced_at: Option<String>,
     pub disabled: bool,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -59,6 +64,8 @@ impl StoredProviderKey {
             limit_remaining_usd: self.limit_remaining_usd,
             limit_reset: self.limit_reset.clone(),
             usage_usd: self.usage_usd,
+            remote_limit_usd: self.remote_limit_usd,
+            last_synced_at: self.last_synced_at.clone(),
             disabled: self.disabled,
             revoked: self.revoked_at.is_some(),
             created_at: self.created_at.clone(),
@@ -84,6 +91,8 @@ pub struct ProviderKeyView {
     pub limit_remaining_usd: Option<f64>,
     pub limit_reset: Option<String>,
     pub usage_usd: f64,
+    pub remote_limit_usd: Option<f64>,
+    pub last_synced_at: Option<String>,
     pub disabled: bool,
     pub revoked: bool,
     pub created_at: String,
@@ -98,6 +107,42 @@ pub struct ProviderKeyView {
 pub struct KeyOperationReport {
     pub operation: String,
     pub keys: Vec<ProviderKeyView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KeySyncReport {
+    pub operation: String,
+    pub checked_at: String,
+    pub ok: bool,
+    pub keys: Vec<ProviderKeySyncView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderKeyLocalStatus {
+    pub provider: String,
+    pub agent: String,
+    pub provider_key_name: String,
+    pub configured_spend_cap_usd: f64,
+    pub stored_hash: Option<String>,
+    pub stored_spend_cap_usd: Option<f64>,
+    pub remote_limit_usd: Option<f64>,
+    pub limit_remaining_usd: Option<f64>,
+    pub usage_usd: Option<f64>,
+    pub disabled: Option<bool>,
+    pub revoked: Option<bool>,
+    pub secret_available: bool,
+    pub last_synced_at: Option<String>,
+    pub status: String,
+    pub drift: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderKeySyncView {
+    #[serde(flatten)]
+    pub local: ProviderKeyLocalStatus,
+    pub remote_hash: Option<String>,
+    pub remote_name: Option<String>,
+    pub synced: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,6 +310,41 @@ pub fn list_remote(include_disabled: bool) -> Result<Vec<RemoteKeyView>> {
     Ok(rows.into_iter().map(|r| r.remote_view()).collect())
 }
 
+pub fn sync_agents(plane: &Plane, agents: &[String]) -> Result<KeySyncReport> {
+    let checked_at = ledger::now();
+    let remote = OpenRouterClient::from_env()?.list_keys(true)?;
+    let by_hash: HashMap<String, OpenRouterKeyData> = remote
+        .into_iter()
+        .map(|row| (row.hash.clone(), row))
+        .collect();
+    let mut keys = Vec::new();
+    for agent in agents {
+        keys.push(sync_agent_from_remote(plane, agent, &by_hash, &checked_at)?);
+    }
+    let ok = keys.iter().all(|key| key.local.drift.is_empty());
+    Ok(KeySyncReport {
+        operation: "sync".into(),
+        checked_at,
+        ok,
+        keys,
+    })
+}
+
+pub fn local_statuses(plane: &Plane) -> Result<Vec<ProviderKeyLocalStatus>> {
+    let mut out = Vec::new();
+    for agent in eligible_agents(plane) {
+        out.push(local_status_for_agent(plane, &agent)?);
+    }
+    Ok(out)
+}
+
+pub fn local_status_for_task(plane: &Plane, task: &Task) -> Result<Option<ProviderKeyLocalStatus>> {
+    if task.agent.provider() != PROVIDER || task.agent.policy.provider_key_name.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(local_status_for_agent(plane, &task.agent_name)?))
+}
+
 pub fn resolve_secret_for_task(
     plane: &Plane,
     task: &Task,
@@ -329,6 +409,8 @@ fn stored_from_create(
         limit_remaining_usd: data.limit_remaining,
         limit_reset: data.limit_reset,
         usage_usd: data.usage,
+        remote_limit_usd: data.limit,
+        last_synced_at: Some(ledger::now()),
         disabled: data.disabled,
         created_at: data.created_at,
         updated_at: data.updated_at,
@@ -336,6 +418,165 @@ fn stored_from_create(
         revoked_at: None,
         api_key,
     }
+}
+
+fn sync_agent_from_remote(
+    plane: &Plane,
+    agent_name: &str,
+    remote_by_hash: &HashMap<String, OpenRouterKeyData>,
+    checked_at: &str,
+) -> Result<ProviderKeySyncView> {
+    let target = key_target(plane, agent_name)?;
+    let mut record = match read_stored_key(plane, agent_name)? {
+        Some(record) => record,
+        None => {
+            let mut local = missing_local_status(agent_name, &target);
+            local
+                .drift
+                .push("no plane-side provider key is stored for this agent".into());
+            local.status = "missing_local".into();
+            return Ok(ProviderKeySyncView {
+                local,
+                remote_hash: None,
+                remote_name: None,
+                synced: false,
+            });
+        }
+    };
+
+    let remote = remote_by_hash.get(&record.hash);
+    if let Some(remote) = remote {
+        record.name = remote.name.clone();
+        record.label = remote.label.clone();
+        record.remote_limit_usd = remote.limit;
+        record.limit_remaining_usd = remote.limit_remaining;
+        record.limit_reset = remote.limit_reset.clone();
+        record.usage_usd = remote.usage;
+        record.disabled = remote.disabled;
+        record.updated_at = remote.updated_at.clone();
+        record.last_synced_at = Some(checked_at.to_string());
+        write_stored_key(plane, &record)?;
+    }
+
+    let mut local = local_status_from_record(agent_name, &target, Some(&record));
+    if remote.is_none() {
+        local
+            .drift
+            .push("stored key hash was not returned by OpenRouter".into());
+        local.status = "missing_remote".into();
+    } else if !local.drift.is_empty() {
+        local.status = "drift".into();
+    }
+    Ok(ProviderKeySyncView {
+        local,
+        remote_hash: remote.map(|row| row.hash.clone()),
+        remote_name: remote.map(|row| row.name.clone()),
+        synced: remote.is_some(),
+    })
+}
+
+fn local_status_for_agent(plane: &Plane, agent_name: &str) -> Result<ProviderKeyLocalStatus> {
+    let target = key_target(plane, agent_name)?;
+    let record = read_stored_key(plane, agent_name)?;
+    Ok(local_status_from_record(
+        agent_name,
+        &target,
+        record.as_ref(),
+    ))
+}
+
+fn missing_local_status(agent_name: &str, target: &KeyTarget) -> ProviderKeyLocalStatus {
+    ProviderKeyLocalStatus {
+        provider: PROVIDER.into(),
+        agent: agent_name.into(),
+        provider_key_name: target.provider_key_name.clone(),
+        configured_spend_cap_usd: target.spend_cap_usd,
+        stored_hash: None,
+        stored_spend_cap_usd: None,
+        remote_limit_usd: None,
+        limit_remaining_usd: None,
+        usage_usd: None,
+        disabled: None,
+        revoked: None,
+        secret_available: false,
+        last_synced_at: None,
+        status: "missing_local".into(),
+        drift: Vec::new(),
+    }
+}
+
+fn local_status_from_record(
+    agent_name: &str,
+    target: &KeyTarget,
+    record: Option<&StoredProviderKey>,
+) -> ProviderKeyLocalStatus {
+    let Some(record) = record else {
+        let mut status = missing_local_status(agent_name, target);
+        status
+            .drift
+            .push("no plane-side provider key is stored for this agent".into());
+        return status;
+    };
+
+    let mut drift = Vec::new();
+    if record.provider != PROVIDER {
+        drift.push(format!(
+            "stored provider '{}' does not match expected {PROVIDER}",
+            record.provider
+        ));
+    }
+    if record.provider_key_name != target.provider_key_name {
+        drift.push(format!(
+            "stored provider_key_name '{}' does not match policy '{}'",
+            record.provider_key_name, target.provider_key_name
+        ));
+    }
+    if cap_differs(record.spend_cap_usd, target.spend_cap_usd) {
+        drift.push(format!(
+            "stored cap ${:.4} does not match policy cap ${:.4}",
+            record.spend_cap_usd, target.spend_cap_usd
+        ));
+    }
+    if let Some(remote_limit) = record.remote_limit_usd {
+        if cap_differs(remote_limit, target.spend_cap_usd) {
+            drift.push(format!(
+                "remote provider limit ${remote_limit:.4} does not match policy cap ${:.4}",
+                target.spend_cap_usd
+            ));
+        }
+    }
+    if record.revoked_at.is_some() {
+        drift.push("stored key is revoked".into());
+    }
+    if record.disabled {
+        drift.push("provider key is disabled".into());
+    }
+    if record.api_key.trim().is_empty() {
+        drift.push("plane-side child key material is missing".into());
+    }
+
+    let status = if drift.is_empty() { "ok" } else { "drift" };
+    ProviderKeyLocalStatus {
+        provider: PROVIDER.into(),
+        agent: agent_name.into(),
+        provider_key_name: target.provider_key_name.clone(),
+        configured_spend_cap_usd: target.spend_cap_usd,
+        stored_hash: Some(record.hash.clone()),
+        stored_spend_cap_usd: Some(record.spend_cap_usd),
+        remote_limit_usd: record.remote_limit_usd,
+        limit_remaining_usd: record.limit_remaining_usd,
+        usage_usd: Some(record.usage_usd),
+        disabled: Some(record.disabled),
+        revoked: Some(record.revoked_at.is_some()),
+        secret_available: record.active(),
+        last_synced_at: record.last_synced_at.clone(),
+        status: status.into(),
+        drift,
+    }
+}
+
+fn cap_differs(left: f64, right: f64) -> bool {
+    (left - right).abs() > 0.0001
 }
 
 struct KeyTarget {
