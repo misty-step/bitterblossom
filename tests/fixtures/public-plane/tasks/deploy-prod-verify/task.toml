@@ -1,0 +1,37 @@
+agent = "prod-verifier"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+repos = [
+  { url = "https://github.com/example-org/service-example.git", ref = "main" },
+  { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 25
+max_runs_per_day = 12
+max_cost_per_run_usd = 0.60
+turn_cap = 35
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "deploy-prod-verify"
+secret_env = "BB_HOOK_DEPLOY_PROD_VERIFY"
+dedupe_key = "json:/event|json:/subject/service|json:/subject/revision"
+
+[[trigger.filter]]
+pointer = "/schema_version"
+equals = "bb.deploy_prod_verifier_event.v1"
+
+[[trigger.filter]]
+pointer = "/event"
+any_of = ["deploy_smoke.failed", "production_incident.opened"]
+
+[[trigger.filter]]
+pointer = "/subject/service"
+any_of = ["canary"]

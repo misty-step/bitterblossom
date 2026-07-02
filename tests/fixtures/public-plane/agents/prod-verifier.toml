@@ -1,0 +1,11 @@
+version = 1
+role = "verifier"
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "PROD_READ_TOKEN"]
+skills = [
+  "harness-kit/qa#api-browser-smoke",
+  "harness-kit/diagnose#production-incident",
+  "bitterblossom/operator-min",
+]

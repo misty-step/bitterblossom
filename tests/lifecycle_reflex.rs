@@ -206,6 +206,91 @@ fn canary_triage_task_is_report_only_sprite_reflex_contract() {
 }
 
 #[test]
+fn deploy_prod_verify_task_is_report_only_reflex_contract() {
+    let plane = Plane::load(&public_plane_root()).unwrap();
+    let task = plane.task("deploy-prod-verify").unwrap();
+
+    assert_eq!(task.agent_name, "prod-verifier");
+    assert_eq!(task.agent.harness, "pi");
+    assert_eq!(task.agent.model, "deepseek/deepseek-v4-flash");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("verifier"));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert!(task.agent.secrets.contains(&"PROD_READ_TOKEN".to_string()));
+    assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(12));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.60));
+
+    let has_manual = task
+        .spec
+        .triggers
+        .iter()
+        .any(|trigger| matches!(trigger, TriggerSpec::Manual));
+    assert!(has_manual);
+
+    let webhook = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Webhook {
+                route,
+                dedupe_key,
+                filter,
+                action,
+                ..
+            } => Some((route, dedupe_key, filter, action)),
+            TriggerSpec::Manual | TriggerSpec::Cron { .. } => None,
+        })
+        .expect("deploy-prod-verify webhook trigger");
+    assert_eq!(webhook.0, "deploy-prod-verify");
+    assert_eq!(
+        webhook.1.as_deref(),
+        Some("json:/event|json:/subject/service|json:/subject/revision")
+    );
+    assert!(webhook.2.iter().any(|f| f.pointer == "/schema_version"
+        && f.equals.as_ref() == Some(&serde_json::json!("bb.deploy_prod_verifier_event.v1"))));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/event"
+            && f.any_of.as_ref().is_some_and(|values| {
+                values.contains(&serde_json::json!("deploy_smoke.failed"))
+                    && values.contains(&serde_json::json!("production_incident.opened"))
+            })
+    }));
+    assert!(webhook.2.iter().any(|f| f.pointer == "/subject/service"
+        && f.any_of
+            .as_ref()
+            .is_some_and(|values| values.contains(&serde_json::json!("canary")))));
+    assert!(
+        webhook.3.is_none(),
+        "deploy/prod verifier must create only the report-only task run"
+    );
+
+    for required in [
+        "report_only",
+        "deploy-smoke failure",
+        "production incident",
+        "browser/API evidence",
+        "Read `RUN.json` first",
+        "read `EVENT.json` next",
+        "REPORT.json",
+        "\"api_evidence\"",
+        "\"browser_evidence\"",
+        "\"suggested_next_run\"",
+        "No code edits",
+        "No branches",
+        "No PRs",
+        "No deploys",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
 fn self_drill_task_is_weekly_sprite_reflex_contract() {
     let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("self-drill").unwrap();
@@ -315,6 +400,62 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     }
     assert_eq!(
         ledger.list_runs(Some("canary-triage"), None).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn deploy_prod_verify_webhook_filters_and_dedupes_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = temp_deploy_prod_verify_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_HOOK_DEPLOY_PROD_VERIFY", "s3cret");
+
+    let deliver = |ledger: &mut Ledger, body: &str, delivery: &str| {
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        handle_webhook(
+            &plane,
+            ledger,
+            "deploy-prod-verify",
+            &[
+                ("X-Hub-Signature-256".to_string(), sig),
+                ("X-GitHub-Delivery".to_string(), delivery.to_string()),
+            ],
+            body,
+        )
+        .unwrap()
+    };
+
+    let in_scope = include_str!("fixtures/contracts/bb.deploy_prod_verifier_event.v1.valid.json");
+    assert_eq!(deliver(&mut ledger, in_scope, "DLV-DEPLOY-1").status, 202);
+
+    let duplicate = deliver(&mut ledger, in_scope, "DLV-DEPLOY-2");
+    assert_eq!(duplicate.status, 202);
+    assert!(duplicate.body.contains("\"duplicate\":true"));
+
+    for (body, delivery) in [
+        (
+            r#"{"schema_version":"bb.deploy_prod_verifier_event.v2","event":"deploy_smoke.failed","subject":{"service":"canary","revision":"abc123"}}"#,
+            "DLV-DEPLOY-3",
+        ),
+        (
+            r#"{"schema_version":"bb.deploy_prod_verifier_event.v1","event":"deploy_smoke.passed","subject":{"service":"canary","revision":"abc123"}}"#,
+            "DLV-DEPLOY-4",
+        ),
+        (
+            r#"{"schema_version":"bb.deploy_prod_verifier_event.v1","event":"deploy_smoke.failed","subject":{"service":"other","revision":"abc123"}}"#,
+            "DLV-DEPLOY-5",
+        ),
+    ] {
+        let resp = deliver(&mut ledger, body, delivery);
+        assert_eq!(resp.status, 200, "{body} -> {}", resp.body);
+        assert!(resp.body.contains("filtered"), "{}", resp.body);
+    }
+    assert_eq!(
+        ledger
+            .list_runs(Some("deploy-prod-verify"), None)
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -499,6 +640,31 @@ fn temp_canary_triage_plane(root: &Path) -> Plane {
     fs::write(
         root.join("tasks/canary-triage/card.md"),
         fs::read_to_string(repo.join("tasks/canary-triage/card.md")).unwrap(),
+    )
+    .unwrap();
+
+    Plane::load(root).unwrap()
+}
+
+fn temp_deploy_prod_verify_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/deploy-prod-verify")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+
+    let repo = public_plane_root();
+    fs::write(
+        root.join("agents/prod-verifier.toml"),
+        fs::read_to_string(repo.join("agents/prod-verifier.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/deploy-prod-verify/task.toml"),
+        fs::read_to_string(repo.join("tasks/deploy-prod-verify/task.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/deploy-prod-verify/card.md"),
+        fs::read_to_string(repo.join("tasks/deploy-prod-verify/card.md")).unwrap(),
     )
     .unwrap();
 

@@ -1,0 +1,48 @@
+{
+  "schema_version": "bb.deploy_prod_verifier_event.v1",
+  "event": "deploy_smoke.failed",
+  "subject": {
+    "type": "deploy",
+    "service": "canary",
+    "environment": "production",
+    "repo": "example-org/service-example",
+    "revision": "abc123def456",
+    "deploy_id": "deploy-2026-07-02-001",
+    "target_urls": [
+      "https://canary.example.com/health",
+      "https://canary.example.com/"
+    ]
+  },
+  "smoke": {
+    "check": "production-health",
+    "method": "GET",
+    "url": "https://canary.example.com/health",
+    "expected_status": 200,
+    "observed_status": 500,
+    "observed_at": "2026-07-02T05:00:00Z"
+  },
+  "evidence": [
+    {
+      "kind": "http",
+      "url": "https://canary.example.com/health",
+      "status": 500,
+      "excerpt": "internal error"
+    }
+  ],
+  "requested_checks": [
+    {
+      "kind": "http",
+      "method": "GET",
+      "url": "https://canary.example.com/health"
+    },
+    {
+      "kind": "browser",
+      "url": "https://canary.example.com/"
+    }
+  ],
+  "constraints": {
+    "report_only": true,
+    "no_code_edits": true,
+    "no_deploys": true
+  }
+}

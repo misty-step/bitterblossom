@@ -28,7 +28,7 @@ without adding semantic workflow logic to the Rust spine.
 1. ~~Shape the `gate.blocked` fix-prompt report contract and red lines.~~ →
    **graduated to backlog 070** (ready, P1) as the cheapest, highest-leverage
    first reflex; budget-free (the `gate.blocked` decision already exists).
-2. Add the deploy/prod verifier event payload contract and manual dogfood
+2. [x] Add the deploy/prod verifier event payload contract and manual dogfood
    fixture.
 3. Decide whether the lifecycle orchestrator is report-only or can create runs
    with a narrow plane token.
@@ -45,3 +45,16 @@ verification, and deterministic lifecycle orchestration.
 Keep the boundary from `061`: the Rust spine routes, leases, budgets, records,
 and retries pre-execute. Lifecycle meaning stays in task cards, agent configs,
 payload contracts, and reference docs.
+
+## Delivery Notes
+
+### 2026-07-02 deploy/prod verifier fixture
+
+- Added the `deploy-prod-verify` public-plane task and `prod-verifier` agent as
+  a report-only deploy-smoke / production-incident verifier.
+- Added the pinned `bb.deploy_prod_verifier_event.v1` schema and valid manual
+  dogfood payload fixture.
+- Added lifecycle tests for manual/webhook shape, dedupe/filtering, red lines,
+  and report fields, plus contract tests for the event fixture.
+- Verification:
+  `cargo test --test deploy_verifier_contract --test lifecycle_reflex --test task_card_contract`.

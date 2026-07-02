@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bitterblossom deploy/prod verifier event v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "event",
+    "subject",
+    "evidence",
+    "requested_checks",
+    "constraints"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "bb.deploy_prod_verifier_event.v1"
+    },
+    "event": {
+      "enum": [
+        "deploy_smoke.failed",
+        "production_incident.opened"
+      ]
+    },
+    "subject": {
+      "type": "object",
+      "required": [
+        "type",
+        "service",
+        "environment",
+        "repo",
+        "revision",
+        "target_urls"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1
+    },
+    "requested_checks": {
+      "type": "array",
+      "minItems": 1
+    },
+    "constraints": {
+      "type": "object",
+      "required": [
+        "report_only",
+        "no_code_edits",
+        "no_deploys"
+      ]
+    }
+  }
+}
