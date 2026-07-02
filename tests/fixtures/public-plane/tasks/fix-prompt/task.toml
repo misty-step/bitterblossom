@@ -1,0 +1,25 @@
+agent = "fix-prompt-generator"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+
+[budget]
+timeout_minutes = 15
+max_runs_per_day = 20
+max_cost_per_run_usd = 0.20
+turn_cap = 24
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "fix-prompt"
+secret_env = "BB_HOOK_FIX_PROMPT"
+dedupe_key = "json:/submission|json:/rev"
+
+[[trigger.filter]]
+pointer = "/event"
+equals = "gate.blocked"

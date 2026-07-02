@@ -1,0 +1,43 @@
+{
+  "schema_version": "bb.fix_prompt_report.v1",
+  "event": "gate.blocked",
+  "submission": "sub-fix-prompt",
+  "change": "https://github.com/example-org/bitterblossom-example/pull/42",
+  "rev": "abc123def456",
+  "round": 1,
+  "blocking_fingerprints": [
+    "a1b2c3d4e5f60708",
+    "b2c3d4e5f6070819"
+  ],
+  "findings": [
+    {
+      "fingerprint": "a1b2c3d4e5f60708",
+      "file": "src/dispatch.rs",
+      "line": 87,
+      "claim": "run can be marked success before REPORT.json is collected",
+      "evidence": "release phase happens before artifact verification"
+    },
+    {
+      "fingerprint": "b2c3d4e5f6070819",
+      "file": "tests/e2e_local.rs",
+      "line": 233,
+      "claim": "missing regression for required artifact failure",
+      "evidence": "no assertion covers zero-exit missing REPORT.json"
+    }
+  ],
+  "builder_packet": {
+    "goal": "Fix the two blocking gate findings without unrelated refactors.",
+    "must_include_fingerprints": [
+      "a1b2c3d4e5f60708",
+      "b2c3d4e5f6070819"
+    ],
+    "source_submission": "sub-fix-prompt",
+    "source_rev": "abc123def456"
+  },
+  "suggested_next_run": "bb run build --payload-file FIX_PROMPT.json --json",
+  "artifact_paths": [
+    "REPORT.json"
+  ],
+  "no_side_effects": true,
+  "residual_risk": "Builder still needs to inspect the PR diff and rerun the submission gate."
+}

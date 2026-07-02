@@ -1,0 +1,28 @@
+{
+  "event": "gate.blocked",
+  "submission": "sub-fix-prompt",
+  "change": "https://github.com/example-org/bitterblossom-example/pull/42",
+  "rev": "abc123def456",
+  "round": 1,
+  "quorum": 2,
+  "verdicts": 2,
+  "timed_out_members": [],
+  "blocking": [
+    {
+      "severity": "blocking",
+      "file": "src/dispatch.rs",
+      "line": 87,
+      "claim": "run can be marked success before REPORT.json is collected",
+      "evidence": "release phase happens before artifact verification",
+      "fingerprint": "a1b2c3d4e5f60708"
+    },
+    {
+      "severity": "blocking",
+      "file": "tests/e2e_local.rs",
+      "line": 233,
+      "claim": "missing regression for required artifact failure",
+      "evidence": "no assertion covers zero-exit missing REPORT.json",
+      "fingerprint": "b2c3d4e5f6070819"
+    }
+  ]
+}

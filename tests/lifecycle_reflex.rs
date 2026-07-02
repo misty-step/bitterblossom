@@ -291,6 +291,127 @@ fn deploy_prod_verify_task_is_report_only_reflex_contract() {
 }
 
 #[test]
+fn fix_prompt_task_is_report_only_gate_blocked_contract() {
+    let plane = Plane::load(&public_plane_root()).unwrap();
+    let task = plane.task("fix-prompt").unwrap();
+
+    assert_eq!(task.agent_name, "fix-prompt-generator");
+    assert_eq!(task.agent.harness, "pi");
+    assert_eq!(task.agent.model, "deepseek/deepseek-v4-flash");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("fix-prompt-generator"));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.timeout_minutes, Some(15));
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(20));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.20));
+
+    let has_manual = task
+        .spec
+        .triggers
+        .iter()
+        .any(|trigger| matches!(trigger, TriggerSpec::Manual));
+    assert!(has_manual);
+
+    let webhook = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Webhook {
+                route,
+                dedupe_key,
+                filter,
+                action,
+                ..
+            } => Some((route, dedupe_key, filter, action)),
+            TriggerSpec::Manual | TriggerSpec::Cron { .. } => None,
+        })
+        .expect("fix-prompt webhook trigger");
+    assert_eq!(webhook.0, "fix-prompt");
+    assert_eq!(webhook.1.as_deref(), Some("json:/submission|json:/rev"));
+    assert!(webhook
+        .2
+        .iter()
+        .any(|f| f.pointer == "/event"
+            && f.equals.as_ref() == Some(&serde_json::json!("gate.blocked"))));
+    assert!(
+        webhook.3.is_none(),
+        "fix-prompt must create only the report-only task run"
+    );
+
+    for required in [
+        "gate.blocked",
+        "Read `RUN.json`",
+        "EVENT.json",
+        "every blocking fingerprint",
+        "bb run build --payload-file",
+        "REPORT.json",
+        "\"blocking_fingerprints\"",
+        "\"builder_packet\"",
+        "\"suggested_next_run\"",
+        "\"no_side_effects\": true",
+        "No code edits",
+        "No branches",
+        "No PRs",
+        "No deploys",
+        "No task parking or",
+        "No run resolution",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
+fn fix_prompt_report_fixture_preserves_every_gate_blocked_fingerprint() {
+    let event: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/contracts/bb.gate_blocked_event.v1.valid.json"
+    ))
+    .unwrap();
+    let report: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/contracts/bb.fix_prompt_report.v1.valid.json"
+    ))
+    .unwrap();
+
+    assert_eq!(event["event"], "gate.blocked");
+    assert_eq!(report["schema_version"], "bb.fix_prompt_report.v1");
+    assert_eq!(report["event"], event["event"]);
+    assert_eq!(report["submission"], event["submission"]);
+    assert_eq!(report["change"], event["change"]);
+    assert_eq!(report["rev"], event["rev"]);
+    assert_eq!(report["no_side_effects"], true);
+    assert_eq!(report["artifact_paths"], serde_json::json!(["REPORT.json"]));
+    assert!(report["suggested_next_run"]
+        .as_str()
+        .unwrap()
+        .contains("bb run build --payload-file"));
+
+    let report_fingerprints = report["blocking_fingerprints"].as_array().unwrap();
+    let packet_fingerprints = report["builder_packet"]["must_include_fingerprints"]
+        .as_array()
+        .unwrap();
+    for finding in event["blocking"].as_array().unwrap() {
+        let fp = &finding["fingerprint"];
+        assert!(report_fingerprints.contains(fp), "report missing {fp}");
+        assert!(packet_fingerprints.contains(fp), "packet missing {fp}");
+        let report_finding = report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["fingerprint"] == *fp)
+            .unwrap_or_else(|| panic!("finding missing {fp}"));
+        assert_eq!(report_finding["file"], finding["file"]);
+        assert_eq!(report_finding["line"], finding["line"]);
+        assert_eq!(report_finding["claim"], finding["claim"]);
+        assert_eq!(report_finding["evidence"], finding["evidence"]);
+    }
+}
+
+#[test]
 fn self_drill_task_is_weekly_sprite_reflex_contract() {
     let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("self-drill").unwrap();
@@ -458,6 +579,52 @@ fn deploy_prod_verify_webhook_filters_and_dedupes_events() {
             .len(),
         1
     );
+}
+
+#[test]
+fn fix_prompt_webhook_filters_and_dedupes_gate_blocked_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = temp_fix_prompt_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_HOOK_FIX_PROMPT", "s3cret");
+
+    let deliver = |ledger: &mut Ledger, body: &str, delivery: &str| {
+        let sig = sign_hmac("s3cret", body.as_bytes());
+        handle_webhook(
+            &plane,
+            ledger,
+            "fix-prompt",
+            &[
+                ("X-Hub-Signature-256".to_string(), sig),
+                ("X-GitHub-Delivery".to_string(), delivery.to_string()),
+            ],
+            body,
+        )
+        .unwrap()
+    };
+
+    let in_scope = include_str!("fixtures/contracts/bb.gate_blocked_event.v1.valid.json");
+    assert_eq!(deliver(&mut ledger, in_scope, "FIX-1").status, 202);
+
+    let duplicate = deliver(&mut ledger, in_scope, "FIX-2");
+    assert_eq!(duplicate.status, 202);
+    assert!(duplicate.body.contains("\"duplicate\":true"));
+
+    for (body, delivery) in [
+        (
+            r#"{"event":"gate.clear","submission":"sub-fix-prompt","rev":"abc123def456","blocking":[]}"#,
+            "FIX-3",
+        ),
+        (
+            r#"{"submission":"sub-fix-prompt","rev":"abc123def456","blocking":[]}"#,
+            "FIX-4",
+        ),
+    ] {
+        let resp = deliver(&mut ledger, body, delivery);
+        assert_eq!(resp.status, 200, "{body} -> {}", resp.body);
+        assert!(resp.body.contains("filtered"), "{}", resp.body);
+    }
+    assert_eq!(ledger.list_runs(Some("fix-prompt"), None).unwrap().len(), 1);
 }
 
 #[test]
@@ -665,6 +832,31 @@ fn temp_deploy_prod_verify_plane(root: &Path) -> Plane {
     fs::write(
         root.join("tasks/deploy-prod-verify/card.md"),
         fs::read_to_string(repo.join("tasks/deploy-prod-verify/card.md")).unwrap(),
+    )
+    .unwrap();
+
+    Plane::load(root).unwrap()
+}
+
+fn temp_fix_prompt_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/fix-prompt")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+
+    let repo = public_plane_root();
+    fs::write(
+        root.join("agents/fix-prompt-generator.toml"),
+        fs::read_to_string(repo.join("agents/fix-prompt-generator.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/fix-prompt/task.toml"),
+        fs::read_to_string(repo.join("tasks/fix-prompt/task.toml")).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/fix-prompt/card.md"),
+        fs::read_to_string(repo.join("tasks/fix-prompt/card.md")).unwrap(),
     )
     .unwrap();
 

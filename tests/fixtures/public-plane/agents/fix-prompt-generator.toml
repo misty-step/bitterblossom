@@ -1,0 +1,10 @@
+version = 1
+role = "fix-prompt-generator"
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY"]
+skills = [
+  "bitterblossom/operator-min",
+  "harness-kit/deliver#packet",
+]

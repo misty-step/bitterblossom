@@ -9,7 +9,7 @@ without adding semantic workflow logic to the Rust spine.
 
 ## Oracle
 
-- [ ] A `gate.blocked -> fix-prompt-generator` reflex writes a bounded builder
+- [x] A `gate.blocked -> fix-prompt-generator` reflex writes a bounded builder
       packet from gate findings without editing code, resolving runs, parking
       tasks, or merging.
 - [ ] A deploy/prod verifier reflex consumes a deploy-smoke or production
@@ -76,3 +76,20 @@ payload contracts, and reference docs.
   `bb status --json`, `bb runs show <run-id> --json`,
   `bb artifacts read <run-id> REPORT.json --json`, and `bb gate --json` when a
   recommendation references a submission.
+
+### 2026-07-02 fix-prompt reflex contract slice
+
+- Added a public-plane `fix-prompt` report-only task, `fix-prompt-generator`
+  API-auth agent, and card for signed `gate.blocked` webhook replay or manual
+  dispatch.
+- Added a valid `gate.blocked` event fixture and `bb.fix_prompt_report.v1`
+  report fixture; the lifecycle tests assert that every blocking fingerprint,
+  file, line, claim, and evidence string survives into the report and bounded
+  builder packet.
+- Added webhook filter/dedupe tests for `/hooks/fix-prompt` and task red-line
+  tests proving no action fan-out and no mutation authority in config/card.
+- Verification:
+  `cargo test --locked --test lifecycle_reflex --test task_card_contract -- --nocapture`
+  and `cargo run --quiet -- --config tests/fixtures/public-plane check`.
+- Deferred by overnight guardrail: no live Sprite run receipt/cost was produced
+  because overnight mode forbids Sprite dispatches.
