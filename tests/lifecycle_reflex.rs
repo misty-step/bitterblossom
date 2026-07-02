@@ -963,3 +963,129 @@ fn temp_review_plane(root: &Path) -> Plane {
 
     Plane::load(root).unwrap()
 }
+
+#[test]
+fn lifecycle_orchestrator_task_is_report_only_planner_contract() {
+    let plane = Plane::load(&public_plane_root()).unwrap();
+    let task = plane.task("lifecycle-orchestrator").unwrap();
+
+    assert_eq!(task.agent_name, "lifecycle-orchestrator");
+    assert_eq!(task.agent.harness, "pi");
+    assert_eq!(task.agent.model, "deepseek/deepseek-v4-flash");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("lifecycle-orchestrator"));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.timeout_minutes, Some(15));
+    assert_eq!(task.spec.budget.max_runs_per_day, Some(10));
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.20));
+
+    // Manual-only for this slice: no baked-in auto-trigger cadence.
+    let has_manual = task
+        .spec
+        .triggers
+        .iter()
+        .any(|trigger| matches!(trigger, TriggerSpec::Manual));
+    assert!(has_manual);
+    assert!(
+        task.spec
+            .triggers
+            .iter()
+            .all(|trigger| matches!(trigger, TriggerSpec::Manual)),
+        "lifecycle-orchestrator must be manual-only in this slice"
+    );
+
+    for required in [
+        "run plan",
+        "RUN.json",
+        "EVENT.json",
+        "bb status --json",
+        "docs/lifecycle-orchestrator-authority.md",
+        "bb.lifecycle_orchestrator_report.v1",
+        "\"recommended_runs\"",
+        "\"stop_conditions\"",
+        "\"idempotency_key\"",
+        "\"no_side_effects\": true",
+        "planner, not an executor",
+        "No code edits",
+        "No branches",
+        "No deploys",
+        "No run resolution",
+        "bypasses `bb run`",
+        "`bb task unpark`, `bb runs resolve`, `bb dlq ack`, `bb notify`",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
+fn lifecycle_orchestrator_report_fixture_is_a_report_only_run_plan() {
+    let report: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/contracts/bb.lifecycle_orchestrator_report.v1.valid.json"
+    ))
+    .unwrap();
+
+    assert_eq!(
+        report["schema_version"],
+        "bb.lifecycle_orchestrator_report.v1"
+    );
+    assert!(report["event"].is_string());
+    assert!(report["bb_run_id"].is_string());
+    assert_eq!(report["no_side_effects"], true);
+    assert_eq!(report["artifact_paths"], serde_json::json!(["REPORT.json"]));
+
+    let snapshot = &report["plane_snapshot"];
+    for key in [
+        "status",
+        "gate",
+        "parked_tasks",
+        "open_dead_letters",
+        "recent_runs",
+    ] {
+        assert!(snapshot.get(key).is_some(), "plane_snapshot missing {key}");
+    }
+
+    let runs = report["recommended_runs"].as_array().unwrap();
+    assert!(!runs.is_empty(), "recommended_runs must not be empty");
+    for step in runs {
+        let command = step["command"].as_str().unwrap();
+        assert!(
+            command.contains("bb run "),
+            "step is not a bb run: {command}"
+        );
+        assert!(
+            command.contains("--payload-file"),
+            "step omits --payload-file: {command}"
+        );
+        assert!(
+            command.contains("--idempotency-key"),
+            "step omits --idempotency-key: {command}"
+        );
+        assert!(!step["task"].as_str().unwrap().is_empty());
+        assert!(!step["payload_file"].as_str().unwrap().is_empty());
+        assert!(!step["idempotency_key"].as_str().unwrap().is_empty());
+
+        // Red lines: no plan step may recommend a mutation or a merge/deploy.
+        for forbidden in [
+            "task unpark",
+            "runs resolve",
+            "dlq ack",
+            "dlq replay",
+            "notify",
+            "merge",
+            "deploy",
+        ] {
+            assert!(
+                !command.contains(forbidden),
+                "recommended command must not include '{forbidden}': {command}"
+            );
+        }
+    }
+
+    assert!(!report["stop_conditions"].as_array().unwrap().is_empty());
+    assert!(report["residual_risk"].is_string());
+}

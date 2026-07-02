@@ -1,0 +1,9 @@
+version = 1
+role = "lifecycle-orchestrator"
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY"]
+skills = [
+  "bitterblossom/operator-min",
+]

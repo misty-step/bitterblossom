@@ -1,0 +1,18 @@
+agent = "lifecycle-orchestrator"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+
+[budget]
+timeout_minutes = 15
+max_runs_per_day = 10
+max_cost_per_run_usd = 0.20
+turn_cap = 24
+
+# Manual-only for this slice. The orchestrator is report-only and reads a
+# lifecycle event plus plane state to emit a run plan; auto-trigger cadence
+# (webhook/cron) is a deliberate later decision, not baked in here.
+[[trigger]]
+kind = "manual"
