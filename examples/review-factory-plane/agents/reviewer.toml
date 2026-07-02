@@ -1,0 +1,24 @@
+version = 1
+harness = "pi"
+model = "moonshotai/kimi-k2.6"
+role = "reviewer"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/code-review#pr-review",
+  "harness-kit/ci#diff-risk",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "read"
+provider_key_name = "review-factory-reviewer"
+provider_spend_cap_usd = 1.25
+model_allowlist = ["moonshotai/kimi-k2.6"]
+trigger_bindings = ["manual", "webhook"]
+iteration_cap = 24
+turn_cap = 40
+tool_action_cap = 80
+output_bytes_cap = 30000
+wall_clock_minutes = 30
+side_effect_policy = "kill"

@@ -1,0 +1,24 @@
+{
+  "schema": "bb.review_factory.report.v1",
+  "verdict": "needs_attention",
+  "summary": "The PR changes a dispatch boundary and needs one focused follow-up before merge.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "src/dispatch.rs",
+      "line": 118,
+      "title": "Budget breach path can skip notification",
+      "evidence": "The branch returns before enqueueing the outbox row.",
+      "recommendation": "Record the notification before returning the failed run state."
+    }
+  ],
+  "comment_policy": {
+    "mode": "report_only",
+    "posted": false,
+    "reason": "Template sample; live agents decide posting from task policy."
+  },
+  "residual_risk": [
+    "No live GitHub comment was posted from this sample.",
+    "The sample does not prove model quality; it only pins the output contract."
+  ]
+}

@@ -82,6 +82,15 @@ WebSocket exec.
 ./target/debug/bb --config examples/demo-plane run demo
 ```
 
+`examples/review-factory-plane/` is the first copyable workload template beyond
+the demo: a credential-free-to-validate pull-request review factory with agent
+policy, webhook containment filters, budgets, sample GitHub payload, expected
+`REPORT.json`, and a local validation recipe in its README.
+
+```bash
+./target/debug/bb --config examples/review-factory-plane check --json
+```
+
 ## Guarantees
 
 - A run row exists in SQLite **before any trigger gets its ack**; ingress
