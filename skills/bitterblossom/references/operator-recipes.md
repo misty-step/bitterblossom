@@ -372,3 +372,14 @@ bb --config <plane> task unpark <task>
 
 Never unpark just to make a command succeed. Read the parked reason, inspect
 recent runs, and name why the underlying condition is gone.
+
+## Autonomy Promotion
+
+Autonomous task families run at a fixed authority level (read-only,
+report-only, dry-run, PR-only) and climb only on cited evidence. Before
+recommending or taking any higher-authority action, read
+[`docs/rollout-scorecards.md`](../../../docs/rollout-scorecards.md): confirm the
+task family's scorecard is green for the target level and that an operator has
+approved the promotion. Green metrics make the next-level ticket eligible for
+operator approval; they never flip authority automatically. A promotion ticket
+that does not cite the lower-authority evidence packet is not ready.

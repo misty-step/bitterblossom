@@ -35,6 +35,8 @@ Let Bitterblossom cron agents consume whitelisted, well-specced backlogs by firs
 
 ## Dry-Run → PR-Only Graduation Metrics
 
+Scorecard shape and promotion doctrine: `docs/rollout-scorecards.md` (backlog 084).
+
 Dry-run is a product requirement, not a delay tactic. PR-only mode is eligible only after dry-run evidence shows the selector and planner are reliable:
 
 - at least 20 dry-run selections across fixture + real whitelisted backlogs;
