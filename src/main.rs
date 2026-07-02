@@ -123,10 +123,10 @@ enum Command {
     },
     /// Resume reflex dispatch after a `pause`. No-op if not paused.
     Resume,
-    /// Report missing declared secrets and unspawnable command-harness
-    /// binaries before dispatch creates run rows. Targets one task or the
-    /// submission-storm member set (the gate-required verdict tasks).
-    /// Read-only report; non-zero exit when findings exist.
+    /// Report missing declared secrets, unspawnable command-harness binaries,
+    /// and subscription-auth readiness before dispatch creates run rows.
+    /// Targets one task or the submission-storm member set (the gate-required
+    /// verdict tasks). Read-only report; non-zero exit when findings exist.
     Preflight {
         task: Option<String>,
         #[arg(long)]
@@ -1017,7 +1017,7 @@ fn run() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if report.findings.is_empty() {
                 println!(
-                    "preflight ok: {} task(s) checked, no missing secrets or unspawnable binaries",
+                    "preflight ok: {} task(s) checked, no pre-dispatch findings",
                     report.tasks_checked.len()
                 );
             } else {
@@ -1028,6 +1028,9 @@ fn run() -> Result<()> {
                 );
                 for f in &report.findings {
                     println!("  {} [{}] {}", f.task, f.kind, f.detail);
+                    if let Some(remediation) = &f.remediation {
+                        println!("    remediation: {remediation}");
+                    }
                 }
             }
             if !report.findings.is_empty() {
