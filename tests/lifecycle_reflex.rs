@@ -294,7 +294,11 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "Cerberus",
         "CI green is mandatory",
         "maximum 3 fix attempts",
-        "escalation-needed",
+        "escalation_needed",
+        "/escalate",
+        "idempotency_key",
+        "skipped_escalated",
+        "already escalated",
         "auto-deploy-on-merge",
         "\"bb.incident_triage_response.v1\"",
         "\"progress_writebacks\"",
@@ -302,7 +306,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "\"experiments\"",
         "\"fix_attempts\"",
         "\"iteration_guard\"",
-        "\"bb_notification\"",
+        "\"escalation\"",
         "\"artifact_paths\": [\"REPORT.json\"]",
     ] {
         assert!(task.card.contains(required), "card missing {required}");

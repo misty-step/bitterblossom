@@ -11,6 +11,20 @@ repos = [
   { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
 ]
 
+# No turn_cap: this task's agent harness is "command" (the incident-triage
+# wrapper script, which itself launches pi). BB's turn_cap is only
+# enforceable pre-execution for harness in {claude, codex, pi, omp}
+# (src/harness.rs::supports_turn_cap) and observed in-flight from streamed
+# per-turn JSONL, which a command-harness task never emits on its own
+# stdout (src/harness.rs::parse_partial_progress only reads the wrapper's
+# final bb.command_result.v1 line). Setting turn_cap here would make every
+# run fail before the agent starts (build_command bails). timeout_minutes
+# is the real, harness-agnostic wall-clock bound for this task; it is sized
+# 4x canary-triage's report-only budget (120 vs 30 min) because this task
+# runs a full hypothesize -> experiment -> PR -> review -> CI -> merge -> QA
+# cycle instead of a single read-only report. max_cost_per_run_usd and
+# max_runs_per_day are sized the same way (>6x and <2/day vs canary-triage's
+# 8/day) for a heavier, rarer workload.
 [budget]
 timeout_minutes = 120
 max_runs_per_day = 3

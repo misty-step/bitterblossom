@@ -1,6 +1,11 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use bitterblossom::harness::parse_output;
 
@@ -11,6 +16,117 @@ fn repo_root() -> std::path::PathBuf {
 fn write_executable(path: &std::path::Path, content: &str) {
     fs::write(path, content).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// (method, path, body) per received request.
+type RequestLog = Vec<(String, String, String)>;
+
+/// Minimal single-threaded HTTP stub standing in for Canary. `handler` maps
+/// (method, path, body) to (status, body) and every request is logged so
+/// tests can assert on exact escalate-call shape (idempotency key, reason).
+fn spawn_stub_canary(
+    max_conns: usize,
+    handler: impl Fn(&str, &str, &str) -> (u16, String) + Send + 'static,
+) -> (u16, Arc<Mutex<RequestLog>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log: Arc<Mutex<RequestLog>> = Arc::new(Mutex::new(Vec::new()));
+    let log2 = log.clone();
+    thread::spawn(move || {
+        for stream in listener.incoming().take(max_conns) {
+            let Ok(stream) = stream else { continue };
+            handle_stub_conn(stream, &handler, &log);
+        }
+    });
+    (port, log2)
+}
+
+fn handle_stub_conn(
+    stream: TcpStream,
+    handler: &(impl Fn(&str, &str, &str) -> (u16, String) + Send + 'static),
+    log: &Arc<Mutex<RequestLog>>,
+) {
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+        return;
+    }
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut content_length = 0usize;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+        if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            content_length = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        let _ = reader.read_exact(&mut body);
+    }
+    let body_str = String::from_utf8_lossy(&body).to_string();
+    log.lock()
+        .unwrap()
+        .push((method.clone(), path.clone(), body_str.clone()));
+    let (status, resp_body) = handler(&method, &path, &body_str);
+    let response = format!(
+        "HTTP/1.1 {status} x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        resp_body.len(),
+        resp_body
+    );
+    let mut stream = stream;
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed in {repo:?}");
+}
+
+/// A real (throwaway) git checkout with `bb/incident-<id>-attempt-<n>`
+/// branches, mimicking the sprite workspace layout the wrapper inspects.
+fn make_repo_with_attempt_branches(
+    root: &std::path::Path,
+    dir_name: &str,
+    incident_id: &str,
+    attempts: &[u32],
+) -> std::path::PathBuf {
+    let repo = root.join(dir_name);
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "master"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    for n in attempts {
+        git(
+            &repo,
+            &["branch", &format!("bb/incident-{incident_id}-attempt-{n}")],
+        );
+    }
+    repo
 }
 
 fn write_event_and_run(dir: &std::path::Path, service: &str) {
@@ -314,4 +430,205 @@ fn incident_triage_wrapper_blocks_unlisted_service_before_model_run() {
     );
     let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
     assert!(parsed.result.contains("incident triage blocked"));
+}
+
+#[test]
+fn incident_triage_wrapper_skips_already_escalated_incident_before_model_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let marker = dir.path().join("model-ran");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        &format!("#!/bin/sh\ntouch {}\nexit 9\n", marker.display()),
+    );
+
+    let (port, requests) = spawn_stub_canary(1, |_method, _path, _body| {
+        (
+            200,
+            r#"{"incident":{"id":"INC-test123","escalated_at":"2026-07-02T00:00:00Z"}}"#
+                .to_string(),
+        )
+    });
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "model should never run for an already-escalated incident"
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "skipped_escalated");
+    assert_eq!(report["escalation"]["escalated"], true);
+
+    let seen = requests.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, "GET");
+    assert_eq!(seen[0].1, "/api/v1/incidents/INC-test123");
+
+    let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert!(
+        parsed.result.contains("incident triage skipped"),
+        "{}",
+        parsed.result
+    );
+}
+
+#[test]
+fn incident_triage_wrapper_backstops_escalation_when_report_omits_the_call() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+cat >/dev/null
+cat > REPORT.json <<'JSON'
+{
+  "schema": "bb.incident_triage_response.v1",
+  "status": "escalation_needed",
+  "bb_run_id": "run-test",
+  "delivery_id": "DLV-test",
+  "incident": {"id": "INC-test123", "service": "canary", "severity": "low", "fingerprint": "fp-test"},
+  "repo": "misty-step/canary",
+  "progress_writebacks": [],
+  "hypotheses": [],
+  "experiments": [],
+  "fix_attempts": [],
+  "iteration_guard": {"max_fix_attempts": 3, "attempts_used": 3, "stopped": true, "reason": "exhausted verification chain"},
+  "scope_honesty": {"auto_deploy_on_merge": true, "v1_stop": "blocked"},
+  "artifact_paths": ["REPORT.json"],
+  "residual_risk": []
+}
+JSON
+printf '{"type":"turn_end"}\n'
+"#,
+    );
+
+    let (port, requests) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" {
+            (200, r#"{"incident":{"id":"INC-test123"}}"#.to_string())
+        } else {
+            (
+                200,
+                format!(
+                    r#"{{"escalation":{{"incident_id":"INC-test123","escalated_at":"2026-07-02T01:00:00Z","escalated_by":"bitterblossom/canary-triage","path":"{path}"}}}}"#
+                ),
+            )
+        }
+    });
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["escalation"]["escalated"], true);
+    assert_eq!(
+        report["escalation"]["response"]["escalation"]["escalated_by"],
+        "bitterblossom/canary-triage"
+    );
+
+    let seen = requests.lock().unwrap();
+    let escalate_call = seen
+        .iter()
+        .find(|(method, path, _)| method == "POST" && path.ends_with("/escalate"))
+        .expect("wrapper must call /escalate as a backstop when the report skipped it");
+    assert_eq!(escalate_call.1, "/api/v1/incidents/INC-test123/escalate");
+    let body: serde_json::Value = serde_json::from_str(&escalate_call.2).unwrap();
+    assert_eq!(body["owner"], "bitterblossom/canary-triage");
+    assert_eq!(body["purpose"], "triage_escalation");
+    assert_eq!(
+        body["idempotency_key"],
+        "bb-run-run-test:INC-test123:escalate"
+    );
+}
+
+#[test]
+fn incident_triage_wrapper_fails_hard_when_repo_branches_exceed_max_fix_attempts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    make_repo_with_attempt_branches(dir.path(), "canary", "INC-test123", &[1, 2, 3, 4]);
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+cat >/dev/null
+cat > REPORT.json <<'JSON'
+{
+  "schema": "bb.incident_triage_response.v1",
+  "status": "pr_opened",
+  "bb_run_id": "run-test",
+  "delivery_id": "DLV-test",
+  "incident": {"id": "INC-test123", "service": "canary", "severity": "low", "fingerprint": "fp-test"},
+  "repo": "misty-step/canary",
+  "progress_writebacks": [],
+  "hypotheses": [],
+  "experiments": [],
+  "fix_attempts": [],
+  "iteration_guard": {"max_fix_attempts": 3, "attempts_used": 1, "stopped": false, "reason": null},
+  "scope_honesty": {"auto_deploy_on_merge": true, "v1_stop": "blocked"},
+  "artifact_paths": ["REPORT.json"],
+  "residual_risk": []
+}
+JSON
+printf '{"type":"turn_end"}\n'
+"#,
+    );
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "wrapper must fail the run when the checked-out repo proves the guard was violated \
+         even though the report under-claims attempts_used=1; stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("iteration guard violated"),
+        "stderr={stderr}"
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["iteration_guard"]["attempts_used"], 4);
 }

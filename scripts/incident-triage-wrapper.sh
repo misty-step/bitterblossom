@@ -186,6 +186,54 @@ print(json.dumps({
 PY
 }
 
+write_skipped_report() {
+  reason="$1"
+  python3 - "$reason" "$max_fix_attempts" <<'PY'
+import json
+import os
+import sys
+
+reason, max_fix_attempts = sys.argv[1], int(sys.argv[2])
+report = {
+    "schema": "bb.incident_triage_response.v1",
+    "status": "skipped_escalated",
+    "bb_run_id": os.environ.get("BB_TRIAGE_RUN_ID", ""),
+    "delivery_id": os.environ.get("BB_TRIAGE_DELIVERY_ID", ""),
+    "incident": {
+        "id": os.environ.get("BB_TRIAGE_INCIDENT_ID", ""),
+        "service": os.environ.get("BB_TRIAGE_SERVICE", ""),
+        "severity": os.environ.get("BB_TRIAGE_SEVERITY", ""),
+        "fingerprint": os.environ.get("BB_TRIAGE_FINGERPRINT", ""),
+    },
+    "repo": os.environ.get("BB_TRIAGE_REPO", ""),
+    "progress_writebacks": [],
+    "hypotheses": [],
+    "experiments": [],
+    "fix_attempts": [],
+    "iteration_guard": {
+        "max_fix_attempts": max_fix_attempts,
+        "attempts_used": 0,
+        "stopped": False,
+        "reason": None,
+    },
+    "scope_honesty": {
+        "auto_deploy_on_merge": os.environ.get("BB_TRIAGE_AUTO_DEPLOY_ON_MERGE") == "true",
+        "v1_stop": "skipped_already_escalated",
+    },
+    "escalation": {"escalated": True, "reason": reason, "response": None},
+    "artifact_paths": ["REPORT.json"],
+    "residual_risk": [reason],
+}
+with open("REPORT.json", "w", encoding="utf-8") as f:
+    json.dump(report, f, indent=2, sort_keys=True)
+    f.write("\n")
+print(json.dumps({
+    "schema_version": "bb.command_result.v1",
+    "result": f"incident triage skipped: {reason}",
+}, sort_keys=True))
+PY
+}
+
 if [ "$BB_TRIAGE_ALLOWED" != "1" ]; then
   write_blocked_report "service is not in the incident-triage whitelist"
   exit 0
@@ -202,6 +250,42 @@ fi
 if [ -z "${CANARY_ENDPOINT:-}" ] || [ -z "${CANARY_API_KEY:-}" ]; then
   write_blocked_report "CANARY_ENDPOINT or CANARY_API_KEY is unset"
   exit 0
+fi
+
+# Escalated incidents are never worked by triage agents. Canary does not yet
+# guarantee an escalation flag on the webhook payload itself (tracked
+# cross-repo), so this preflight asks Canary directly. Network failure or an
+# absent field fails open (proceed with triage) rather than silently
+# dropping incidents before Canary ships the field.
+if [ -n "$BB_TRIAGE_INCIDENT_ID" ]; then
+  already_escalated="false"
+  if curl -fsS "$CANARY_ENDPOINT/api/v1/incidents/$BB_TRIAGE_INCIDENT_ID" \
+      -H "Authorization: Bearer $CANARY_API_KEY" \
+      -o .bb-incident-preflight.json 2>/dev/null; then
+    already_escalated=$(python3 - .bb-incident-preflight.json <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    print("false")
+    raise SystemExit(0)
+incident = data.get("incident")
+if not isinstance(incident, dict):
+    incident = data if isinstance(data, dict) else {}
+escalated_at = incident.get("escalated_at")
+is_escalated = incident.get("is_escalated")
+print("true" if (escalated_at or is_escalated) else "false")
+PY
+)
+  fi
+  rm -f .bb-incident-preflight.json
+  if [ "$already_escalated" = "true" ]; then
+    write_skipped_report "incident $BB_TRIAGE_INCIDENT_ID is already escalated; escalated incidents are never worked by triage agents"
+    exit 0
+  fi
 fi
 
 agent_cmd=""
@@ -354,3 +438,150 @@ result = {
 }
 print(json.dumps(result, sort_keys=True))
 PY
+
+# Mechanical iteration-guard backstop. The agent self-reports fix attempts in
+# REPORT.json, but nothing above this line independently proves it stayed
+# inside max_fix_attempts, and a report that forgets to call Canary's
+# /escalate is silently unbounded. Cross-check attempts_used against the
+# actual bb/incident-<id>-attempt-<n> branches in the checked-out repo (the
+# one artifact the agent cannot under-report without lying to git itself),
+# escalate on Canary as a backstop when the guard fired but the report did
+# not already escalate, and hard-fail the run when the repo proves the
+# agent exceeded max_fix_attempts regardless of what it claimed.
+python3 - "$max_fix_attempts" "$BB_TRIAGE_REPO_DIR" "$BB_TRIAGE_INCIDENT_ID" \
+  > .bb-escalate-plan.json <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+max_fix_attempts, repo_dir, incident_id = sys.argv[1], sys.argv[2], sys.argv[3]
+max_fix_attempts = int(max_fix_attempts)
+
+with open("REPORT.json", "r", encoding="utf-8") as f:
+    report = json.load(f)
+
+guard = report.get("iteration_guard") or {}
+reported_attempts = int(guard.get("attempts_used", len(report.get("fix_attempts") or [])))
+
+branch_attempts = set()
+if incident_id and repo_dir and os.path.isdir(os.path.join(repo_dir, ".git")):
+    prefix = f"bb/incident-{incident_id}-attempt-"
+    try:
+        out = subprocess.run(
+            [
+                "git", "-C", repo_dir, "for-each-ref",
+                "--format=%(refname:short)", "refs/heads", "refs/remotes",
+            ],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"branch verification skipped: {exc}", file=sys.stderr)
+        out = ""
+    for line in out.splitlines():
+        short = line.split("/", 1)[1] if line.startswith("origin/") else line
+        if prefix in short:
+            suffix = short.rsplit("-attempt-", 1)[-1]
+            if suffix.isdigit():
+                branch_attempts.add(int(suffix))
+
+verified_attempts = max(reported_attempts, len(branch_attempts))
+mismatch = len(branch_attempts) > reported_attempts
+overrun = len(branch_attempts) > max_fix_attempts
+self_flagged_stop = bool(guard.get("stopped")) and report.get("status") == "escalation_needed"
+already_escalated = bool((report.get("escalation") or {}).get("escalated"))
+should_escalate = (self_flagged_stop or overrun) and not already_escalated
+
+plan = {
+    "verified_attempts": verified_attempts,
+    "branch_attempts": sorted(branch_attempts),
+    "mismatch": mismatch,
+    "overrun": overrun,
+    "should_escalate": should_escalate,
+    "reason": guard.get("reason")
+    or (
+        f"mechanical check found {len(branch_attempts)} attempt branches "
+        f"exceeding max_fix_attempts {max_fix_attempts}"
+        if overrun
+        else "iteration guard exhausted"
+    ),
+}
+print(json.dumps(plan))
+
+report.setdefault("iteration_guard", {})["attempts_used"] = verified_attempts
+if mismatch:
+    report["residual_risk"] = list(report.get("residual_risk") or []) + [
+        f"mechanical branch check found {len(branch_attempts)} attempt branches "
+        f"{sorted(branch_attempts)} vs reported attempts_used {reported_attempts}"
+    ]
+with open("REPORT.json", "w", encoding="utf-8") as f:
+    json.dump(report, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+
+should_escalate=$(python3 -c "import json; print(json.load(open('.bb-escalate-plan.json'))['should_escalate'])")
+overrun=$(python3 -c "import json; print(json.load(open('.bb-escalate-plan.json'))['overrun'])")
+
+if [ "$should_escalate" = "True" ]; then
+  escalate_reason=$(python3 -c "import json; print(json.load(open('.bb-escalate-plan.json'))['reason'])")
+  ESCALATE_REASON="$escalate_reason" python3 - "$BB_TRIAGE_RUN_ID" "$BB_TRIAGE_INCIDENT_ID" \
+    > .bb-escalate-request.json <<'PY'
+import json
+import os
+import sys
+
+run_id, incident_id = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "reason": os.environ["ESCALATE_REASON"],
+    "owner": "bitterblossom/canary-triage",
+    "purpose": "triage_escalation",
+    "idempotency_key": f"bb-run-{run_id}:{incident_id}:escalate",
+}))
+PY
+  escalate_status=0
+  curl -fsS -X POST "$CANARY_ENDPOINT/api/v1/incidents/$BB_TRIAGE_INCIDENT_ID/escalate" \
+    -H "Authorization: Bearer $CANARY_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d @.bb-escalate-request.json \
+    -o .bb-escalate-response.json 2>.bb-escalate-error.txt || escalate_status=$?
+  python3 - "$escalate_status" <<'PY'
+import json
+import sys
+
+status = int(sys.argv[1])
+with open("REPORT.json", "r", encoding="utf-8") as f:
+    report = json.load(f)
+with open(".bb-escalate-request.json", "r", encoding="utf-8") as f:
+    reason = json.load(f).get("reason")
+if status == 0:
+    try:
+        with open(".bb-escalate-response.json", "r", encoding="utf-8") as f:
+            response = json.load(f)
+    except (OSError, ValueError):
+        response = None
+    report["escalation"] = {"escalated": True, "reason": reason, "response": response}
+else:
+    try:
+        with open(".bb-escalate-error.txt", "r", encoding="utf-8") as f:
+            err = f.read().strip()
+    except OSError:
+        err = ""
+    report["escalation"] = {
+        "escalated": False,
+        "reason": reason,
+        "response": {"error": err or f"curl exited {status}"},
+    }
+with open("REPORT.json", "w", encoding="utf-8") as f:
+    json.dump(report, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+  rm -f .bb-escalate-request.json .bb-escalate-response.json .bb-escalate-error.txt
+fi
+
+if [ "$overrun" = "True" ]; then
+  branches=$(python3 -c "import json; print(json.load(open('.bb-escalate-plan.json'))['branch_attempts'])")
+  rm -f .bb-escalate-plan.json
+  echo "iteration guard violated: attempt branches $branches in $BB_TRIAGE_REPO_DIR exceed max_fix_attempts $max_fix_attempts" >&2
+  exit 1
+fi
+rm -f .bb-escalate-plan.json
