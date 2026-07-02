@@ -56,7 +56,7 @@ sequenceDiagram
 
 ## Reviewer Evidence
 
-- Start here: [Terminal transcript](./issue-529-trusted-thread-metadata-terminal.txt)
+- Start here: [Terminal transcript](../archive/walkthrough-terminal-transcripts/issue-529-trusted-thread-metadata-terminal.txt)
 - Fast claim: the transcript shows the branch-specific diff summary, the focused metadata slice, the repaired worktree lock slice, `ruff`, and the full conductor suite all passing from this branch.
 
 ## Verification

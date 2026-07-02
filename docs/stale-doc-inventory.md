@@ -74,22 +74,23 @@ evidence.
 
 ## Terminal Transcript Duplicates
 
-`docs/walkthroughs/` contains terminal transcript companions that are
-historical evidence, not current operator instructions:
+Terminal transcript companions are historical evidence, not current operator
+instructions. They now live under
+`docs/archive/walkthrough-terminal-transcripts/`:
 
-- `docs/walkthroughs/codex-simplify-bb-sprite-transport-terminal.txt`
-- `docs/walkthroughs/codex-simplify-bb-workspace-contract-terminal.txt`
-- `docs/walkthroughs/codex-simplify-governance-session-terminal.txt`
-- `docs/walkthroughs/issue-505-qa-intake-terminal.txt`
-- `docs/walkthroughs/issue-529-trusted-thread-metadata-terminal.txt`
+- `docs/archive/walkthrough-terminal-transcripts/codex-simplify-bb-sprite-transport-terminal.txt`
+- `docs/archive/walkthrough-terminal-transcripts/codex-simplify-bb-workspace-contract-terminal.txt`
+- `docs/archive/walkthrough-terminal-transcripts/codex-simplify-governance-session-terminal.txt`
+- `docs/archive/walkthrough-terminal-transcripts/issue-505-qa-intake-terminal.txt`
+- `docs/archive/walkthrough-terminal-transcripts/issue-529-trusted-thread-metadata-terminal.txt`
 
-Later 057 work should either move these under an archive boundary or justify
-why paired terminal transcripts remain in the live walkthrough directory.
+`tests/cli_contract_docs.rs` guards that no `*-terminal.txt` files remain in
+the live walkthrough directory.
 
 ## Follow-Up Slices
 
 - Child 2: explicit superseded banners on historical ADRs landed.
-- Child 3: archive or justify walkthrough terminal transcript duplicates.
+- Child 3: walkthrough terminal transcript duplicates archived.
 - Child 4: re-audit live CLI snippets after the ADR/walkthrough move.
 - Child 5: extend `tests/cli_contract_docs.rs` with path-aware stale-command
   checks for current docs only, avoiding archive, backlog-history, and test

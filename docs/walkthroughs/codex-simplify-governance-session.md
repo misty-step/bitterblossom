@@ -76,7 +76,7 @@ Observable improvements:
 
 Primary walkthrough artifact:
 
-- [`codex-simplify-governance-session-terminal.txt`](./codex-simplify-governance-session-terminal.txt)
+- [`codex-simplify-governance-session-terminal.txt`](../archive/walkthrough-terminal-transcripts/codex-simplify-governance-session-terminal.txt)
 
 Persistent protecting check:
 
