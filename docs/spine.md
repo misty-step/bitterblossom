@@ -426,6 +426,11 @@ fingerprints findings (`sha256(kind|file|claim)`) when absent. The
 `pass`, non-zero → one `blocking` finding carrying the stderr tail) — a
 deterministic gate like `verify.sh` is never mediated by an agent.
 
+`simplification` is the read-only refactor lens. Refactor diffs come from
+`build` or the operator and then re-enter the normal storm; there is no
+standalone mutating refactor workload in v1. See
+[`refactor-lens.md`](refactor-lens.md).
+
 **The gate.** `plane.toml` declares policy; `bb gate --change <key>`
 evaluates pure data:
 
