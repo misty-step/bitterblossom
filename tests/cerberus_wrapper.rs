@@ -140,6 +140,36 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
 }
 
 #[test]
+fn cerberus_wrapper_rejects_malformed_gh_token_env_name() {
+    // Regression (Cerberus finding on bb#936): CERBERUS_GH_TOKEN_ENV reaches
+    // an indirect-expansion `eval` to look up the named token variable. A
+    // value that isn't a plain shell identifier must be rejected before it
+    // ever reaches `eval`, not passed through to cerberus or the shell.
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path());
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CERBERUS_GH_TOKEN_ENV", "GH_TOKEN}\"; touch injected; #")
+        .env("GH_TOKEN", "test-gh-token")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "malformed CERBERUS_GH_TOKEN_ENV must be rejected, not executed"
+    );
+    assert!(
+        !dir.path().join("injected").exists(),
+        "injected shell syntax must never execute"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must be a valid environment variable name"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
 fn cerberus_wrapper_prefers_source_checkout_over_stale_target_binary() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path());
