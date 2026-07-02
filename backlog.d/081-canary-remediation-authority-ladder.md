@@ -27,6 +27,8 @@ After report-only Canary triage proves useful, add narrowly staged authority for
 
 ## Promotion Gates By Authority Level
 
+Scorecard shape and authority-ladder vocabulary: `docs/rollout-scorecards.md` (backlog 084).
+
 Each level requires measured evidence from the previous level; do not skip levels.
 
 - **Observe / report only → branch/PR:** requires backlog 080 report-only scorecard green: useful reports, no side effects, dedupe working, artifact inspection working, bounded spend.

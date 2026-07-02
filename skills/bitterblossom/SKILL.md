@@ -65,6 +65,22 @@ A closeout receipt is incomplete until it names the exact command/surface used,
 run id or submission id, ledger state, cost/budget status, side effects,
 artifact reads via MCP or `bb artifacts list/read`, and residual risk.
 
+## Rollout Scorecards
+
+Autonomous task families ship at less than full authority (read-only,
+report-only, dry-run, PR-only) and climb an authority ladder only on evidence.
+The single reusable scorecard template and promotion doctrine live in
+[`docs/rollout-scorecards.md`](../../docs/rollout-scorecards.md).
+
+Refuse autonomy expansion from vibes. Do not recommend or take a higher
+authority action (open a branch/PR, merge, deploy, resolve, unpark) for a task
+family unless that level's scorecard is green *and* an operator has approved the
+promotion. "It has been working" is not evidence; the scorecard is. Green
+metrics only make the next-level ticket eligible for explicit operator approval;
+they never flip authority by themselves. Merge, unpark, production mutation, and
+broad rollout stay operator authority until a scorecard plus an operator
+decision says otherwise.
+
 ## Route
 
 | Need | Use |
@@ -88,7 +104,8 @@ artifact reads via MCP or `bb artifacts list/read`, and residual risk.
 | Submission storm / review factory | `bb submit ...`, verdict `bb run <kind> ...`, then `bb gate --json` |
 | Read-only inspection for agents over MCP | `bb --config <plane> mcp serve` (stdio JSON-RPC; `bb_status`, `bb_check`, `bb_tasks`, `bb_runs_list`, `bb_runs_show`, `bb_artifacts_list`, `bb_artifact_read`, `bb_dlq_list`, `bb_preflight`, `bb_gate`) |
 
-Detailed command recipes: `references/operator-recipes.md`.
+Detailed command recipes: `references/operator-recipes.md`. Authority-promotion
+rules and per-task scorecards: [`docs/rollout-scorecards.md`](../../docs/rollout-scorecards.md).
 
 ## Dispatch Rules
 

@@ -1,0 +1,192 @@
+# Rollout Scorecards And Promotion Gates
+
+Date: 2026-07-02
+Backlog: 084
+
+The single reusable contract for shipping a Bitterblossom task family at less
+than full authority — read-only, report-only, dry-run, or PR-only — and for
+deciding, from evidence, whether to promote, hold, or roll back that authority.
+
+Before 084 every low-authority task invented its own promotion section in its
+own backlog ticket, in a slightly different shape (080 "Report-Only Graduation
+Metrics", 081 "Promotion Gates By Authority Level", 082 "Dry-Run → PR-Only
+Graduation Metrics"). This doc is the source of truth those tickets point at so
+the shape stops drifting. A new autonomous task family fills the template here
+(or references it) rather than reinventing the fields.
+
+## Why This Exists
+
+The plane owns mechanism, not workload judgment. "How much authority does this
+workload have, and what earns it more" is exactly the kind of governance
+decision that must be explicit, evidenced, and operator-gated — never promoted
+by inertia because a report-only task "seems to work." An autonomous task that
+gains write authority from vibes instead of a green scorecard is the failure
+this contract prevents.
+
+The rule is simple and load-bearing: **product judgment stays in grooming.**
+Bitterblossom consumes shaped, ready work and reports when work is not ready. It
+does not decide, on its own, that it has earned more authority.
+
+## Authority Ladder
+
+Every autonomous task family sits at exactly one authority level. Levels are
+ordered; you do not skip a level, and each promotion requires the prior level's
+scorecard to be green.
+
+| Level | The task may | The task must never |
+|---|---|---|
+| `read-only` | Read status, config, runs, gates, dead letters, artifacts over CLI/MCP/API. | Any mutation, dispatch, replay, resolve, park/unpark, submit, or credential provisioning. |
+| `report-only` | Investigate and write a `REPORT.json` artifact with evidence, hypotheses, and recommended next commands. | Edit code, open branches/PRs, merge, deploy, park/unpark, resolve runs, acknowledge DLQs, post user-visible notifications. |
+| `dry-run` | Select ready work and write a plan artifact naming the ticket, verifier, budget, branch name, expected paths, and stop conditions. | Create a branch, edit code, open a PR, merge, or deploy. |
+| `PR-only` | Run the deliver/TDD/review workflow and open a reviewed PR. | Merge, deploy, or open more than one active BB-authored PR per repo/task family. |
+| `guarded-land` | Merge only behind deterministic CI/gate, fresh-context review, repo allowlist, and an explicit operator policy gate. | Merge on any weaker evidence, or land outside the allowlist. |
+| `rollback-own-change` | Revert only the agent's own last known change, and only after the same incident signature or a declared sanity check still fails. | Revert unrelated code, or continue after a no-progress halt. |
+
+081's level names (observe/recommend → branch/PR → guarded land → rollback) map
+onto this ladder: `observe/recommend` is `read-only`+`report-only`, `branch/PR`
+is `PR-only`, and the remaining two are identical.
+
+## The Scorecard Template
+
+Each autonomous task family carries a compact scorecard. Copy this block into
+the task family's backlog ticket (or reference this doc from it) and keep it
+current:
+
+```text
+Task family:
+Current authority:      read-only | report-only | dry-run | PR-only | guarded-land | rollback-own-change
+Allowed actions:
+Forbidden actions:
+Evidence metrics:       what is counted, and the target (e.g. "N useful reports, 0 dangerous")
+Promotion trigger:      the measured condition that makes the NEXT level eligible for operator approval
+Rollback / hold trigger: the measured condition that demotes or freezes this level
+Budget / cost cap:      per-run cost cap and daily run cap
+Duplicate-suppression key: the idempotency/dedupe key that prevents storm fanout
+Required artifacts:     the artifact handles that carry the evidence (e.g. REPORT.json)
+Operator approval needed for next level: yes  (always yes — see Doctrine)
+```
+
+## Doctrine
+
+These rules are non-negotiable and apply to every task family:
+
+- **No automatic promotion.** Green metrics only make the next-level backlog
+  ticket *eligible* for explicit operator approval. Metrics never flip authority
+  by themselves.
+- **A promotion ticket cannot be marked ready without evidence.** The higher
+  authority ticket must cite the lower-authority mode's evidence packet — run
+  ids, artifact handles, gate/review receipts, and cost. A promotion ticket with
+  "later add autonomy" language and no cited evidence is not ready.
+- **Agents refuse autonomy expansion from vibes.** An agent operating a task
+  family must refuse to recommend or take a higher authority action unless the
+  scorecard for that level is green *and* an operator has approved the
+  promotion. "It has been working" is not evidence; the scorecard is.
+- **Merge, unpark, production mutation, and broad rollout stay operator
+  authority** until a scorecard plus an explicit operator decision says
+  otherwise, consistent with the VISION "no hidden authority escalation" refusal.
+- **Failures halt; they do not plow forward.** A level that hits its
+  rollback/hold trigger, a no-progress signal, or a failed sanity check stops
+  and reports rather than continuing.
+
+## Where Authority Is Visible Today
+
+Authority currently lives in two places, both product-generic:
+
+- **The task card** (`tasks/<name>/card.md`) states the allowed/forbidden
+  actions in prose the agent reads.
+- **The run artifact** records the enforced posture. Dry-run and report-only
+  reports carry it structurally — e.g. the backlog-chewer dry-run report's
+  `authority` object (`current`, `no_side_effects`, `forbidden_actions`) and the
+  canary triage report's `constraints.mutations_performed`.
+
+There is no single structured authority field surfaced by `bb status --json`
+yet. Surfacing the active authority level and a scorecard link from
+`bb status --json` (084 oracle item 2) is a deliberate follow-up: it needs a
+spec decision on whether authority belongs in `task.toml` as a first-class
+governance field (alongside budget) or stays derived from card + report. Until
+that lands, the scorecard link is the card + this doc, and the enforced posture
+is read from the run artifact. Report shapes carrying authority differently
+(`authority` object vs `constraints`) are also left unmentioned here for a later
+unification slice; this doc governs the promotion contract, not the report
+schema.
+
+## Current Task Family Scorecards
+
+These are the shipped low-authority task families and their scorecards. Each
+task family's backlog ticket holds the authoritative, evolving copy; this table
+is the fleet-wide index.
+
+### canary-triage (report-only) — backlog 080
+
+```text
+Task family:            canary-triage
+Current authority:      report-only
+Allowed actions:        investigate incident, write REPORT.json with evidence, hypotheses, likely owner files/services, recommended next bb commands, residual uncertainty
+Forbidden actions:      code edits, branches, PRs, merges, deploys, remediation claims, incident annotation/ack/resolution, park/unpark, run resolution, user-visible notifications
+Evidence metrics:       >=5 replayed fixture incidents + >=3 real low-severity incidents produce useful reports; >=80% reviewer-actionable; 0 dangerously wrong; dedupe holds; spend within cap
+Promotion trigger:      scorecard green makes backlog 081 level 2 (branch/PR) eligible for operator approval
+Rollback / hold trigger: any dangerously-wrong report, dedupe storm, or spend over cap
+Budget / cost cap:      per-run and daily caps from the task's budget block
+Duplicate-suppression key: incident fingerprint within the dedupe window
+Required artifacts:     REPORT.json
+Operator approval needed for next level: yes
+```
+
+### backlog-chewer-dry-run (dry-run) — backlog 082
+
+```text
+Task family:            backlog-chewer-dry-run
+Current authority:      dry-run
+Allowed actions:        scan whitelisted repos, select only ready tickets, shape vague tickets, write a plan artifact naming ticket/verifier/budget/branch/expected paths/stop conditions
+Forbidden actions:      branch, pr, merge, deploy, code_edit (report authority object forbids all five)
+Evidence metrics:       >=20 dry-run selections; >=90% judged genuinely ready; 0 dangerous/blocked tickets selected; vague tickets shaped not coded; every plan names verifier/acceptance/budget/stop/branch/paths
+Promotion trigger:      per-repo dry-run scorecard green makes PR-only eligible for that repo family + operator approval
+Rollback / hold trigger: any dangerous/blocked ticket selected, or a plan missing required fields
+Budget / cost cap:      low dry-run per-run cap; daily run cap from the task budget block
+Duplicate-suppression key: max one active BB-authored PR per repo/task family (enforced before PR-only)
+Required artifacts:     REPORT.json (plan artifact)
+Operator approval needed for next level: yes
+```
+
+### fix-prompt-generator (report-only) — backlog 062
+
+```text
+Task family:            fix-prompt-generator
+Current authority:      report-only
+Allowed actions:        read a signed gate.blocked event, write a bounded builder packet naming every blocking fingerprint/file/line/claim/evidence and a suggested next run
+Forbidden actions:      editing code, resolving runs, parking tasks, merging, or any action fan-out beyond the report
+Evidence metrics:       every blocking fingerprint/file/line/claim/evidence survives into the report and builder packet; no mutation authority in config/card
+Promotion trigger:      none defined; this reflex is designed to stay report-only (a builder packet is consumed by a separate dispatch)
+Rollback / hold trigger: any report that drops a blocking fingerprint or asserts a mutation
+Budget / cost cap:      per-run cap from the task budget block
+Duplicate-suppression key: gate.blocked event dedupe on /hooks/fix-prompt
+Required artifacts:     REPORT.json (builder packet)
+Operator approval needed for next level: yes
+```
+
+### artifact / MCP read surfaces (read-only) — backlog 078, 079
+
+```text
+Task family:            artifact and MCP read surfaces
+Current authority:      read-only
+Allowed actions:        CLI/MCP/API reads of status, config, runs, gates, dead letters, artifacts (bb_status, bb_runs_list, bb_artifacts_list, bb_artifact_read, ...)
+Forbidden actions:      any tools/call mutation, dispatch, replay, resolve, park/unpark, submit, merge, or credential provisioning over MCP
+Evidence metrics:       concrete usage demand before any output/publication surface grows (e.g. artifact bundle/export, backlog 101, waits for demand)
+Promotion trigger:      demonstrated read usage justifies a deliberate export surface, gated by its own ticket
+Rollback / hold trigger: any mutating MCP tool request must be rejected (JSON-RPC -32602)
+Budget / cost cap:      n/a (read-only)
+Duplicate-suppression key: n/a
+Required artifacts:     n/a (reads existing artifacts)
+Operator approval needed for next level: yes
+```
+
+## Adding A New Autonomous Task Family
+
+1. Pick the lowest authority level that produces useful evidence — usually
+   `read-only` or `report-only`.
+2. Fill the scorecard template in the task family's backlog ticket and add a row
+   to the fleet index above.
+3. Ship the task/card/agent so the card's forbidden-actions prose matches the
+   scorecard, and the report artifact carries the enforced posture.
+4. Do not write a promotion ticket until the current level's evidence metrics
+   are green and cited.

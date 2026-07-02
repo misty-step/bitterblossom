@@ -35,6 +35,8 @@ Make Canary incidents trigger a bounded Bitterblossom triage agent that investig
 
 ## Report-Only Graduation Metrics
 
+Scorecard shape and promotion doctrine: `docs/rollout-scorecards.md` (backlog 084).
+
 This ticket must ship with an explicit promotion scorecard. It remains report-only until all of these are true:
 
 - at least 5 replayed fixture incidents and 3 real low-severity incidents produce useful `REPORT.json` artifacts with no external side effects;
