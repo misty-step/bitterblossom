@@ -105,6 +105,31 @@ fn historical_adrs_are_explicitly_superseded() {
 }
 
 #[test]
+fn walkthrough_terminal_transcripts_are_archived() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let live = root.join("docs/walkthroughs");
+    for entry in fs::read_dir(&live).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(
+            !name.ends_with("-terminal.txt"),
+            "{} should live under docs/archive/walkthrough-terminal-transcripts/",
+            path.display()
+        );
+    }
+
+    for rel in [
+        "docs/archive/walkthrough-terminal-transcripts/codex-simplify-bb-sprite-transport-terminal.txt",
+        "docs/archive/walkthrough-terminal-transcripts/codex-simplify-bb-workspace-contract-terminal.txt",
+        "docs/archive/walkthrough-terminal-transcripts/codex-simplify-governance-session-terminal.txt",
+        "docs/archive/walkthrough-terminal-transcripts/issue-505-qa-intake-terminal.txt",
+        "docs/archive/walkthrough-terminal-transcripts/issue-529-trusted-thread-metadata-terminal.txt",
+    ] {
+        assert!(root.join(rel).exists(), "{rel} missing from transcript archive");
+    }
+}
+
+#[test]
 fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));

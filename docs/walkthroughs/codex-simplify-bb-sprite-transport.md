@@ -64,7 +64,7 @@ Observable improvements:
 
 Primary walkthrough artifact:
 
-- [`codex-simplify-bb-sprite-transport-terminal.txt`](./codex-simplify-bb-sprite-transport-terminal.txt)
+- [`codex-simplify-bb-sprite-transport-terminal.txt`](../archive/walkthrough-terminal-transcripts/codex-simplify-bb-sprite-transport-terminal.txt)
 
 Persistent protecting check:
 

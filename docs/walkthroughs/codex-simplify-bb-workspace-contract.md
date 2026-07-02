@@ -41,7 +41,7 @@ Observable improvements:
 
 Primary walkthrough artifact:
 
-- [`codex-simplify-bb-workspace-contract-terminal.txt`](./codex-simplify-bb-workspace-contract-terminal.txt)
+- [`codex-simplify-bb-workspace-contract-terminal.txt`](../archive/walkthrough-terminal-transcripts/codex-simplify-bb-workspace-contract-terminal.txt)
 
 Persistent protecting check:
 
