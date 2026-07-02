@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/misty-step/bitterblossom/blob/master/docs/schemas/bb.notification_event.v1.schema.json",
+  "title": "Bitterblossom Notification Event v1",
+  "description": "Outbound notification webhook payload emitted by Bitterblossom's notify outbox.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "bb.notification_event.v1",
+      "description": "String schema id. Additive optional fields may remain on v1; removing or renaming required fields requires v2."
+    },
+    "event": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable notification event name, for example run_stale_executing, budget_blocked, or submission_arm_timed_out."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task": {
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "critical"
+      ]
+    },
+    "detail": {
+      "description": "Non-object detail value preserved when the producer is asked to notify with scalar or array detail."
+    }
+  },
+  "additionalProperties": true
+}

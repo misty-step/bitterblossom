@@ -1,0 +1,10 @@
+{
+  "schema_version": "bb.notification_event.v1",
+  "event": "budget_blocked",
+  "run_id": "run_budget_123",
+  "task": "review",
+  "severity": "critical",
+  "detail": {
+    "reason": "notify budget threshold exceeded"
+  }
+}
