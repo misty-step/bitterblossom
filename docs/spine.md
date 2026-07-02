@@ -556,7 +556,7 @@ bb keys mint <agent> | --all [--json]             # mint scoped OpenRouter child
 bb keys rotate <agent> [--json]                   # replace one stored child key, revoke the old key
 bb keys revoke <agent> [--json]                   # revoke one stored child key and clear local key material
 bb keys list [--remote] [--include-disabled] [--json] # local metadata or OpenRouter management list
-bb preflight <task> | --storm [--json]            # missing secrets + unspawnable command binaries, pre-dispatch
+bb preflight <task> | --storm [--json]            # missing secrets, local command bins, subscription auth readiness; pre-dispatch
 bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>
 bb submit open --change K --rev SHA [--context TEXT]
@@ -579,6 +579,20 @@ storm classes) for one task or the submission-storm member set, before dispatch
 creates run rows. Secret and provider-key checks apply on every substrate;
 binary checks apply only to `substrate = "local"`, the only substrate whose
 binaries `bb` can inspect.
+
+For manual-only Codex/Claude subscription-auth tasks, preflight also reports a
+classified readiness finding before authoring begins. Operators can set
+`BB_PREFLIGHT_SUBSCRIPTION_AUTH_PROBE_CODEX`,
+`BB_PREFLIGHT_SUBSCRIPTION_AUTH_PROBE_CLAUDE`, or the generic
+`BB_PREFLIGHT_SUBSCRIPTION_AUTH_PROBE` to a read-only probe executable. The
+probe receives `BB_PREFLIGHT_TASK`, `BB_PREFLIGHT_HOST`,
+`BB_PREFLIGHT_SUBSTRATE`, `BB_PREFLIGHT_HARNESS`, `BB_PREFLIGHT_BIN`, and
+`BB_PREFLIGHT_MODEL`; zero means ready, non-zero becomes a
+`subscription_auth_unready` finding whose JSON names the task, host, substrate,
+harness, binary, model, classification (`readiness`), detail, and remediation.
+Without a configured probe, subscription-auth tasks report
+`subscription_auth_unverified` instead of silently creating an implementation
+run to discover expired OAuth state.
 
 ## What the plane refuses to know
 
