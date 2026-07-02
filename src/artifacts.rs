@@ -1,4 +1,4 @@
-//! Run-artifact inspection helpers shared by the CLI and (future) MCP.
+//! Run-artifact inspection helpers shared by the CLI and MCP.
 //!
 //! Mechanism only: enumerate and safely read artifact files a run's attempts
 //! left on disk, without letting a caller escape the attempt artifact root or
