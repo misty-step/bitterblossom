@@ -1,5 +1,10 @@
 # ADR-004: Bounded Review Governance
 
+> Superseded for current Bitterblossom operation by
+> [ADR-005: Rust Event Plane](005-rust-event-plane.md) and
+> [docs/spine.md](../spine.md). This record is retained as historical prior
+> art, not current operator guidance.
+
 - **Status:** Proposed
 - **Date:** 2026-03-07
 - **Related:** [ADR-003](003-remote-conductor-control-plane.md) (Remote Conductor Control Plane), [issue #102](https://github.com/misty-step/bitterblossom/issues/102), [issue #498](https://github.com/misty-step/bitterblossom/issues/498)

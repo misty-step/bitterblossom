@@ -86,6 +86,25 @@ fn current_docs_and_skills_match_live_cli_contract() {
 }
 
 #[test]
+fn historical_adrs_are_explicitly_superseded() {
+    for rel in [
+        "docs/adr/001-claude-code-canonical-harness.md",
+        "docs/adr/002-architecture-minimalism.md",
+        "docs/adr/003-conductor-control-plane.md",
+        "docs/adr/004-bounded-review-governance.md",
+        "docs/adr/004-elixir-conductor-architecture.md",
+    ] {
+        let text = read(rel);
+        assert!(
+            text.contains("Superseded for current Bitterblossom operation by"),
+            "{rel} must warn readers that it is historical"
+        );
+        assert!(text.contains("005-rust-event-plane.md"));
+        assert!(text.contains("../spine.md"));
+    }
+}
+
+#[test]
 fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));

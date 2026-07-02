@@ -1,5 +1,10 @@
 # ADR-004: Elixir Conductor — Behaviour-Driven Agent Orchestration
 
+> Superseded for current Bitterblossom operation by
+> [ADR-005: Rust Event Plane](005-rust-event-plane.md) and
+> [docs/spine.md](../spine.md). This record is retained as historical prior
+> art, not current operator guidance.
+
 - **Status:** Accepted
 - **Date:** 2026-03-14
 - **Related:** ADR-001 (Claude Code harness), ADR-002 (thin CLI), ADR-003 (conductor control plane)

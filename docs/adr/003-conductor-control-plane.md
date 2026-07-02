@@ -1,5 +1,10 @@
 # ADR-003: Remote Conductor Control Plane
 
+> Superseded for current Bitterblossom operation by
+> [ADR-005: Rust Event Plane](005-rust-event-plane.md) and
+> [docs/spine.md](../spine.md). This record is retained as historical prior
+> art, not current operator guidance.
+
 - **Status:** Accepted
 - **Date:** 2026-03-06
 - **Related:** ADR-001 (Claude Code as canonical harness), ADR-002 (Thin CLI, Thick Skills)
