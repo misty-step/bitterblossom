@@ -10,7 +10,7 @@ it must be a drilled incident, not silent amnesia.
 
 ## Oracle
 
-- [ ] Production ledger replication is configured with Litestream or an equally
+- [x] Production ledger replication is configured with Litestream or an equally
       boring SQLite replication path, with secrets declared by name only.
 - [x] RPO and RTO are stated in docs and visible in an ops health/readiness
       surface.
@@ -25,7 +25,7 @@ it must be a drilled incident, not silent amnesia.
 
 ## Children
 
-- [ ] Litestream config, container wiring, and Fly volume path integration.
+- [x] Litestream config, container wiring, and Fly volume path integration.
 - [x] Backup health/readiness output for last successful replicate timestamp.
 - [x] Restore drill script against a copied or fixture SQLite DB.
 - [ ] Schema migration/rollback contract for forward-only and rollback-safe
@@ -49,3 +49,18 @@ a restored fixture DB, and proves `bb check`, `bb status --json`, `bb runs list
 Verification: `./scripts/verify.sh` passed with `src LOC: 10017` under the
 raised 10100 mechanism tripwire. Remaining: production Litestream/container
 wiring and schema rollback contract.
+
+2026-07-02 Litestream runtime slice: the production image now installs pinned
+Litestream v0.5.13 for Linux amd64/arm64 and starts through
+`bb-litestream-entrypoint`. Fly declares `BB_LITESTREAM_REQUIRED=1`, the
+volume-backed DB path `/app/plane/.bb/plane.db`, the temporary config path, the
+replica secret env name `LITESTREAM_REPLICA_URL`, and the heartbeat path without
+storing a replica URL in git. The entrypoint writes Litestream v0.5 `replica:`
+config with `${LITESTREAM_REPLICA_URL}` expansion, starts
+`litestream replicate -config`, waits for the initial `litestream sync -wait`
+before starting `bb serve`, writes `.bb/backup-last-success` only after sync,
+fails closed when the required secret is missing, and exits the app if
+Litestream dies. Added a fake-Litestream Rust integration test that proves
+env-name-only config generation, no secret leakage, and heartbeat creation
+without production credentials. Remaining: schema migration/rollback contract
+for old-binary/new-schema releases.
