@@ -255,24 +255,27 @@ Feature/package judgment into the Rust spine.
 
 ## Durable reflex deployment
 
-The operator plane runs as the Fly app `bitterblossom-plane`, not as a
-laptop process. The checked-in [plane/plane.toml](../plane/plane.toml) stays
-loopback-local for safe ad hoc use; Fly sets `BB_INGRESS_BIND=0.0.0.0:8080`
-so its public URL can reach `bb serve`. Set `BB_API_TOKEN` before binding
-wider: the read API and HTML operator shell are token-gated, and `bb serve`
-refuses non-loopback binds without it. `/health` stays unauthenticated for
-liveness and exposes only coarse queue counts; webhook ingress is
-authenticated by each trigger's HMAC secret.
+The operator plane runs as a hosted app, not as a laptop process. Product
+images contain the `bb` binary and substrate tools only; the production
+`plane.toml`, `agents/`, `tasks/`, cards, budgets, org allowlists, and ledger
+state are instance data supplied at runtime. Fly sets
+`BB_INGRESS_BIND=0.0.0.0:8080` so its public URL can reach `bb serve`; set
+`BB_API_TOKEN` before binding wider because the read API and HTML operator shell
+are token-gated, and `bb serve` refuses non-loopback binds without it.
+`/health` stays unauthenticated for liveness and exposes only coarse queue
+counts; webhook ingress is authenticated by each trigger's HMAC secret.
 
 Deployment contract:
 
-- Host: Fly app `bitterblossom-plane` in org `misty-step`, one always-on
-  `dfw` machine, command `bb --config plane serve`.
-- State: encrypted Fly volume `bb_plane_data` mounted at `/app/plane/.bb`, so
-  the checked-in relative `db_path = ".bb/plane.db"` is volume-backed in
-  production.
+- Host: one always-on Fly machine, command `bb serve`, with
+  `BB_PLANE_DIR=/app/plane`.
+- Config and state: encrypted Fly volume `bb_plane_data` mounted at
+  `/app/plane`. The volume root contains `plane.toml`, `agents/`, `tasks/`, and
+  `.bb/plane.db`, so ordinary card, budget, and allowlist changes are runtime
+  config changes rather than image rebuilds.
 - Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
-  the pinned Linux Sprite CLI; [fly.toml](../fly.toml) sets `BB_SPRITE_BIN`.
+  the pinned Linux Sprite CLI; it must not `COPY plane`. [fly.toml](../fly.toml)
+  sets `BB_PLANE_DIR` and `BB_SPRITE_BIN`.
 - Runtime secrets live on Fly, never in git: `BB_API_TOKEN`,
   `BB_HOOK_REVIEW`, `BB_HOOK_CI_DIAGNOSE`, `OPENROUTER_API_KEY`, `GH_TOKEN`,
   and `SPRITE_TOKEN`.

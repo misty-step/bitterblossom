@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>092 Plane Excision - Runtime Volume Slice</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #111; color: #f3f0e8; }
+    main { max-width: 980px; margin: 0 auto; padding: 44px 28px 72px; }
+    h1 { font-size: 42px; margin: 0 0 12px; letter-spacing: 0; }
+    h2 { margin-top: 34px; color: #f6c96b; }
+    p, li { line-height: 1.55; color: #ddd6c8; }
+    code { background: #222; color: #f6c96b; padding: 2px 5px; border-radius: 4px; }
+    .contract { border: 1px solid #4b4b4b; padding: 18px; background: #171717; }
+    table { border-collapse: collapse; width: 100%; margin-top: 14px; }
+    th, td { border: 1px solid #393939; padding: 10px; text-align: left; vertical-align: top; }
+    th { color: #f6c96b; background: #1d1d1d; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Plane Excision: Runtime Volume Contract</h1>
+  <p class="contract">
+    Goal: stop baking Misty Step production plane files into the product image.
+    First slice changes Docker/Fly to expect a runtime plane directory at
+    <code>/app/plane</code>, documents the one-time Fly volume migration, and
+    adds a gate that fails if <code>Dockerfile</code> ever reintroduces
+    <code>COPY plane</code>.
+  </p>
+
+  <h2>Why This Slice</h2>
+  <p>
+    The current publicability blocker has two layers: the image embeds
+    production instance config, and the repo still tracks that instance config.
+    Removing the image embed is the smaller deployment-safe cut: it makes budget
+    and task-card changes runtime data, not image rebuilds. Deleting tracked
+    <code>plane/</code> follows after the gate and local workflows no longer
+    require it.
+  </p>
+
+  <h2>Change Shape</h2>
+  <table>
+    <tr><th>Surface</th><th>Before</th><th>After</th></tr>
+    <tr>
+      <td>Docker image</td>
+      <td><code>COPY plane ./plane</code></td>
+      <td>No production plane files in image; <code>BB_PLANE_DIR=/app/plane</code>.</td>
+    </tr>
+    <tr>
+      <td>Fly mount</td>
+      <td>Volume mounted at <code>/app/plane/.bb</code> for ledger only.</td>
+      <td>Volume mounted at <code>/app/plane</code> for config plus state.</td>
+    </tr>
+    <tr>
+      <td>Gate</td>
+      <td>No publicability check.</td>
+      <td><code>verify.sh</code> rejects <code>COPY plane</code>.</td>
+    </tr>
+    <tr>
+      <td>Docs</td>
+      <td>Deployment docs say checked-in plane is production config.</td>
+      <td>Deployment docs require operator-supplied instance plane and migration.</td>
+    </tr>
+  </table>
+
+  <h2>Acceptance</h2>
+  <ul>
+    <li><code>rg "COPY plane" Dockerfile</code> returns no match.</li>
+    <li><code>fly.toml</code> mounts <code>bb_plane_data</code> at <code>/app/plane</code>.</li>
+    <li><code>./scripts/verify.sh</code> passes and includes the publicability guard.</li>
+    <li>Docs explain how to pre-stage config and state on the Fly volume before deploy.</li>
+  </ul>
+
+  <h2>Stop Conditions</h2>
+  <p>
+    Do not deploy in this slice. The Fly volume migration is outward-facing and
+    must be run deliberately by an operator after the PR lands.
+  </p>
+</main>
+</body>
+</html>

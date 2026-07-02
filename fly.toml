@@ -6,11 +6,12 @@ primary_region = "dfw"
 
 [env]
   BB_INGRESS_BIND = "0.0.0.0:8080"
+  BB_PLANE_DIR = "/app/plane"
   BB_SPRITE_BIN = "/usr/local/bin/sprite"
 
 [mounts]
   source = "bb_plane_data"
-  destination = "/app/plane/.bb"
+  destination = "/app/plane"
 
 [http_service]
   internal_port = 8080

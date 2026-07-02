@@ -9,14 +9,17 @@ RUN cargo build --release --locked --bin bb
 
 FROM debian:bookworm-slim
 ARG SPRITE_VERSION=v0.0.1-rc44
+ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL "https://sprites-binaries.t3.storage.dev/client/${SPRITE_VERSION}/sprite-linux-amd64.tar.gz" \
+RUN case "${TARGETARCH}" in amd64|arm64) sprite_arch="${TARGETARCH}" ;; *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; esac \
+    && curl -fsSL "https://sprites-binaries.t3.storage.dev/client/${SPRITE_VERSION}/sprite-linux-${sprite_arch}.tar.gz" \
     | tar -xzf - -C /usr/local/bin sprite \
     && chmod +x /usr/local/bin/sprite \
     && /usr/local/bin/sprite --version
 WORKDIR /app
 COPY --from=build /app/target/release/bb /usr/local/bin/bb
-COPY plane ./plane
-CMD ["bb", "--config", "plane", "serve"]
+ENV BB_PLANE_DIR=/app/plane
+RUN mkdir -p "$BB_PLANE_DIR"
+CMD ["bb", "serve"]
