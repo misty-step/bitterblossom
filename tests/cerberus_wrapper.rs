@@ -170,6 +170,106 @@ fn cerberus_wrapper_rejects_malformed_gh_token_env_name() {
 }
 
 #[test]
+fn cerberus_wrapper_prefers_dedicated_openrouter_key() {
+    // Cerberus gets its own OpenRouter key so usage is attributable and
+    // governable separately from the plane's shared long-lived
+    // OPENROUTER_API_KEY (backlog 104 context). When CERBERUS_OPENROUTER_API_KEY
+    // is set, the wrapper must export it as OPENROUTER_API_KEY for the
+    // cerberus subprocess, not the shared key.
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("cerberus-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+out_dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --dry-run) shift;;
+    --post) shift;;
+    *) shift;;
+  esac
+done
+mkdir -p "$out_dir"
+printf '%s' "${OPENROUTER_API_KEY:-}" > "$out_dir/seen-openrouter-key.txt"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+"#,
+    );
+    write_event_and_run(dir.path());
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CERBERUS_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "shared-plane-key")
+        .env("CERBERUS_OPENROUTER_API_KEY", "cerberus-scoped-key")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let seen =
+        fs::read_to_string(dir.path().join("cerberus-review/seen-openrouter-key.txt")).unwrap();
+    assert_eq!(
+        seen, "cerberus-scoped-key",
+        "wrapper must prefer CERBERUS_OPENROUTER_API_KEY over the shared OPENROUTER_API_KEY"
+    );
+}
+
+#[test]
+fn cerberus_wrapper_falls_back_to_shared_openrouter_key_when_dedicated_key_unset() {
+    // Without CERBERUS_OPENROUTER_API_KEY, the wrapper must keep working off
+    // the ambient shared OPENROUTER_API_KEY exactly as before this change.
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("cerberus-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+out_dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --dry-run) shift;;
+    --post) shift;;
+    *) shift;;
+  esac
+done
+mkdir -p "$out_dir"
+printf '%s' "${OPENROUTER_API_KEY:-}" > "$out_dir/seen-openrouter-key.txt"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+"#,
+    );
+    write_event_and_run(dir.path());
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CERBERUS_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "shared-plane-key")
+        .env_remove("CERBERUS_OPENROUTER_API_KEY")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let seen =
+        fs::read_to_string(dir.path().join("cerberus-review/seen-openrouter-key.txt")).unwrap();
+    assert_eq!(seen, "shared-plane-key");
+}
+
+#[test]
 fn cerberus_wrapper_prefers_source_checkout_over_stale_target_binary() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path());
