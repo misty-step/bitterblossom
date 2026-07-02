@@ -123,6 +123,91 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
 }
 
 #[test]
+fn incident_triage_wrapper_falls_back_to_pinned_npx_pi_package() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "powder");
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let fake_npx = bin_dir.join("npx");
+    write_executable(
+        &fake_npx,
+        r#"#!/bin/sh
+set -eu
+[ "$1" = "-y" ] || { echo "missing -y" >&2; exit 2; }
+[ "$2" = "@earendil-works/pi-coding-agent@0.80.3" ] || { echo "package=$2" >&2; exit 2; }
+shift 2
+prompt="$(cat)"
+case "$prompt" in
+  *"repo: misty-step/powder"*) ;;
+  *) echo "prompt missing powder repo" >&2; exit 2;;
+esac
+cat > REPORT.json <<'JSON'
+{
+  "schema": "bb.incident_triage_response.v1",
+  "status": "hypotheses_written",
+  "bb_run_id": "run-test",
+  "delivery_id": "DLV-test",
+  "incident": {
+    "id": "INC-test123",
+    "service": "powder",
+    "severity": "low",
+    "fingerprint": "fp-test"
+  },
+  "repo": "misty-step/powder",
+  "progress_writebacks": [
+    {"action": "hypotheses-written", "ref": "ANN-test"}
+  ],
+  "hypotheses": [
+    {"claim": "synthetic low-severity drill", "confidence": "medium", "why": "fixture"}
+  ],
+  "experiments": [],
+  "fix_attempts": [],
+  "iteration_guard": {
+    "max_fix_attempts": 3,
+    "attempts_used": 0,
+    "stopped": false
+  },
+  "scope_honesty": {
+    "auto_deploy_on_merge": false,
+    "v1_stop": "hypotheses_writeback_drill"
+  },
+  "artifact_paths": ["REPORT.json"],
+  "residual_risk": []
+}
+JSON
+printf '{"type":"turn_end"}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":7,"output":11,"cost":{"total":0.02}}}}\n'
+"#,
+    );
+
+    let path = format!("{}:/usr/bin:/bin", bin_dir.to_string_lossy());
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("PATH", path)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(
+        parsed.result,
+        "incident triage hypotheses_written for misty-step/powder INC-test123"
+    );
+    assert_eq!(parsed.stats.tokens_in, Some(7));
+    assert_eq!(parsed.stats.tokens_out, Some(11));
+    assert_eq!(parsed.stats.cost_usd, Some(0.02));
+}
+
+#[test]
 fn incident_triage_wrapper_rejects_malformed_token_env_name() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
