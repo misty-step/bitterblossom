@@ -8,8 +8,8 @@ future runs.
 Current first-class loop:
 
 1. Run three candidate tasks for the same objective and payload.
-2. Pass their run ids, costs, and `REPORT.json` contents to `bb --config plane
-   run model-eval --payload ... --json`.
+2. Pass their run ids, costs, and `REPORT.json` contents to
+   `bb --config <runtime-plane> run model-eval --payload ... --json`.
 3. Save the evaluator result under this directory as reference context.
 4. Promote a new default only after the result is backed by receipts and the
    repo gate still passes.
@@ -27,11 +27,12 @@ Current first-class cohorts:
 | [`simplification`](simplification/README.md) | `simplification`, `simplification-kimi`, `simplification-glm` | Variants use eval-only verdict kinds. |
 | [`product`](product/README.md) | `product`, `product-kimi`, `product-glm` | Variants use eval-only verdict kinds. |
 
-Configured OpenRouter model ids for Pi and OMP agents are also checked against
-`tests/fixtures/openrouter-models-current.json` by `./scripts/verify.sh`.
-The fixture is deterministic local gate input, not proof that a new model
-should be promoted. Refresh it only from the live OpenRouter catalog and promote
-agent defaults only after a flow-specific `bb` smoke plus a model-eval record.
+Configured OpenRouter model ids for Pi and OMP agents are represented by public
+fixtures under `tests/fixtures/model-catalog-agents/` and checked against
+`tests/fixtures/openrouter-models-current.json` by `./scripts/verify.sh`. The
+fixture is deterministic local gate input, not proof that a new model should be
+promoted. Refresh it only from the live OpenRouter catalog and promote agent
+defaults only after a flow-specific `bb` smoke plus a model-eval record.
 
 | Model id | Current role |
 |---|---|

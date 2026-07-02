@@ -1,1 +1,0 @@
-../correctness/card.md

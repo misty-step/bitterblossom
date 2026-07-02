@@ -1,0 +1,19 @@
+agent = "model-catalog-watcher"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+host = "example-org/lane-1"
+
+[budget]
+timeout_minutes = 20
+max_cost_per_run_usd = 0.25
+turn_cap = 30
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "cron"
+schedule = "0 14 * * *"
+

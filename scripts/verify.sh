@@ -26,11 +26,20 @@ grep -qx 'plane' .dockerignore || {
   echo ".dockerignore must exclude plane/ so remote image builds do not upload instance config"
   exit 1
 }
+if git ls-files 'plane/**' | grep -q .; then
+  echo "production plane/ instance config must not be tracked in the product repo"
+  git ls-files 'plane/**'
+  exit 1
+fi
+if git ls-files --error-unmatch canary-services.toml >/dev/null 2>&1; then
+  echo "canary-services.toml is stale instance topology and must not be tracked"
+  exit 1
+fi
 
 echo "==> plane configs validate (bb check)"
-cargo run --quiet -- --config plane check
 cargo run --quiet -- --config examples/demo-plane check
 cargo run --quiet -- --config examples/local-plane check
+cargo run --quiet -- --config tests/fixtures/public-plane check
 
 echo "==> local-plane zero-credential golden path (no secrets, no network)"
 BB=./target/debug/bb

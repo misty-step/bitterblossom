@@ -9,6 +9,7 @@ Canonical app and state:
 ```sh
 export BB_FLY_APP=bitterblossom-plane
 export BB_URL=https://bitterblossom-plane.fly.dev
+export BB_RUNTIME_PLANE=/path/to/private/plane
 ```
 
 The production instance plane lives on the Fly volume mounted at `/app/plane`.
@@ -31,17 +32,17 @@ sprite org list
 sprite use -o misty-step lane-1
 sprite org list
 sprite exec -- whoami
-./target/debug/bb --config plane check
-./target/debug/bb --config plane status --json
-./target/debug/bb --config plane dlq list --json
-./target/debug/bb --config plane notify list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" check
+./target/debug/bb --config "$BB_RUNTIME_PLANE" status --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" dlq list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" notify list --json
 ```
 
 Before running GitHub-backed BB tasks, make `GH_TOKEN` explicit for the command
 that fans out the work:
 
 ```sh
-GH_TOKEN=$(gh auth token) ./target/debug/bb --config plane run verify \
+GH_TOKEN=$(gh auth token) ./target/debug/bb --config "$BB_RUNTIME_PLANE" run verify \
   --payload '{"submission":"<submission>"}' \
   --json
 ```
@@ -98,7 +99,8 @@ BB_API_TOKEN="$BB_API_TOKEN" \
 ```
 
 The smoke checks unauthenticated `/health`, bearer-only read APIs, Fly app and
-volume visibility, and `bb --config plane recover --json` inside the machine.
+volume visibility, and `BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json`
+inside the machine.
 
 ## Rollback
 
@@ -123,7 +125,7 @@ flyctl status --app "$BB_FLY_APP"
 After a restart or deploy, classify inherited running rows:
 
 ```sh
-flyctl ssh console --app "$BB_FLY_APP" --command 'bb --config plane recover --json'
+flyctl ssh console --app "$BB_FLY_APP" --command 'BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json'
 {
   printf '%s\n' 'fail'
   printf '%s\n' 'silent'
@@ -136,8 +138,8 @@ flyctl ssh console --app "$BB_FLY_APP" --command 'bb --config plane recover --js
 Rows in `awaiting_recovery` require side-effect inspection before resolution:
 
 ```sh
-./target/debug/bb --config plane runs show <run-id> --json
-./target/debug/bb --config plane runs resolve <run-id> success --reason "<side effects inspected>"
+./target/debug/bb --config "$BB_RUNTIME_PLANE" runs show <run-id> --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" runs resolve <run-id> success --reason "<side effects inspected>"
 ```
 
 Do not replay an at/after-execute run just because it is inconvenient. Only
@@ -199,8 +201,8 @@ delivery from the upstream provider before declaring the rotation complete.
 Start with the status surface:
 
 ```sh
-./target/debug/bb --config plane status --json
-./target/debug/bb --config plane dlq list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" status --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" dlq list --json
 ```
 
 Classify each problem:
@@ -226,14 +228,14 @@ Webhook notifications are durable before transport. If `status --json` shows
 pending or failed rows under `guards.notify.outbox`, inspect and retry them:
 
 ```sh
-./target/debug/bb --config plane notify list --json
-./target/debug/bb --config plane notify retry --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" notify list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" notify retry --json
 ```
 
 If the notification has already been handled out of band, close it explicitly:
 
 ```sh
-./target/debug/bb --config plane notify ack <id> --reason "<handled reason>" --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" notify ack <id> --reason "<handled reason>" --json
 ```
 
 Acknowledgement keeps the row with reason and timestamp; it is not a delete.

@@ -299,7 +299,7 @@ Deployment contract:
 - Health and recovery checks after a host restart are: unauthenticated
   `GET /health`, `GET /api/tasks` with `Authorization: Bearer $BB_API_TOKEN`,
   `flyctl status --app bitterblossom-plane`, `flyctl volumes list --app
-  bitterblossom-plane`, and `bb --config plane recover` inside the Fly
+  bitterblossom-plane`, and `BB_PLANE_DIR=/app/plane bb recover` inside the Fly
   machine.
 - Production operations live in [`docs/operations/`](operations/). The
   maintained smoke and restore drill is
@@ -335,20 +335,20 @@ Daedalus handoff and future `gen_ai.*` adapters. The v1 schema and
 compatibility rules live in `docs/run-telemetry-export-v1.md`.
 
 The review workload also supports explicit manual tokenomics probes:
-`bb --config plane run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
+`bb --config <runtime-plane> run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
 Measurement mode runs the same real PR review path but suppresses the
 GitHub comment and leaves the full findings in `result.md`; webhook
 reviews post exactly one PR comment and also start the mechanical submission
 storm.
 
 The CI-diagnose workload supports manual dogfood:
-`bb --config plane run ci-diagnose --payload '{"repo":"o/r","head_sha":"SHA","workflow":"verify"}'`.
+`bb --config <runtime-plane> run ci-diagnose --payload '{"repo":"o/r","head_sha":"SHA","workflow":"verify"}'`.
 It writes a report/fix packet and may recommend a builder command, but does not
 edit code, post comments, or trigger follow-up runs.
 
 The model-evaluation loop supports manual candidate comparison. Run at least
 three candidate tasks for the same flow and payload, then pass their reports to
-`bb --config plane run model-eval --payload '<json>' --json`. First-class
+`bb --config <runtime-plane> run model-eval --payload '<json>' --json`. First-class
 cohorts are listed in [`docs/model-evals/`](model-evals/README.md) and cover
 `build`, `review`, `gardener`, `ci-diagnose`, and the submission-storm member
 flows.
@@ -373,9 +373,9 @@ promotion automatic. `./scripts/verify.sh` runs
 `scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json`
 against a checked-in OpenRouter fixture, so local and CI gates stay
 deterministic. Live discovery runs through
-`bb --config plane run model-catalog-watch --payload '{"dry_run":true}' --json`;
+`bb --config <runtime-plane> run model-catalog-watch --payload '{"dry_run":true}' --json`;
 the task fetches the live catalog, reports fixture/config/docs drift and
-same-family candidates in `REPORT.json`, and must not edit `plane/agents`.
+same-family candidates in `REPORT.json`, and must not edit runtime agent config.
 Changing a default still requires a flow-specific `bb` smoke run plus a
 model-eval record.
 

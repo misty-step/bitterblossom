@@ -1,0 +1,4 @@
+version = 1
+harness = "pi"
+provider = "openrouter"
+model = "moonshotai/kimi-k2.7-code"

@@ -13,23 +13,23 @@ sprite hosts, budgets, and repo-specific secrets belong outside the product imag
 - [x] The Docker image no longer `COPY`s the production `plane/` directory.
 - [x] Production config is loaded from an instance source: private repo, Fly
       volume, mounted secret bundle, or explicit `bb config pull` path.
-- [ ] `examples/demo-plane` remains the public reference plane and validates in
+- [x] `examples/demo-plane` remains the public reference plane and validates in
       the repo gate.
-- [ ] Runtime config can be reloaded or redeployed without rebuilding the product
+- [x] Runtime config can be reloaded or redeployed without rebuilding the product
       binary/image for ordinary task-card and budget changes.
-- [ ] A tracked-file scan finds no private topology, tailnet names, personal
+- [x] A tracked-file scan finds no private topology, tailnet names, personal
       paths, real repo allowlists, or instance data in product-owned files.
-- [ ] Production deploy docs explain how an operator supplies an instance plane.
+- [x] Production deploy docs explain how an operator supplies an instance plane.
 - [ ] `./scripts/verify.sh` passes.
 
 ## Children
 
-- [ ] Decide instance-config source and migration path for current `plane/`.
+- [x] Decide instance-config source and migration path for current `plane/`.
 - [x] Dockerfile and Fly launch changes to mount/pull runtime config.
-- [ ] Public-able scan/gate for tracked files.
-- [ ] Demo/reference plane cleanup so clone-onboarding still works.
-- [ ] Config reload or low-risk redeploy path for budget/filter changes.
-- [ ] Delete or relocate stale instance artifacts such as `canary-services.toml`
+- [x] Public-able scan/gate for tracked files.
+- [x] Demo/reference plane cleanup so clone-onboarding still works.
+- [x] Config reload or low-risk redeploy path for budget/filter changes.
+- [x] Delete or relocate stale instance artifacts such as `canary-services.toml`
       after proving they are not product inputs.
 
 ## Notes
@@ -47,3 +47,13 @@ exclusion reintroduces image/context leakage. Docker proof built the image with
 a 1 kB context and confirmed `/app/plane` is empty of `plane.toml`, `tasks/`,
 and `agents/` until a runtime volume supplies them. The repo still tracks
 `plane/`; public-able tracked-file excision remains the next child.
+
+2026-07-02 slice: removed production `plane/` and stale
+`canary-services.toml` from Git tracking while leaving local ignored files on
+disk for the operator. The repo now ignores `/plane/` and `/canary-services.toml`;
+`./scripts/verify.sh` fails if either path is tracked again. Product tests use
+`tests/fixtures/public-plane/`, model-catalog checks use
+`tests/fixtures/model-catalog-agents/`, and the gate validates
+`examples/demo-plane`, `examples/local-plane`, and the public fixture instead
+of the private runtime plane. Operations docs and the dogfood skill now require
+an explicit `BB_RUNTIME_PLANE` or Fly `BB_PLANE_DIR`.

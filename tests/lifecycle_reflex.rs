@@ -1,6 +1,6 @@
-//! Lifecycle reflex packet contracts. These tests intentionally exercise the
-//! checked-in plane files instead of a synthetic-only fixture so lifecycle
-//! slices stay data-owned and visible to agents.
+//! Lifecycle reflex packet contracts. These tests intentionally exercise a
+//! public fixture plane so lifecycle slices stay data-owned without tracking the
+//! operator's production instance config.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,9 +13,13 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn public_plane_root() -> PathBuf {
+    repo_root().join("tests/fixtures/public-plane")
+}
+
 #[test]
 fn ci_diagnose_task_is_api_auth_reflex_contract() {
-    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("ci-diagnose").unwrap();
 
     assert_eq!(task.agent_name, "ci-diagnoser");
@@ -91,7 +95,7 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
         .unwrap()
     };
 
-    let in_scope = r#"{"action":"completed","repository":{"full_name":"misty-step/bitterblossom"},"check_suite":{"head_sha":"deadbeef","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}}"#;
+    let in_scope = r#"{"action":"completed","repository":{"full_name":"example-org/bitterblossom-example"},"check_suite":{"head_sha":"deadbeef","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}}"#;
     assert_eq!(deliver(&mut ledger, in_scope, "d1").status, 202);
 
     for (body, delivery) in [
@@ -100,15 +104,15 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
             "d2",
         ),
         (
-            r#"{"action":"completed","repository":{"full_name":"misty-step/bitterblossom"},"check_suite":{"head_sha":"b","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}}"#,
+            r#"{"action":"completed","repository":{"full_name":"example-org/bitterblossom-example"},"check_suite":{"head_sha":"b","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}}"#,
             "d3",
         ),
         (
-            r#"{"action":"requested","repository":{"full_name":"misty-step/bitterblossom"},"check_suite":{"head_sha":"c","status":"queued","conclusion":"failure","app":{"slug":"github-actions"}}}"#,
+            r#"{"action":"requested","repository":{"full_name":"example-org/bitterblossom-example"},"check_suite":{"head_sha":"c","status":"queued","conclusion":"failure","app":{"slug":"github-actions"}}}"#,
             "d4",
         ),
         (
-            r#"{"action":"completed","repository":{"full_name":"misty-step/bitterblossom"},"check_suite":{"head_sha":"d","status":"completed","conclusion":"failure","app":{"slug":"coderabbitai"}}}"#,
+            r#"{"action":"completed","repository":{"full_name":"example-org/bitterblossom-example"},"check_suite":{"head_sha":"d","status":"completed","conclusion":"failure","app":{"slug":"coderabbitai"}}}"#,
             "d5",
         ),
     ] {
@@ -124,7 +128,7 @@ fn ci_diagnose_webhook_filters_failed_bitterblossom_check_suites() {
 
 #[test]
 fn canary_triage_task_is_report_only_sprite_reflex_contract() {
-    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("canary-triage").unwrap();
 
     assert_eq!(task.agent_name, "canary-triager");
@@ -203,7 +207,7 @@ fn canary_triage_task_is_report_only_sprite_reflex_contract() {
 
 #[test]
 fn self_drill_task_is_weekly_sprite_reflex_contract() {
-    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("self-drill").unwrap();
 
     assert_eq!(task.agent_name, "self-drill-runner");
@@ -211,7 +215,7 @@ fn self_drill_task_is_weekly_sprite_reflex_contract() {
     assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
     assert_eq!(task.agent.role.as_deref(), Some("self-drill"));
     assert_eq!(task.spec.substrate, "sprites");
-    assert_eq!(task.host(), "misty-step/lane-1");
+    assert_eq!(task.host(), "example-org/lane-1");
     assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
     assert_eq!(task.spec.budget.timeout_minutes, Some(20));
     assert_eq!(task.spec.budget.max_runs_per_day, Some(1));
@@ -221,7 +225,7 @@ fn self_drill_task_is_weekly_sprite_reflex_contract() {
         .workspace
         .repos
         .iter()
-        .any(|repo| repo.url == "https://github.com/misty-step/bitterblossom.git"));
+        .any(|repo| repo.url == "https://github.com/example-org/bitterblossom-example.git"));
     assert!(task
         .agent
         .args
@@ -317,7 +321,7 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
 
 #[test]
 fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
-    let plane = Plane::load(&repo_root().join("plane")).unwrap();
+    let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("review").unwrap();
     assert_eq!(task.agent_name, "cerberus-reviewer");
     assert_eq!(task.agent.harness, "command");
@@ -332,13 +336,13 @@ fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
         .workspace
         .repos
         .iter()
-        .any(|repo| repo.url == "https://github.com/misty-step/cerberus.git"));
+        .any(|repo| repo.url == "https://github.com/example-org/cerberus-example.git"));
     assert!(task
         .spec
         .workspace
         .repos
         .iter()
-        .any(|repo| repo.url == "https://github.com/misty-step/bitterblossom.git"));
+        .any(|repo| repo.url == "https://github.com/example-org/bitterblossom-example.git"));
     assert_eq!(task.spec.budget.max_runs_per_day, Some(20));
     assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(1.25));
     assert!(task.card.contains("cerberus review-pr"));
@@ -367,8 +371,8 @@ fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
     assert!(webhook.2.iter().any(|f| {
         f.pointer == "/repository/owner/login"
             && f.any_of.as_ref().is_some_and(|values| {
-                values.contains(&serde_json::json!("misty-step"))
-                    && values.contains(&serde_json::json!("phrazzld"))
+                values.contains(&serde_json::json!("example-org"))
+                    && values.contains(&serde_json::json!("external-example"))
             })
     }));
     assert!(webhook.2.iter().any(|f| {
@@ -416,7 +420,7 @@ fn review_webhook_filters_org_rollout_without_storm_fanout() {
         .unwrap()
     };
 
-    let in_scope = r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"phrazzld/vanity","owner":{"login":"phrazzld"}},"pull_request":{"number":121,"draft":false,"html_url":"https://github.com/phrazzld/vanity/pull/121","updated_at":"2026-06-25T10:00:00Z","additions":42,"changed_files":3,"head":{"sha":"abc123"}}}"#;
+    let in_scope = r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"external-example/review-target","owner":{"login":"external-example"}},"pull_request":{"number":121,"draft":false,"html_url":"https://github.com/external-example/review-target/pull/121","updated_at":"2026-06-25T10:00:00Z","additions":42,"changed_files":3,"head":{"sha":"abc123"}}}"#;
     assert_eq!(deliver(&mut ledger, in_scope, "d1").status, 202);
     assert_eq!(ledger.list_runs(Some("review"), None).unwrap().len(), 1);
     assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
@@ -428,11 +432,11 @@ fn review_webhook_filters_org_rollout_without_storm_fanout() {
 
     for (body, delivery) in [
         (
-            r#"{"action":"opened","sender":{"login":"dependabot[bot]"},"repository":{"full_name":"phrazzld/vanity","owner":{"login":"phrazzld"}},"pull_request":{"number":122,"draft":false,"html_url":"https://github.com/phrazzld/vanity/pull/122","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"botsha"}}}"#,
+            r#"{"action":"opened","sender":{"login":"dependabot[bot]"},"repository":{"full_name":"external-example/review-target","owner":{"login":"external-example"}},"pull_request":{"number":122,"draft":false,"html_url":"https://github.com/external-example/review-target/pull/122","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"botsha"}}}"#,
             "d3",
         ),
         (
-            r#"{"action":"opened","repository":{"full_name":"phrazzld/vanity","owner":{"login":"phrazzld"}},"pull_request":{"number":123,"draft":false,"html_url":"https://github.com/phrazzld/vanity/pull/123","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"nosender"}}}"#,
+            r#"{"action":"opened","repository":{"full_name":"external-example/review-target","owner":{"login":"external-example"}},"pull_request":{"number":123,"draft":false,"html_url":"https://github.com/external-example/review-target/pull/123","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"nosender"}}}"#,
             "d4",
         ),
         (
@@ -440,7 +444,7 @@ fn review_webhook_filters_org_rollout_without_storm_fanout() {
             "d5",
         ),
         (
-            r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"misty-step/big","owner":{"login":"misty-step"}},"pull_request":{"number":9,"draft":false,"html_url":"https://github.com/misty-step/big/pull/9","updated_at":"2026-06-25T10:00:00Z","additions":2501,"changed_files":1,"head":{"sha":"bigsha"}}}"#,
+            r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"example-org/big","owner":{"login":"example-org"}},"pull_request":{"number":9,"draft":false,"html_url":"https://github.com/example-org/big/pull/9","updated_at":"2026-06-25T10:00:00Z","additions":2501,"changed_files":1,"head":{"sha":"bigsha"}}}"#,
             "d6",
         ),
     ] {
@@ -456,20 +460,20 @@ fn temp_ci_plane(root: &Path) -> Plane {
     fs::create_dir_all(root.join("tasks/ci-diagnose")).unwrap();
     fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
 
-    let repo = repo_root();
+    let repo = public_plane_root();
     fs::write(
         root.join("agents/ci-diagnoser.toml"),
-        fs::read_to_string(repo.join("plane/agents/ci-diagnoser.toml")).unwrap(),
+        fs::read_to_string(repo.join("agents/ci-diagnoser.toml")).unwrap(),
     )
     .unwrap();
     fs::write(
         root.join("tasks/ci-diagnose/task.toml"),
-        fs::read_to_string(repo.join("plane/tasks/ci-diagnose/task.toml")).unwrap(),
+        fs::read_to_string(repo.join("tasks/ci-diagnose/task.toml")).unwrap(),
     )
     .unwrap();
     fs::write(
         root.join("tasks/ci-diagnose/card.md"),
-        fs::read_to_string(repo.join("plane/tasks/ci-diagnose/card.md")).unwrap(),
+        fs::read_to_string(repo.join("tasks/ci-diagnose/card.md")).unwrap(),
     )
     .unwrap();
 
@@ -481,20 +485,20 @@ fn temp_canary_triage_plane(root: &Path) -> Plane {
     fs::create_dir_all(root.join("tasks/canary-triage")).unwrap();
     fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
 
-    let repo = repo_root();
+    let repo = public_plane_root();
     fs::write(
         root.join("agents/canary-triager.toml"),
-        fs::read_to_string(repo.join("plane/agents/canary-triager.toml")).unwrap(),
+        fs::read_to_string(repo.join("agents/canary-triager.toml")).unwrap(),
     )
     .unwrap();
     fs::write(
         root.join("tasks/canary-triage/task.toml"),
-        fs::read_to_string(repo.join("plane/tasks/canary-triage/task.toml")).unwrap(),
+        fs::read_to_string(repo.join("tasks/canary-triage/task.toml")).unwrap(),
     )
     .unwrap();
     fs::write(
         root.join("tasks/canary-triage/card.md"),
-        fs::read_to_string(repo.join("plane/tasks/canary-triage/card.md")).unwrap(),
+        fs::read_to_string(repo.join("tasks/canary-triage/card.md")).unwrap(),
     )
     .unwrap();
 
@@ -506,20 +510,20 @@ fn temp_review_plane(root: &Path) -> Plane {
     fs::create_dir_all(root.join("tasks/review")).unwrap();
     fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
 
-    let repo = repo_root();
+    let repo = public_plane_root();
     fs::write(
         root.join("agents/cerberus-reviewer.toml"),
-        fs::read_to_string(repo.join("plane/agents/cerberus-reviewer.toml")).unwrap(),
+        fs::read_to_string(repo.join("agents/cerberus-reviewer.toml")).unwrap(),
     )
     .unwrap();
     fs::write(
         root.join("tasks/review/task.toml"),
-        fs::read_to_string(repo.join("plane/tasks/review/task.toml")).unwrap(),
+        fs::read_to_string(repo.join("tasks/review/task.toml")).unwrap(),
     )
     .unwrap();
     fs::write(
         root.join("tasks/review/card.md"),
-        fs::read_to_string(repo.join("plane/tasks/review/card.md")).unwrap(),
+        fs::read_to_string(repo.join("tasks/review/card.md")).unwrap(),
     )
     .unwrap();
 

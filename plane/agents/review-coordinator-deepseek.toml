@@ -1,6 +1,0 @@
-# Model-eval review candidate: DeepSeek reasoning/coding model.
-version = 1
-role = "reviewer"
-harness = "pi"
-model = "deepseek/deepseek-v4-pro"
-secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]

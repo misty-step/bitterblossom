@@ -11,6 +11,8 @@ observations/archives/*/settings.json
 /bb
 
 # Runtime state files
+/plane/
+/canary-services.toml
 .bb-agent/
 .sprite
 .bb/

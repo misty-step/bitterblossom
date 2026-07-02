@@ -28,7 +28,7 @@ Remote mode probes the Fly plane without sending tokens in query strings:
   BB_API_TOKEN=... scripts/production-ops-drill.sh --remote
 
 Remote mode additionally runs `flyctl status`, `flyctl volumes list`, and
-`bb --config plane recover --json` inside the Fly machine when `flyctl` is
+`BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json` inside the Fly machine when `flyctl` is
 available and authenticated.
 USAGE
 }
@@ -281,7 +281,7 @@ run_remote() {
   if command -v flyctl >/dev/null 2>&1; then
     flyctl status --app "$BB_FLY_APP" >/dev/null
     flyctl volumes list --app "$BB_FLY_APP" >/dev/null
-    flyctl ssh console --app "$BB_FLY_APP" --command 'bb --config plane recover --json' >"$TMP/recover.json"
+    flyctl ssh console --app "$BB_FLY_APP" --command 'BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json' >"$TMP/recover.json"
     echo "ok:remote-fly status volumes recover"
   else
     echo "skip:remote-fly flyctl not found"

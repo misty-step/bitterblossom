@@ -1,1 +1,0 @@
-../gardener/card.md

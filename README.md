@@ -19,6 +19,11 @@ tasks/<name>/card.md        # lane card — the agent's entire context
 tasks/<name>/task.toml      # agent, substrate, workspace, budgets, triggers
 ```
 
+Those files are the operator's instance plane. Production task cards, budgets,
+repo allowlists, and ledgers are runtime config supplied by `--config` or
+`BB_PLANE_DIR`, not files tracked in this product repo. The checked-in planes
+under `examples/` and `tests/fixtures/` are public fixtures only.
+
 One Rust binary, two personalities:
 
 ```bash
