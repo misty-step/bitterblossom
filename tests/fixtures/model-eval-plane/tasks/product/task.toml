@@ -1,0 +1,6 @@
+agent = "pi-grok"
+substrate = "local"
+verdict = "product"
+
+[[trigger]]
+kind = "manual"

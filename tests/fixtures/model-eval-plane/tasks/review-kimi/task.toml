@@ -1,0 +1,5 @@
+agent = "pi-kimi-review"
+substrate = "local"
+
+[[trigger]]
+kind = "manual"

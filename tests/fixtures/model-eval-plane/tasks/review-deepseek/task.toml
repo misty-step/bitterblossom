@@ -1,0 +1,5 @@
+agent = "pi-deepseek-pro"
+substrate = "local"
+
+[[trigger]]
+kind = "manual"

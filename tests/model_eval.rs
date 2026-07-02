@@ -25,6 +25,10 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn model_eval_plane() -> Plane {
+    Plane::load(&root().join("tests/fixtures/model-eval-plane")).unwrap()
+}
+
 const COHORTS: &[Cohort<'_>] = &[
     Cohort {
         flow: "build",
@@ -271,8 +275,7 @@ fn assert_manual_only(task: &bitterblossom::spec::Task) {
 
 #[test]
 fn evaluated_flows_have_three_diverse_candidate_configs() {
-    let repo = root();
-    let plane = Plane::load(&repo.join("plane")).unwrap();
+    let plane = model_eval_plane();
 
     for cohort in COHORTS {
         let baseline_task = if cohort.flow == "review" {
@@ -313,8 +316,7 @@ fn evaluated_flows_have_three_diverse_candidate_configs() {
 
 #[test]
 fn evaluator_task_and_cards_preserve_model_eval_contracts() {
-    let repo = root();
-    let plane = Plane::load(&repo.join("plane")).unwrap();
+    let plane = model_eval_plane();
     let evaluator = plane.task("model-eval").unwrap();
     assert_eq!(evaluator.agent.role.as_deref(), Some("evaluator"));
     assert_eq!(evaluator.agent.model, "openai/gpt-5.5");
@@ -382,7 +384,7 @@ fn model_eval_reference_context_is_documented_for_future_runs() {
 #[test]
 fn build_cost_calibration_record_matches_default_cap() {
     let repo = root();
-    let plane = Plane::load(&repo.join("plane")).unwrap();
+    let plane = model_eval_plane();
     let build = plane.task("build").unwrap();
     assert_eq!(build.spec.budget.max_cost_per_run_usd, Some(4.0));
 
@@ -446,8 +448,7 @@ fn ci_diagnose_real_failure_record_has_complete_receipts() {
 
 #[test]
 fn canonical_gate_verdict_kinds_stay_single_lane() {
-    let repo = root();
-    let plane = Plane::load(&repo.join("plane")).unwrap();
+    let plane = model_eval_plane();
 
     for kind in [
         "verify",

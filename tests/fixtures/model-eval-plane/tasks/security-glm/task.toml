@@ -1,0 +1,6 @@
+agent = "pi-glm"
+substrate = "local"
+verdict = "security-glm"
+
+[[trigger]]
+kind = "manual"

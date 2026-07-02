@@ -1,0 +1,6 @@
+agent = "pi-deepseek-flash"
+substrate = "local"
+verdict = "verify"
+
+[[trigger]]
+kind = "manual"
