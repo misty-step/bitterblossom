@@ -46,3 +46,28 @@ Do not change cerberus itself — this is a BB-side wrapper/wiring change
 consuming flags cerberus already ships. Do not widen the reviewed-repo
 whitelist beyond misty-step/phrazzld until this lands if any target repo
 might carry untrusted external contributions.
+
+## Status (2026-07-02)
+
+Adjacent, narrower slice landed first: cerberus now has its own persistent,
+attributable OpenRouter key (governance/observability, not the M1 per-review
+scoped-key minting this ticket describes) — PR #940. `CERBERUS_OPENROUTER_API_KEY`
+is a Fly secret on `bitterblossom-plane`, and `cerberus-review-wrapper.sh`
+prefers it over the shared `OPENROUTER_API_KEY`, falling back to the shared
+key when unset. Verified live: the wrapper resolves the real 1Password-stored
+key (`OPENROUTER_API_KEY__cerberus`, OpenRouter name `app:cerberus`, $1500
+cap) correctly ahead of a decoy shared key.
+
+**Not yet done, blocking full effect:** the review task's agent config on the
+production plane (`plane/agents/cerberus-reviewer.toml`, excised from git
+tracking, lives only on the `bitterblossom-plane` Fly volume) still declares
+`secrets = ["GH_TOKEN", "OPENROUTER_API_KEY"]` — `CERBERUS_OPENROUTER_API_KEY`
+needs to be added to that list for the value to actually reach the review
+sprite at dispatch time. Editing that file requires operator SSH per
+`docs/lifecycle-orchestrator-authority.md`; not done here because that
+authority boundary is explicit and this session didn't have (or seek) the
+override. Until that line lands, review runs still resolve `OPENROUTER_API_KEY`
+from the shared ambient env, not the dedicated key.
+
+This ticket's full scope (M1 `--openrouter-scoped-key` per-review minting +
+M2 `--harness container-opencode` isolation) is unchanged and still open.
