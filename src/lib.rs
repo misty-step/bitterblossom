@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod attention;
 pub mod budget;
+pub mod canary;
 pub mod dispatch;
 pub mod harness;
 pub mod health;
