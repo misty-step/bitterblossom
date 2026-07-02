@@ -196,3 +196,47 @@ fn status_view_reports_active_lease_even_when_run_is_outside_recent_window() {
     assert_eq!(review["lease"]["host"], "lane-old");
     assert_eq!(review["lease"]["run_id"], leased);
 }
+
+#[test]
+fn status_view_reports_backup_freshness_from_heartbeat() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".bb")).unwrap();
+    fs::write(
+        dir.path().join("plane.toml"),
+        r#"dev = true
+
+[backup]
+enabled = true
+provider = "litestream"
+replica_env = "LITESTREAM_REPLICA_URL"
+last_success_path = ".bb/backup-last-success"
+rpo_seconds = 300
+rto_seconds = 1800
+"#,
+    )
+    .unwrap();
+    let fresh = (OffsetDateTime::now_utc() - Duration::seconds(60))
+        .format(&Rfc3339)
+        .unwrap();
+    fs::write(dir.path().join(".bb/backup-last-success"), fresh).unwrap();
+
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let doc = health::status_view(&plane, &ledger).unwrap();
+    assert_eq!(doc["backup"]["enabled"], true);
+    assert_eq!(doc["backup"]["provider"], "litestream");
+    assert_eq!(doc["backup"]["replica_env"], "LITESTREAM_REPLICA_URL");
+    assert_eq!(doc["backup"]["rpo_seconds"], 300);
+    assert_eq!(doc["backup"]["rto_seconds"], 1800);
+    assert_eq!(doc["backup"]["status"], "fresh");
+    assert_eq!(doc["backup"]["healthy"], true);
+    assert!(doc["backup"]["last_success_age_seconds"].as_i64().unwrap() <= 300);
+
+    let stale = (OffsetDateTime::now_utc() - Duration::seconds(600))
+        .format(&Rfc3339)
+        .unwrap();
+    fs::write(dir.path().join(".bb/backup-last-success"), stale).unwrap();
+    let doc = health::status_view(&plane, &ledger).unwrap();
+    assert_eq!(doc["backup"]["status"], "stale");
+    assert_eq!(doc["backup"]["healthy"], false);
+}

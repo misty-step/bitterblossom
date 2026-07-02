@@ -353,6 +353,7 @@ fn check_json_shape() {
     let doc = json_ok(root, &["check", "--json"]);
     as_str(&doc, "root");
     assert!(doc["db_path"].is_string());
+    assert!(doc["backup"].is_object());
     assert!(doc["agents"].is_array());
     assert!(doc["tasks"].is_array());
     let task = &as_arr(&doc, "task_details")[0];
@@ -377,6 +378,8 @@ fn status_json_shape() {
     as_num(summary, "parked_tasks");
     as_num(summary, "max_cost_per_day_usd");
     assert!(summary["cost_today_usd"].is_number());
+    assert!(doc["backup"].is_object());
+    as_str(&doc["backup"], "status");
     let task = &as_arr(&doc, "tasks")[0];
     as_str(task, "task");
     as_str(task, "agent");

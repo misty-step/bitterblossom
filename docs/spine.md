@@ -73,6 +73,14 @@ bind = "127.0.0.1:7077"
 [notify]
 webhook_url = "https://ntfy.sh/my-plane"   # state transitions only
 
+[backup]                          # optional; projected by `bb status --json`
+enabled = true
+provider = "litestream"
+replica_env = "LITESTREAM_REPLICA_URL"     # env name only, never the value
+last_success_path = ".bb/backup-last-success"
+rpo_seconds = 300
+rto_seconds = 1800
+
 [budget]
 max_cost_per_day_usd = 25.0       # global daily ceiling, enforced pre-dispatch
 ```
@@ -285,6 +293,11 @@ Deployment contract:
   `/app/plane`. The volume root contains `plane.toml`, `agents/`, `tasks/`, and
   `.bb/plane.db`, so ordinary card, budget, and allowlist changes are runtime
   config changes rather than image rebuilds.
+- Backup readiness: `[backup]` in `plane.toml` declares the provider, replica
+  secret env name, RPO/RTO, and heartbeat file. `bb status --json` reports
+  `backup.status` from that heartbeat without reading replica secrets; a stale
+  or missing heartbeat means the ledger is not protected enough for unattended
+  growth.
 - Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
   the pinned Linux Sprite CLI; it must not `COPY plane`. [fly.toml](../fly.toml)
   sets `BB_PLANE_DIR` and `BB_SPRITE_BIN`.

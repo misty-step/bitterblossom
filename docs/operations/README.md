@@ -102,6 +102,25 @@ The smoke checks unauthenticated `/health`, bearer-only read APIs, Fly app and
 volume visibility, and `BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json`
 inside the machine.
 
+`bb status --json` also reports backup readiness from the runtime plane's
+`[backup]` stanza. The plane should declare the backup provider, RPO/RTO, the
+replica secret env name, and a heartbeat file written by the replication
+process:
+
+```toml
+[backup]
+enabled = true
+provider = "litestream"
+replica_env = "LITESTREAM_REPLICA_URL"
+last_success_path = ".bb/backup-last-success"
+rpo_seconds = 300
+rto_seconds = 1800
+```
+
+Healthy output has `backup.status == "fresh"` and `backup.healthy == true`.
+Treat `stale`, `unknown`, or a missing heartbeat as a production-readiness
+failure before raising unattended workload volume.
+
 ## Rollback
 
 List recent releases, pick the previous known-good version, then rollback:
@@ -183,7 +202,10 @@ BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh --remote
 ```
 
 The local restore drill in `./scripts/production-ops-drill.sh --local` proves
-the backup mechanism preserves run history without touching production.
+the backup mechanism preserves run history without touching production, and it
+asserts the backup readiness field through `/api/status`. It also opens a
+fixture submission and checks `bb check`, `bb status --json`, `bb runs list
+--json`, and `bb gate --change ops-drill --json` against the restored DB copy.
 
 ## Secret Rotation
 

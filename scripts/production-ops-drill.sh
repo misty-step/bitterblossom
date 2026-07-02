@@ -144,12 +144,24 @@ expect_bearer_code() {
 }
 
 write_local_plane() {
-  mkdir -p "$TMP/agents" "$TMP/tasks/smoke"
+  mkdir -p "$TMP/agents" "$TMP/tasks/smoke" "$TMP/tasks/verify"
   cat >"$TMP/plane.toml" <<'EOF'
 dev = true
 
 [ingress]
 bind = "127.0.0.1:7077"
+
+[backup]
+enabled = true
+provider = "litestream"
+replica_env = "LITESTREAM_REPLICA_URL"
+last_success_path = ".bb/backup-last-success"
+rpo_seconds = 300
+rto_seconds = 1800
+
+[gate]
+required = ["verify"]
+quorum = 1
 EOF
   cat >"$TMP/agents/smoke.toml" <<EOF
 version = 1
@@ -175,6 +187,20 @@ substrate = "local"
 [budget]
 timeout_minutes = 1
 max_cost_per_run_usd = 0.01
+
+[[trigger]]
+kind = "manual"
+EOF
+  cat >"$TMP/tasks/verify/card.md" <<'EOF'
+# Operations gate fixture
+
+This task is not dispatched by the local drill. It exists so restored ledgers
+can prove the read-only gate surface still evaluates against submission rows.
+EOF
+  cat >"$TMP/tasks/verify/task.toml" <<'EOF'
+agent = "smoke"
+substrate = "local"
+verdict = "verify"
 
 [[trigger]]
 kind = "manual"
@@ -237,6 +263,25 @@ print(json.dumps({"integrity": integrity, "runs": run_count, "restored_runs": re
 PY
 }
 
+restore_read_surface_check() {
+  restored_plane=$1
+  mkdir -p "$restored_plane"
+  cp -R "$TMP/agents" "$TMP/tasks" "$restored_plane/"
+  cat >"$restored_plane/plane.toml" <<'EOF'
+dev = true
+db_path = "../restored.db"
+
+[gate]
+required = ["verify"]
+quorum = 1
+EOF
+  "$BB_BIN" --config "$restored_plane" check >/dev/null
+  "$BB_BIN" --config "$restored_plane" status --json >/dev/null
+  "$BB_BIN" --config "$restored_plane" runs list --json >/dev/null
+  "$BB_BIN" --config "$restored_plane" gate --change ops-drill --json >/dev/null
+  echo "ok:restore-read-surfaces check status runs gate"
+}
+
 run_local() {
   [ -x "$BB_BIN" ] || {
     echo "ops drill: bb binary not found at $BB_BIN; run cargo build or set --bb-bin" >&2
@@ -246,7 +291,18 @@ run_local() {
   write_local_plane
   "$BB_BIN" --config "$TMP" check >/dev/null
   "$BB_BIN" --config "$TMP" run smoke --payload '{"drill":"operations"}' --json >"$TMP/run.json"
+  "$BB_BIN" --config "$TMP" submit open --change ops-drill --rev local --json >"$TMP/submission.json"
+  "$BB_BIN" --config "$TMP" gate --change ops-drill --json >"$TMP/gate.json"
   "$BB_BIN" --config "$TMP" recover --json >"$TMP/recover.json"
+  python3 - "$TMP/.bb/backup-last-success" <<'PY'
+import datetime
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(
+    datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+)
+PY
 
   PORT=$(free_port)
   SERVER_LOG="$TMP/serve.log"
@@ -260,10 +316,23 @@ run_local() {
   expect_bearer_code local-tasks 200 "$TOKEN" "http://127.0.0.1:$PORT/api/tasks"
   expect_bearer_code local-runs 200 "$TOKEN" "http://127.0.0.1:$PORT/api/runs"
   expect_bearer_code local-status 200 "$TOKEN" "http://127.0.0.1:$PORT/api/status"
+  python3 - "$TMP/response-local-status.txt" <<'PY'
+import json
+import pathlib
+import sys
+
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+backup = doc.get("backup", {})
+if backup.get("status") != "fresh" or backup.get("healthy") is not True:
+    raise SystemExit(f"backup status was not fresh: {backup}")
+if backup.get("replica_env") != "LITESTREAM_REPLICA_URL":
+    raise SystemExit(f"backup replica env leaked or drifted: {backup}")
+PY
   expect_bearer_code local-html 200 "$TOKEN" "http://127.0.0.1:$PORT/"
 
   backup_restore_check "$TMP/.bb/plane.db" "$TMP/plane.db.backup" "$TMP/restored.db" \
     | sed 's/^/backup_restore: /'
+  restore_read_surface_check "$TMP/restored-plane"
   echo "ops drill: local pass"
 }
 
