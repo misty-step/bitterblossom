@@ -214,6 +214,12 @@ impl Ledger {
         ensure_column(&conn, "runs", "config_source_ref", "TEXT")?;
         ensure_column(&conn, "dead_letters", "acknowledged_reason", "TEXT")?;
         ensure_column(&conn, "dead_letters", "acknowledged_at", "TEXT")?;
+        ensure_column(&conn, "submissions", "head_version", "TEXT")?;
+        conn.execute(
+            "UPDATE submissions SET head_version = report_json
+             WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
+            [],
+        )?;
         Ok(Self { conn })
     }
 

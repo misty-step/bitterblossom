@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   id TEXT PRIMARY KEY,
   change_key TEXT NOT NULL,
   rev TEXT NOT NULL,
+  head_version TEXT,
   round INTEGER NOT NULL,
   state TEXT NOT NULL,
   context TEXT,
