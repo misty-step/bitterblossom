@@ -93,3 +93,27 @@ payload contracts, and reference docs.
   and `cargo run --quiet -- --config tests/fixtures/public-plane check`.
 - Deferred by overnight guardrail: no live Sprite run receipt/cost was produced
   because overnight mode forbids Sprite dispatches.
+
+### 2026-07-02 lifecycle orchestrator contract slice
+
+- Built the report-only `lifecycle-orchestrator` task that the 2026-07-02
+  authority decision only specified: added the public-plane
+  `lifecycle-orchestrator` task + card + `lifecycle-orchestrator` API-auth agent,
+  and the pinned `bb.lifecycle_orchestrator_report.v1.valid.json` fixture.
+- The card enforces the authority contract from
+  `docs/lifecycle-orchestrator-authority.md`: read `RUN.json`/`EVENT.json` + plane
+  read surfaces, emit `recommended_runs` (each an exact `bb run ... --payload-file
+  ... --idempotency-key ... --json` step), `stop_conditions`, `plane_snapshot`,
+  and `residual_risk`; report-only red lines forbid mutations and any
+  merge/deploy/unpark/resolve/dlq/notify command inside the generated plan.
+- Manual-only for this slice: the webhook/cron auto-trigger cadence is a
+  deliberate later decision, not baked in.
+- Added lifecycle tests asserting the task config/card red lines and that the
+  report fixture is a report-only run plan whose every step is a `bb run` with an
+  idempotency key and no forbidden mutation.
+- Verification:
+  `cargo test --locked --test lifecycle_reflex --test task_card_contract lifecycle_orchestrator`
+  and `cargo run --quiet -- --config tests/fixtures/public-plane check` (lists the
+  new task). `./scripts/verify.sh` green.
+- Deferred by overnight guardrail: no live Sprite run of the orchestrator was
+  produced, so the oracle item stays open pending a supervised live plan run.

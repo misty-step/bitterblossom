@@ -1,0 +1,51 @@
+{
+  "schema_version": "bb.lifecycle_orchestrator_report.v1",
+  "event": "gate.blocked",
+  "bb_run_id": "run-lifecycle-orchestrator-0001",
+  "plane_snapshot": {
+    "status": "1 submission blocked, 0 parked tasks, 0 open dead letters",
+    "gate": {
+      "submission": "sub-blocked-42",
+      "state": "blocked",
+      "round": 1,
+      "blocking_fingerprints": [
+        "a1b2c3d4e5f60708"
+      ]
+    },
+    "parked_tasks": [],
+    "open_dead_letters": [],
+    "recent_runs": [
+      {
+        "id": "run-review-0009",
+        "task": "review",
+        "state": "success"
+      }
+    ]
+  },
+  "recommended_runs": [
+    {
+      "command": "bb run fix-prompt --payload-file EVENT.json --idempotency-key lifecycle:gate.blocked:sub-blocked-42:1 --json",
+      "task": "fix-prompt",
+      "payload_file": "EVENT.json",
+      "idempotency_key": "lifecycle:gate.blocked:sub-blocked-42:1",
+      "why": "Convert the blocking gate findings into a bounded builder packet before any code work."
+    },
+    {
+      "command": "bb run build --payload-file FIX_PROMPT.json --idempotency-key lifecycle:build:sub-blocked-42:1 --json",
+      "task": "build",
+      "payload_file": "FIX_PROMPT.json",
+      "idempotency_key": "lifecycle:build:sub-blocked-42:1",
+      "why": "Run the builder lane against the fix-prompt packet produced by the previous step."
+    }
+  ],
+  "stop_conditions": [
+    "The submission is no longer blocked (a newer round cleared it).",
+    "A fix-prompt run for this submission and round already exists in the ledger.",
+    "Total recommended fan-out would exceed the task budget."
+  ],
+  "residual_risk": "The plan assumes the fix-prompt packet path is FIX_PROMPT.json; the builder still inspects the diff and re-runs the submission gate.",
+  "artifact_paths": [
+    "REPORT.json"
+  ],
+  "no_side_effects": true
+}
