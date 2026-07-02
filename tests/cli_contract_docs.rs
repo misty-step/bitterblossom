@@ -25,6 +25,55 @@ fn read(rel: &str) -> String {
     fs::read_to_string(root.join(rel)).unwrap()
 }
 
+fn repo_files_under(root: &Path, rel: &str, out: &mut Vec<String>) {
+    let path = root.join(rel);
+    if path.is_file() {
+        out.push(rel.to_string());
+        return;
+    }
+    for entry in fs::read_dir(&path).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        let child = format!("{rel}/{name}");
+        if path.is_dir() {
+            repo_files_under(root, &child, out);
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("md" | "txt" | "sh" | "rs" | "yml" | "yaml")
+        ) {
+            out.push(child);
+        }
+    }
+}
+
+fn has_stale_go_test_command(text: &str) -> bool {
+    text.match_indices("go test").any(|(idx, _)| {
+        let before = text[..idx].chars().next_back();
+        let after = text[idx + "go test".len()..].chars().next();
+        let before_boundary = before.is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+        let after_boundary = after.is_none_or(|c| c.is_whitespace() || c == '.' || c == '/');
+        before_boundary && after_boundary
+    })
+}
+
+fn historical_doc_context(rel: &str) -> bool {
+    rel.starts_with("docs/archive/")
+        || rel.starts_with("docs/plans/")
+        || rel.starts_with("docs/audits/")
+        || rel.starts_with("docs/audit-reports/")
+        || rel.starts_with("docs/shakedowns/")
+        || rel.starts_with("docs/walkthroughs/")
+        || rel == "docs/stale-doc-inventory.md"
+        || matches!(
+            rel,
+            "docs/adr/001-claude-code-canonical-harness.md"
+                | "docs/adr/002-architecture-minimalism.md"
+                | "docs/adr/003-conductor-control-plane.md"
+                | "docs/adr/004-bounded-review-governance.md"
+                | "docs/adr/004-elixir-conductor-architecture.md"
+        )
+}
+
 #[test]
 fn live_help_exposes_current_agent_cli_contract() {
     let run = help(&["run", "--help"]);
@@ -83,6 +132,43 @@ fn current_docs_and_skills_match_live_cli_contract() {
     assert!(dogfood.contains(
         "./target/debug/bb --config \"$BB_RUNTIME_PLANE\" gate --submission <submission> --json"
     ));
+}
+
+#[test]
+fn stale_operational_commands_stay_out_of_current_guidance() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for rel in [
+        "README.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "docs",
+        "skills",
+        ".agents/skills",
+        "scripts",
+    ] {
+        repo_files_under(root, rel, &mut files);
+    }
+
+    let mut offenders = Vec::new();
+    for rel in files {
+        if historical_doc_context(&rel) {
+            continue;
+        }
+        let text = read(&rel);
+        let stale = text.contains("cmd/bb")
+            || text.contains("--var")
+            || text.contains("--since")
+            || has_stale_go_test_command(&text);
+        if stale {
+            offenders.push(rel);
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "stale operational commands in current guidance: {offenders:?}"
+    );
 }
 
 #[test]

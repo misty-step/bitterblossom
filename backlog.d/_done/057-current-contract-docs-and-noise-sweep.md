@@ -1,6 +1,6 @@
 # Sweep stale docs so current Rust-plane contracts are unmistakable
 
-Priority: P2 | Status: ready | Estimate: M
+Priority: P2 | Status: done | Estimate: M
 
 ## Goal
 
@@ -10,25 +10,25 @@ or superseded.
 
 ## Oracle
 
-- [ ] `docs/spine.md`, README, CLAUDE/AGENTS guidance, and
+- [x] `docs/spine.md`, README, CLAUDE/AGENTS guidance, and
       `skills/bitterblossom` agree with live CLI help.
-- [ ] Historical ADRs and walkthroughs are marked superseded or moved under an
+- [x] Historical ADRs and walkthroughs are marked superseded or moved under an
       archive boundary without deleting useful prior art.
-- [ ] Terminal transcript duplicates in `docs/walkthroughs/*terminal.txt` are
+- [x] Terminal transcript duplicates in `docs/walkthroughs/*terminal.txt` are
       either archived, justified, or removed with their canonical markdown
       counterpart preserved.
-- [ ] Searches for old operational commands such as `cmd/bb`, stale `go test`
+- [x] Searches for old operational commands such as `cmd/bb`, stale `go test`
       paths, `--var`, and unsupported `--since` return only historical/archive
       contexts or test fixtures.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Children
 
 1. [x] Build the stale-doc inventory.
 2. [x] Mark old ADRs as superseded by ADR 005 and the spine contract.
 3. [x] Archive or remove duplicate terminal walkthrough transcripts.
-4. Audit remaining live CLI snippets after 050's parity checks.
-5. Extend the stale-command regression check only for gaps not already covered
+4. [x] Audit remaining live CLI snippets after 050's parity checks.
+5. [x] Extend the stale-command regression check only for gaps not already covered
    by 050.
 
 ## Notes
@@ -64,3 +64,9 @@ Child 3 moved all `docs/walkthroughs/*-terminal.txt` companions into
 `docs/archive/walkthrough-terminal-transcripts/`, updated markdown links to the
 archive path, and added a guard that live walkthroughs no longer contain
 terminal transcript duplicates.
+
+Child 4/5 added `docs/walkthroughs/README.md` as the historical boundary for
+walkthrough prose and extended `tests/cli_contract_docs.rs` with a path-aware
+stale-command scan. The guard allows archive/history/test contexts and fails if
+`cmd/bb`, exact `go test`, `--var`, or `--since` reappear in current guidance.
+The ticket is archived after `./scripts/verify.sh` passed.
