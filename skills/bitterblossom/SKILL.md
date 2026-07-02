@@ -50,6 +50,21 @@ Read the output for:
 - recent failures, dead letters, in-flight cap kills, and costs;
 - whether a task is reflex (`webhook`/`cron`) or dispatch (`manual`).
 
+## Authority And Readiness
+
+Classify the run before dispatch. Mode B work belongs in Bitterblossom, but the
+allowed authority depends on trigger source, auth class, and task policy.
+
+| Mode | Allowed | Refuse | Readiness |
+|---|---|---|---|
+| Supervised dispatch | Operator-initiated `bb run`/submission work with the task's declared side effects; subscription-auth builders only when the task is manual and the operator asked for that authority. | Hidden cron/webhook dispatch, unbounded continuation, merge/deploy/recovery authority not named by the task or operator. | `bb --config <plane> check`; `bb --config <plane> task list --json`; `bb --config <plane> preflight <task> --json`; `bb --config <plane> status --json`. |
+| Unsupervised reflex | Webhook/cron API-auth work inside declared repo/org filters, budgets, required artifacts, authority, and side-effect policy. | Subscription auth, broad repo discovery, secret values in payloads, merge/deploy/run-resolution authority, or any action beyond the task card. | `bb --config <plane> check`; inspect task policy and budget in `task list --json`; run `preflight`; inspect `status --json`, `dlq list --json`, and `notify list --json`. |
+| Read-only inspection | MCP/CLI/API reads for status, config, runs, gates, dead letters, and artifacts. | Any `tools/call` mutation, dispatch, replay, resolve, park/unpark, submit, merge, or credential provisioning over MCP. | Prefer MCP tools when available; fall back to `bb ... --json`; use `bb_artifacts_list`/`bb_artifact_read` or `bb artifacts list/read` for evidence. |
+
+A closeout receipt is incomplete until it names the exact command/surface used,
+run id or submission id, ledger state, cost/budget status, side effects,
+artifact reads via MCP or `bb artifacts list/read`, and residual risk.
+
 ## Route
 
 | Need | Use |

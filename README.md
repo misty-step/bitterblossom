@@ -66,6 +66,7 @@ cargo build
 ./target/debug/bb --config examples/local-plane run hello --payload '{"ok":true}' --json
 ./target/debug/bb --config examples/local-plane status --json
 ./target/debug/bb --config examples/local-plane runs show <run-id> --json   # from the run --json output
+./target/debug/bb --config examples/local-plane artifacts read <run-id> REPORT.json --json
 ```
 
 `examples/local-plane/` is a zero-credential local plane: a `command`-harness

@@ -18,6 +18,13 @@ fn bitterblossom_skill_is_exportable_agent_interface() {
     assert!(skill.contains("bb --config <plane> run build"));
     assert!(skill.contains("bb --config <plane> run ci-diagnose"));
     assert!(skill.contains("bb --config <plane> run model-eval"));
+    assert!(skill.contains("## Authority And Readiness"));
+    assert!(skill.contains("| Supervised dispatch |"));
+    assert!(skill.contains("| Unsupervised reflex |"));
+    assert!(skill.contains("| Read-only inspection |"));
+    assert!(skill.contains("bb --config <plane> preflight <task> --json"));
+    assert!(skill.contains("bb_artifacts_list`/`bb_artifact_read"));
+    assert!(skill.contains("A closeout receipt is incomplete"));
     assert!(skill.contains("skills/bitterblossom/"));
     assert!(skill.contains("payload has no 'submission' field"));
     assert!(!skill.contains("TODO"));

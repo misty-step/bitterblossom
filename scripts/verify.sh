@@ -47,14 +47,20 @@ cargo run --quiet -- --config tests/fixtures/public-plane check
 echo "==> local-plane zero-credential golden path (no secrets, no network)"
 BB=./target/debug/bb
 CFG=examples/local-plane
+run_count() {
+  $BB --config $CFG runs list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'
+}
 $BB --config $CFG preflight hello --json >/dev/null
 # invalid payload must not create a run row; before/after run count equal.
-before=$($BB --config $CFG runs list --json | grep -c '"id"' || true)
+before=$(run_count)
 $BB --config $CFG run hello --payload 'not json' >/dev/null 2>&1 || true
-after=$($BB --config $CFG runs list --json | grep -c '"id"' || true)
+after=$(run_count)
 [ "$before" = "$after" ] || { echo "local-plane smoke: invalid payload created a run ($before -> $after)"; exit 1; }
-$BB --config $CFG run hello --payload '{"ok":true}' --json >/dev/null
+run_json=$($BB --config $CFG run hello --payload '{"ok":true}' --json)
+run_id=$(printf '%s' "$run_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["run"]["id"])')
 $BB --config $CFG status --json >/dev/null
+$BB --config $CFG runs show "$run_id" --json >/dev/null
+$BB --config $CFG artifacts read "$run_id" REPORT.json --json >/dev/null
 
 echo "==> operations smoke drill"
 BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null
