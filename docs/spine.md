@@ -609,6 +609,8 @@ early run id plus periodic heartbeat lines on stderr while dispatch is in
 progress.
 
 ```
+bb dispatch --repo <path> --brief <file> [--model slug] [--label text] # enqueue one operator dispatch job; prints run id and exits
+bb logs -f <run-id>                             # follow run events and released text artifacts until terminal state
 bb run <task> [--idempotency-key K] [--payload JSON | --payload-file PATH] [--json] # manual trigger; payload validated as JSON before ingest
 bb status [--json]                                # task/run/queue/DLQ health
 bb runs list [--task T] [--state S] [--json]
@@ -640,6 +642,16 @@ bb gate --change K | --submission ID [--json]     # also GET /api/gate?change=K
 bb serve                                          # webhook + cron + queue
 bb mcp serve                                      # read-only MCP stdio server (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate); JSON-RPC over stdin/stdout
 ```
+
+`bb dispatch` is the lead/operator convenience wrapper for ad-hoc work. It
+selects `BB_DISPATCH_TASK` when set, otherwise a manual `dispatch` task, then a
+manual `build` task, then a single manual task if the plane has only one. The
+brief file is read at dispatch time and persisted into the run payload as
+`bb.dispatch_job.v1` with `repo`, canonical `prompt`, optional `model`, `label`,
+and `branch_slug`; the brief file path itself is not persisted. `model`, when
+provided, overrides the selected task agent's model for that run. The command
+enqueues only; a running plane (`bb serve` or the deployed service) drains the
+run. Use `bb logs -f <run-id>` for the live operator loop.
 
 Cost and tokens are parsed from harness output per attempt; unparseable
 output is a `failure` with raw output preserved on the attempt row — never

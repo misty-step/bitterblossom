@@ -1,4 +1,9 @@
-use std::{path::PathBuf, thread, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use bitterblossom::{
@@ -7,7 +12,9 @@ use bitterblossom::{
 use clap::{Parser, Subcommand};
 
 use ledger::{IngressRequest, Ledger};
-use spec::Plane;
+use spec::{Plane, TriggerSpec};
+
+const DISPATCH_BRIEF_MAX_BYTES: u64 = 1_048_576;
 
 #[derive(Parser)]
 #[command(
@@ -24,6 +31,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Enqueue one operator-dispatch job from a repo path and brief file.
+    /// The selected task defaults to `BB_DISPATCH_TASK`, then `dispatch`,
+    /// then `build`, then a single manual task. Prints the accepted run id
+    /// and exits; a running `bb serve` drains the pending run.
+    Dispatch {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        brief: PathBuf,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Print or follow one run's ledger events and released text artifacts.
+    Logs {
+        #[arg(short = 'f', long)]
+        follow: bool,
+        run_id: String,
+    },
     /// Dispatch a task manually from a terminal. Ingests the event (idempotent
     /// per `--idempotency-key`), then runs it to completion. `--payload` is
     /// validated as JSON *before* a run row is created; invalid JSON exits
@@ -407,6 +434,34 @@ fn run() -> Result<()> {
     let mut ledger = Ledger::open(&plane.db_path())?;
 
     match cli.command {
+        Command::Dispatch {
+            repo,
+            brief,
+            model,
+            label,
+        } => {
+            let task = default_dispatch_task(&plane)?;
+            let payload = dispatch_payload(&repo, &brief, model, label)?;
+            let outcome = ledger.ingest(IngressRequest {
+                task: &task,
+                trigger_kind: "manual",
+                idempotency_key: None,
+                source_event_id: None,
+                payload: Some(&payload),
+                parent_run_id: None,
+            })?;
+            if outcome.state == "blocked_budget" {
+                eprintln!("run {} blocked: task is parked", outcome.run_id);
+            }
+            eprintln!(
+                "queued run {} task={}; follow with `bb logs -f {}`",
+                outcome.run_id, task, outcome.run_id
+            );
+            println!("{}", outcome.run_id);
+        }
+        Command::Logs { follow, run_id } => {
+            follow_logs(&ledger, &run_id, follow)?;
+        }
         Command::Run {
             task,
             idempotency_key,
@@ -1111,6 +1166,199 @@ fn start_run_progress(db_path: PathBuf, run_id: String) {
             break;
         }
     });
+}
+
+fn default_dispatch_task(plane: &Plane) -> Result<String> {
+    if let Ok(task) = std::env::var("BB_DISPATCH_TASK") {
+        let task_ref = plane
+            .tasks
+            .get(&task)
+            .with_context(|| format!("BB_DISPATCH_TASK names unknown task '{task}'"))?;
+        if !task_accepts_manual(task_ref) {
+            bail!("BB_DISPATCH_TASK task '{task}' has no manual trigger");
+        }
+        return Ok(task);
+    }
+
+    for candidate in ["dispatch", "build"] {
+        if let Some(task) = plane.tasks.get(candidate) {
+            if task_accepts_manual(task) {
+                return Ok(candidate.to_string());
+            }
+        }
+    }
+
+    let manual = plane
+        .tasks
+        .values()
+        .filter(|task| task_accepts_manual(task))
+        .map(|task| task.name.clone())
+        .collect::<Vec<_>>();
+    match manual.as_slice() {
+        [task] => Ok(task.clone()),
+        [] => bail!("no manual dispatch task found; add a `dispatch` or `build` task"),
+        _ => bail!(
+            "multiple manual tasks found ({}); set BB_DISPATCH_TASK",
+            manual.join(", ")
+        ),
+    }
+}
+
+fn task_accepts_manual(task: &spec::Task) -> bool {
+    task.spec
+        .triggers
+        .iter()
+        .any(|trigger| matches!(trigger, TriggerSpec::Manual))
+}
+
+fn dispatch_payload(
+    repo: &Path,
+    brief: &Path,
+    model: Option<String>,
+    label: Option<String>,
+) -> Result<String> {
+    let repo = repo
+        .canonicalize()
+        .with_context(|| format!("repo path {}", repo.display()))?;
+    if !repo.is_dir() {
+        bail!("repo path {} is not a directory", repo.display());
+    }
+    let brief_path = brief
+        .canonicalize()
+        .with_context(|| format!("brief file {}", brief.display()))?;
+    let brief_size = std::fs::metadata(&brief_path)
+        .with_context(|| format!("stat brief {}", brief_path.display()))?
+        .len();
+    if brief_size > DISPATCH_BRIEF_MAX_BYTES {
+        bail!(
+            "brief {} is {} bytes; max is {}",
+            brief_path.display(),
+            brief_size,
+            DISPATCH_BRIEF_MAX_BYTES
+        );
+    }
+    let brief_text = std::fs::read_to_string(&brief_path)
+        .with_context(|| format!("read brief {}", brief_path.display()))?;
+    let label = label.unwrap_or_else(|| {
+        brief_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("dispatch")
+            .to_string()
+    });
+    let branch_slug = slugify_label(&label);
+    Ok(serde_json::json!({
+        "schema_version": "bb.dispatch_job.v1",
+        "repo": repo.to_string_lossy(),
+        "prompt": brief_text,
+        "model": model,
+        "label": label,
+        "branch_slug": branch_slug,
+    })
+    .to_string())
+}
+
+fn slugify_label(label: &str) -> String {
+    let mut out = String::new();
+    for ch in label.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "dispatch".to_string()
+    } else {
+        out
+    }
+}
+
+fn follow_logs(ledger: &Ledger, run_id: &str, follow: bool) -> Result<()> {
+    ledger.run(run_id)?;
+    let poll = std::env::var("BB_LOGS_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500);
+    let mut seen_events = 0usize;
+    let mut artifact_offsets = BTreeMap::<String, usize>::new();
+    loop {
+        print_new_log_lines(ledger, run_id, &mut seen_events, &mut artifact_offsets)?;
+        let run = ledger.run(run_id)?;
+        if is_terminal_state(&run.state) {
+            println!("terminal state={}", run.state);
+            if let Some(reason) = run.state_reason {
+                println!("reason: {reason}");
+            }
+            break;
+        }
+        if !follow {
+            break;
+        }
+        thread::sleep(Duration::from_millis(poll));
+    }
+    Ok(())
+}
+
+fn print_new_log_lines(
+    ledger: &Ledger,
+    run_id: &str,
+    seen_events: &mut usize,
+    artifact_offsets: &mut BTreeMap<String, usize>,
+) -> Result<()> {
+    let events = ledger.events(run_id)?;
+    for event in events.iter().skip(*seen_events) {
+        match &event.data {
+            Some(data) if !data.is_empty() => println!("{} {} {}", event.at, event.kind, data),
+            _ => println!("{} {}", event.at, event.kind),
+        }
+    }
+    *seen_events = events.len();
+
+    let entries = match artifacts::list(ledger, run_id) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("warning: could not list artifacts for run {run_id}: {e:#}");
+            return Ok(());
+        }
+    };
+    for entry in entries {
+        if entry.binary || !matches!(entry.path.as_str(), "stdout.txt" | "stderr.txt") {
+            continue;
+        }
+        let outcome = match artifacts::read(ledger, run_id, &entry.path) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                eprintln!(
+                    "warning: could not read artifact {} for run {run_id}: {e:#}",
+                    entry.path
+                );
+                continue;
+            }
+        };
+        let artifacts::ReadOutcome::Text { content, .. } = outcome else {
+            continue;
+        };
+        let key = format!("{}:{}", entry.attempt, entry.path);
+        let offset = artifact_offsets.entry(key).or_insert(0);
+        if *offset == 0 && !content.is_empty() {
+            println!("--- attempt {} {} ---", entry.attempt, entry.path);
+        }
+        if content.len() > *offset {
+            print!("{}", &content[*offset..]);
+            if !content.ends_with('\n') {
+                println!();
+            }
+            *offset = content.len();
+        }
+    }
+    Ok(())
+}
+
+fn is_terminal_state(state: &str) -> bool {
+    !matches!(state, "pending" | "running")
 }
 
 fn selected_key_agents(plane: &Plane, agent: Option<String>, all: bool) -> Result<Vec<String>> {

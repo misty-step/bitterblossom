@@ -226,6 +226,26 @@ Routing:
 | Submission gate evaluation | MCP `bb_gate` | `bb gate --change <key> --json` |
 | Submission mutation | (not yet MCP) | `bb submit ... --json` |
 
+## Operator Dispatch Loop
+
+Use the ergonomic dispatch surface when the operator wants `bb` to own a
+supervised lane instead of running a bare shell:
+
+```bash
+bb --config <plane> dispatch --repo <path> --brief <file> [--model <slug>] [--label <text>]
+bb --config <plane> logs -f <run-id>
+```
+
+`dispatch` prints only the accepted run id and exits. It chooses the task from
+`BB_DISPATCH_TASK`, then `dispatch`, then `build`, then a single manual task if
+that is the only unambiguous option. The brief file is read at dispatch time and
+persisted into the run payload as `bb.dispatch_job.v1` with `repo`, canonical
+`prompt`, optional `model`, `label`, and `branch_slug`; the brief file path
+itself is not persisted. `model`, when provided, overrides the selected task
+agent's model for that run. It does not run synchronously; a running local or
+deployed plane drains the pending run. `logs -f` follows ledger events plus
+released text artifacts until the run reaches a terminal state.
+
 ## Distribution
 
 The portable artifact is this whole folder: `skills/bitterblossom/`. Consumers
