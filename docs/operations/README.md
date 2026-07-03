@@ -100,7 +100,9 @@ BB_API_TOKEN="$BB_API_TOKEN" \
 
 The smoke checks unauthenticated `/health`, bearer-only read APIs, Fly app and
 volume visibility, and `BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json`
-inside the machine.
+inside the machine. Fly SSH commands that include env assignment or shell
+syntax must be wrapped with `/bin/sh -lc`; otherwise Fly tries to execute the
+assignment as the binary name.
 
 `bb status --json` also reports backup readiness from the runtime plane's
 `[backup]` stanza. The plane should declare the backup provider, RPO/RTO, the
@@ -180,7 +182,7 @@ release, rollback, recover inherited runs, and run the smoke:
 ```sh
 flyctl releases --app "$BB_FLY_APP"
 flyctl releases rollback --app "$BB_FLY_APP" --yes
-flyctl ssh console --app "$BB_FLY_APP" --command 'BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json'
+flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"'
 BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh --remote
 ```
 
@@ -201,7 +203,7 @@ do not force the schema version downward.
 After a restart or deploy, classify inherited running rows:
 
 ```sh
-flyctl ssh console --app "$BB_FLY_APP" --command 'BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json'
+flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"'
 {
   printf '%s\n' 'fail'
   printf '%s\n' 'silent'

@@ -350,7 +350,7 @@ run_remote() {
   if command -v flyctl >/dev/null 2>&1; then
     flyctl status --app "$BB_FLY_APP" >/dev/null
     flyctl volumes list --app "$BB_FLY_APP" >/dev/null
-    flyctl ssh console --app "$BB_FLY_APP" --command 'BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json' >"$TMP/recover.json"
+    flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"' >"$TMP/recover.json"
     echo "ok:remote-fly status volumes recover"
   else
     echo "skip:remote-fly flyctl not found"
