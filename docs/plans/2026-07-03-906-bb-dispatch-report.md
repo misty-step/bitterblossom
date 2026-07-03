@@ -99,7 +99,53 @@ LOCAL_ATTEMPT_MODEL=openrouter/local-demo
 
 ## Deployed Acceptance Demo
 
-Pending after merge and deploy. The deployed demo should run through the
-authenticated Fly plane using the installed `/usr/local/bin/bb`, enqueue a
-temporary harmless command-harness dispatch task, follow it with `bb logs -f`,
-then remove the temporary task files after the terminal state.
+Deploy:
+
+```bash
+flyctl deploy --app bitterblossom-plane
+```
+
+Result: deployed image `deployment-01KWMGG8MFEJ01XHGP6S29EDZ5` to machine
+`2869516a400198`. The installed `/usr/local/bin/bb` help exposed `dispatch`
+and `logs`, and Fly logs showed `bb serve listening on 0.0.0.0:8080`.
+
+The deployed demo used authenticated Fly SSH to install a temporary harmless
+`dispatch-demo` command-harness task on the deployed plane, ran `bb check`,
+then enqueued and followed a real run through the deployed `/usr/local/bin/bb`.
+The temporary task and agent files were removed afterward, followed by another
+deployed `bb check`.
+
+Command shape inside the Fly machine:
+
+```bash
+BB_DISPATCH_TASK=dispatch-demo /usr/local/bin/bb dispatch \
+  --repo /app/plane \
+  --brief /tmp/bb-dispatch-demo-brief.md \
+  --model openrouter/deployed-demo \
+  --label codex-bb-dispatch-deployed
+
+BB_LOGS_POLL_MS=1000 timeout 240 /usr/local/bin/bb logs -f "$RUN_ID"
+```
+
+Transcript:
+
+```text
+DEPLOYED_RUN_ID=831e11c3654e
+DEPLOYED_DISPATCH_STDERR=queued run 831e11c3654e task=dispatch-demo; follow with `bb logs -f 831e11c3654e`
+2026-07-03T17:34:40.910746773Z state:running
+2026-07-03T17:34:42.822632005Z progress phase:prepared
+2026-07-03T17:34:42.823471065Z progress phase:executing
+2026-07-03T17:34:43.026140862Z progress phase:collecting
+2026-07-03T17:34:43.027227572Z progress phase:finalizing
+2026-07-03T17:34:43.231130229Z progress phase:released
+2026-07-03T17:34:43.23274774Z state:success
+--- attempt 1 stdout.txt ---
+deployed-dispatch-demo-start
+{"branch_slug":"codex-bb-dispatch-deployed","label":"codex-bb-dispatch-deployed","model":"openrouter/deployed-demo","prompt":"Trivial deployed job: echo this brief through the deployed bb dispatch task.\n","repo":"/app/plane","schema_version":"bb.dispatch_job.v1"}
+deployed-dispatch-demo-done
+terminal state=success
+```
+
+Feed post: Powder card `bitterblossom-906` has a `codex-bb-dispatch` comment
+with the PR, merge commit, deploy image, local proof, deployed transcript, and
+the explicit child 3/4 non-goal note.
