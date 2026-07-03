@@ -1,6 +1,6 @@
 # Add a durable Hermes-driven BB dogfood supervisor with explicit authority levels
 
-Priority: P1 · Status: ready · Estimate: M
+Priority: P1 · Status: abandoned · Estimate: M
 
 ## Goal
 
@@ -68,3 +68,10 @@ Level 2 → Level 3 only when:
 ## Notes
 
 This ticket exists because the missing overnight loop was not just a missed cron command. It exposed a product boundary: durable orchestration, authority level, and budget policy must be first-class whenever we ask agents to keep building BB with BB.
+
+## Abandoned — 2026-07-03
+
+Operator ratification (verbatim): "Hermes dogfood supervisor can die. We're
+off Hermes at the moment." Premise died with the Hermes decommission
+(2026-06-30). Superseded in spirit by the supervisor patterns now running
+through Claude Code lead sessions + the bb triage agent.
