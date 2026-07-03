@@ -79,10 +79,10 @@ if report.get("status") != "pass":
 PY
 rm -rf "$self_drill_tmp"
 
-# Raised 2026-07-02 for OpenRouter provider-key sync/drift checking:
-# key provisioning, remote cap sync, and read-surface projection are plane
-# governance mechanism, not workload judgment.
-SPINE_LOC_CAP=10500
+# Raised 2026-07-03 for lead dispatch/log-follow ergonomics:
+# enqueueing a brief-backed manual run and following ledger/artifact output are
+# operator-plane mechanism, not workload judgment.
+SPINE_LOC_CAP=10800
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

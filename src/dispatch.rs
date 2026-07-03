@@ -45,7 +45,19 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
     if run.state != "pending" {
         return Ok(run);
     }
-    let task = plane.task(&run.task)?;
+    let base_task = plane.task(&run.task)?;
+    let model_override = dispatch_model_override(ledger.run_payload(run_id)?)?;
+    let overridden_task;
+    let task = if let Some(model) = model_override {
+        overridden_task = {
+            let mut task = base_task.clone();
+            task.agent.model = model;
+            task
+        };
+        &overridden_task
+    } else {
+        base_task
+    };
     if let Some(source) = &task.source {
         ledger.set_run_config_source(run_id, &source.repo, &source.r#ref)?;
     }
@@ -214,6 +226,24 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
         }
     }
     ledger.run(run_id)
+}
+
+fn dispatch_model_override(payload: Option<String>) -> Result<Option<String>> {
+    let Some(raw) = payload else {
+        return Ok(None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(None);
+    };
+    if value.get("schema_version").and_then(|v| v.as_str()) != Some("bb.dispatch_job.v1") {
+        return Ok(None);
+    }
+    match value.get("model") {
+        Some(serde_json::Value::String(model)) if !model.trim().is_empty() => {
+            Ok(Some(model.trim().to_string()))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn run_attempt(

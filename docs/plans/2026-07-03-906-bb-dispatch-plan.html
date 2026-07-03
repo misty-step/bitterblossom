@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>906 Dispatch Ergonomics Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #151513;
+      --muted: #69665f;
+      --line: #d9d3c7;
+      --paper: #fbfaf7;
+      --panel: #f0eee7;
+      --accent: #0f7b63;
+      --warn: #9a4e12;
+    }
+    body {
+      margin: 0;
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 780px;
+      font-size: 38px;
+      line-height: 1.05;
+      letter-spacing: 0;
+      margin-bottom: 18px;
+    }
+    h2 {
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    h3 {
+      font-size: 14px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--muted);
+    }
+    .hero {
+      min-height: 54vh;
+      display: grid;
+      align-content: center;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 28px;
+    }
+    .lede {
+      max-width: 840px;
+      font-size: 18px;
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .wide { grid-column: span 2; }
+    ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    li + li { margin-top: 7px; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .94em;
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    th { color: var(--muted); font-weight: 650; }
+    tr:last-child td { border-bottom: 0; }
+    .ok { color: var(--accent); font-weight: 700; }
+    .warn { color: var(--warn); font-weight: 700; }
+    @media (max-width: 760px) {
+      h1 { font-size: 30px; }
+      .grid { grid-template-columns: 1fr; }
+      .wide { grid-column: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Ship the first two ergonomics children for `bb` as the lead's dispatch surface.</h1>
+      <p class="lede">Add one fire-and-exit command, <code>bb dispatch --repo &lt;path&gt; --brief &lt;file&gt;</code>, and one follow command, <code>bb logs -f &lt;run-id&gt;</code>. Keep the runtime generic: brief text becomes the run payload for an existing manual task, logs read the existing ledger/artifact truth, and no steering or completion hand-back ships in this slice.</p>
+      <div class="grid">
+        <div class="panel">
+          <h3>Outcome</h3>
+          <p>An operator can start a trivial real repo job with one command, see the run id immediately, and follow the transcript/events until a terminal state without opening the dashboard or spelunking artifact dirs.</p>
+        </div>
+        <div class="panel">
+          <h3>Proof</h3>
+          <p>CLI contract tests, full <code>./scripts/verify.sh</code>, a local-plane dispatch/log transcript, and a deployed-plane dispatch/log transcript.</p>
+        </div>
+        <div class="panel">
+          <h3>Stop Rules</h3>
+          <p>Stop if this requires workload-specific Rust, secret values in payload/argv, weakening gates, or implementing child 3 steer / child 4 hand-back.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel wide">
+        <h2>Chosen Shape</h2>
+        <table>
+          <tr><th>Surface</th><th>Implementation</th><th>Why</th></tr>
+          <tr><td><code>bb dispatch</code></td><td>Thin CLI convenience over a manual task dispatch. It builds a structured payload from repo path, brief file contents, optional model, and label, then persists the run and starts dispatch through the existing local CLI path.</td><td>One command for the target user, no new workload brain in Rust.</td></tr>
+          <tr><td><code>bb logs -f</code></td><td>Poll the existing run bundle, print new run events and released text artifacts such as <code>stdout.txt</code>/<code>stderr.txt</code>, then exit at terminal state.</td><td>Uses ledger/artifacts as truth; avoids a second streaming/event store.</td></tr>
+          <tr><td>Defaults</td><td>Default task is the checked-in manual builder unless a plane config declares a more specific dispatch task; default label is derived from the brief filename.</td><td>Matches current product direction while keeping flags small.</td></tr>
+        </table>
+      </div>
+      <div class="panel">
+        <h2>Acceptance</h2>
+        <ul>
+          <li><code>bb dispatch --repo &lt;path&gt; --brief &lt;file&gt;</code> prints a run id and exits.</li>
+          <li><code>--model</code> and <code>--label</code> are accepted and appear in the job payload.</li>
+          <li><code>bb logs -f &lt;run-id&gt;</code> follows until terminal state and prints a useful transcript.</li>
+          <li>Local binary and deployed plane both exercise the new path.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h2>Quality System</h2>
+        <ul>
+          <li><span class="ok">Live oracle:</span> trivial real dispatch plus log follow transcript.</li>
+          <li><span class="ok">Structural gate:</span> focused tests and <code>./scripts/verify.sh</code>.</li>
+          <li><span class="ok">Critic:</span> fresh-context diff review against CLI/workflow risks before merge.</li>
+          <li><span class="warn">Boundary:</span> children 3 and 4 remain backlog, not hidden flags.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h2>Risks</h2>
+        <ul>
+          <li>Dispatch defaults could accidentally encode Misty Step instance policy in product code.</li>
+          <li>Log follow could miss live output if artifacts only release after completion; tests must make that behavior honest.</li>
+          <li>Deployed-plane proof may expose missing instance config, which should be reported as an operational gap instead of hacked into source.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
