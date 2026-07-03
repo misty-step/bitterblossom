@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "service": "bitterblossom-plane",
+  "environment": "production",
+  "canary_endpoint": "https://canary-obs.fly.dev",
+  "health_url": "https://bitterblossom-plane.fly.dev/health",
+  "target_id": "TGT-zzjlrcj90ynk",
+  "monitor_ids": [
+    "MON-bp409gubc4pc",
+    "MON-btdkn8d6uo9r"
+  ],
+  "webhook_ids": [
+    "WHK-4t02p71mz5h6"
+  ],
+  "api_key_id": null,
+  "verification_status": "verified",
+  "env_names": [
+    "CANARY_ENDPOINT",
+    "CANARY_API_KEY"
+  ],
+  "verification_commands": [
+    "bin/canary integrate status /Users/phaedrus/Development/bitterblossom --service bitterblossom-plane --production-url https://bitterblossom-plane.fly.dev/health --json",
+    "bin/canary errors bitterblossom-plane --window 1h --json"
+  ],
+  "last_verified_at": "2026-07-03T22:43:37Z"
+}
