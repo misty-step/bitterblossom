@@ -265,6 +265,10 @@ fn read_api_requires_bearer_and_rejects_query_token() {
     assert_eq!(http_get(port, "/api/runs", None).0, 401);
     assert_eq!(http_get(port, "/api/runs", Some("wrong")).0, 401);
     assert_eq!(http_get(port, "/api/runs?token=test-token", None).0, 401);
+    let (status, body) = http_get(port, "/", None);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("id=\"authPanel\""));
+    assert!(body.contains("localStorage"));
     assert_eq!(
         http_get(port, "/api/gate?notsubmission=x", Some("test-token")).0,
         400
@@ -306,6 +310,17 @@ fn operator_html_escapes_trigger_labels_before_inserting_task_rows() {
     assert!(html.contains("return `cron ${esc(trigger.schedule)}`"));
     assert!(html.contains("return `webhook /hooks/${esc(trigger.route)}`"));
     assert!(html.contains("return esc(trigger.kind);"));
+}
+
+#[test]
+fn operator_html_stores_token_locally_and_reprompts_on_unauthorized_api() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains("localStorage.getItem(\"bb-api-token\")"));
+    assert!(html.contains("localStorage.setItem(\"bb-api-token\""));
+    assert!(html.contains("showAuth"));
+    assert!(html.contains("Token rejected"));
+    assert!(!html.contains("sessionStorage"));
 }
 
 #[test]
