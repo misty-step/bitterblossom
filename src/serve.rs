@@ -480,7 +480,11 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         return Ok((204, String::new()));
     }
 
-    if method == "GET" && (url.starts_with("/api/") || url == "/" || url.starts_with("/?")) {
+    if method == "GET" && (url == "/" || url.starts_with("/?")) {
+        return Ok((200, include_str!("operator.html").into()));
+    }
+
+    if method == "GET" && url.starts_with("/api/") {
         if !read_authorized(request) {
             return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
         }
@@ -488,7 +492,6 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
         return match path {
-            "/" => Ok((200, include_str!("operator.html").into())),
             "/api/runs" => {
                 let task = query_param(&url, "task");
                 let state = query_param(&url, "state");

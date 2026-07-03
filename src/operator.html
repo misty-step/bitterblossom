@@ -343,6 +343,53 @@ tbody tr:first-child td { border-top: 0; }
   display: none;
 }
 .error.is-visible { display: block; }
+.auth-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: none;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 1rem;
+  background: var(--surface);
+}
+.auth-panel.is-visible { display: grid; }
+.auth-card {
+  width: min(100%, 28rem);
+  border: 1px solid var(--frame);
+  background: var(--panel);
+  padding: 1rem;
+}
+.auth-card h1 {
+  margin-top: .2rem;
+  font-weight: 800;
+}
+.auth-card p {
+  color: var(--muted);
+  margin-top: .35rem;
+}
+.auth-card label {
+  display: block;
+  margin-top: 1rem;
+}
+.auth-card input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  padding: .45rem 0;
+  margin-top: .2rem;
+  font: 13px/1.4 var(--mono);
+}
+.auth-card .action {
+  width: 100%;
+  margin-top: 1rem;
+}
+.auth-message.is-error { color: var(--err); }
+.shell.is-locked {
+  visibility: hidden;
+  pointer-events: none;
+}
 @media (max-width: 980px) {
   .shell { grid-template-columns: 1fr; overflow: auto; }
   .rail {
@@ -381,7 +428,17 @@ tbody tr:first-child td { border-top: 0; }
 </style>
 </head>
 <body>
-<div class="shell">
+<section id="authPanel" class="auth-panel is-visible" aria-labelledby="authTitle">
+  <form id="authForm" class="auth-card" autocomplete="off">
+    <p class="chrome">bearer auth required</p>
+    <h1 id="authTitle">bitterblossom dashboard</h1>
+    <p id="authMessage" class="auth-message">Enter the plane API token to load dashboard data.</p>
+    <label class="chrome" for="authToken">token</label>
+    <input id="authToken" name="authToken" type="password" autocomplete="new-password" autofocus>
+    <button class="action" type="submit">sign in</button>
+  </form>
+</section>
+<div id="dashboardShell" class="shell is-locked" aria-hidden="true">
   <nav class="rail" aria-label="Dashboard views">
     <div class="brand">bitterblossom</div>
     <button class="is-active" data-view-button="overview">overview</button>
@@ -506,7 +563,7 @@ tbody tr:first-child td { border-top: 0; }
 
 <script>
 const state = {
-  token: sessionStorage.getItem("bb-api-token") || "",
+  token: localStorage.getItem("bb-api-token") || "",
   view: "overview",
   data: null
 };
@@ -535,11 +592,30 @@ function apiHeaders() {
   return state.token ? { Authorization: `Bearer ${state.token}` } : {};
 }
 
+function showAuth(message, isError = false) {
+  $("authMessage").textContent = message;
+  $("authMessage").classList.toggle("is-error", isError);
+  $("authPanel").classList.add("is-visible");
+  $("dashboardShell").classList.add("is-locked");
+  $("dashboardShell").setAttribute("aria-hidden", "true");
+  $("authToken").value = state.token;
+  $("authToken").focus();
+}
+
+function showDashboard() {
+  $("authPanel").classList.remove("is-visible");
+  $("dashboardShell").classList.remove("is-locked");
+  $("dashboardShell").removeAttribute("aria-hidden");
+}
+
 async function fetchText(path) {
   const response = await fetch(path, { headers: apiHeaders() });
   if (response.status === 401) {
-    $("tokenForm").classList.add("is-visible");
-    throw new Error("API token required");
+    const hadToken = Boolean(state.token);
+    const error = new Error(hadToken ? "Token rejected. Enter a current plane API token." : "Enter the plane API token to load dashboard data.");
+    error.authRequired = true;
+    error.hadToken = hadToken;
+    throw error;
   }
   if (!response.ok) throw new Error(`${path}: ${response.status}`);
   return response.text();
@@ -567,10 +643,21 @@ async function load() {
       fetchText("/api/export")
     ]);
     state.data = { status, tasks, runs, dlq, leases, ingress, exported: parseExport(exportedText) };
+    showDashboard();
     render();
     $("railStatus").textContent = "live";
     $("railGenerated").textContent = short(status.generated_at, 19);
   } catch (error) {
+    if (error.authRequired) {
+      if (error.hadToken) {
+        state.token = "";
+        localStorage.removeItem("bb-api-token");
+        $("apiToken").value = "";
+      }
+      showAuth(error.message, error.hadToken);
+      $("railStatus").textContent = "auth";
+      return;
+    }
     $("error").textContent = error.message;
     $("error").classList.add("is-visible");
     $("railStatus").textContent = "error";
@@ -785,11 +872,26 @@ $("tokenToggle").addEventListener("click", () => $("tokenForm").classList.toggle
 $("tokenForm").addEventListener("submit", (event) => {
   event.preventDefault();
   state.token = $("apiToken").value.trim();
-  if (state.token) sessionStorage.setItem("bb-api-token", state.token);
-  else sessionStorage.removeItem("bb-api-token");
+  if (state.token) localStorage.setItem("bb-api-token", state.token);
+  else localStorage.removeItem("bb-api-token");
+  load();
+});
+$("authForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const token = $("authToken").value.trim();
+  if (!token) {
+    showAuth("Enter the plane API token to load dashboard data.", true);
+    return;
+  }
+  state.token = token;
+  localStorage.setItem("bb-api-token", state.token);
+  $("apiToken").value = state.token;
+  $("authMessage").textContent = "Checking token...";
+  $("authMessage").classList.remove("is-error");
   load();
 });
 $("apiToken").value = state.token;
+showAuth("Enter the plane API token to load dashboard data.");
 load();
 </script>
 </body>
