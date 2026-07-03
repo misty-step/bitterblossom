@@ -240,9 +240,7 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
     assert!(ops.contains("flyctl releases rollback"));
     assert!(ops.contains("BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"));
-    assert!(ops.contains(
-        "flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"
-    ));
+    assert!(ops.contains("flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"));
     assert!(ops.contains("bb dlq replay <id> --json"));
     assert!(ops.contains("bb dlq ack <id> --reason <text>"));
     assert!(!ops.contains("there is no first-class acknowledge"));
@@ -254,9 +252,7 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(script.contains("gate --change ops-drill --json"));
     assert!(script.contains("backup status was not fresh"));
     assert!(script.contains("expect_bearer_code remote-tasks"));
-    assert!(script.contains(
-        "flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"
-    ));
+    assert!(script.contains("flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"));
     assert!(script.contains("curl --config -"));
     assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));
     assert!(!script.contains("?token="));
