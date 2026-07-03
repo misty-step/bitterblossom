@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Bitterblossom — Mark Candidates</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --surface:#fcfcfc; --panel:#ffffff; --wash:#f1f1ef; --ink:#151515;
+    --muted:#737373; --faint:#a3a3a3; --line:#d9d9d6; --frame:#202020;
+    --accent:#2643d0; --ok:#15714b; --warn:#8a5f32; --err:#a84138;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface:#151515; --panel:#1b1b1b; --wash:#202020; --ink:#fcfcfc;
+      --muted:#a3a3a3; --faint:#737373; --line:#333331; --frame:#d9d9d6;
+    }
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:32px 24px 64px; background:var(--surface); color:var(--ink);
+    font-family:"Geist","Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-size:14px; line-height:1.5;
+  }
+  .mono { font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { max-width:1100px; margin:0 auto 32px; }
+  header h1 { margin:0 0 4px; font-size:22px; font-weight:600; letter-spacing:-0.01em; }
+  header p { margin:2px 0; color:var(--muted); max-width:70ch; }
+  .proof {
+    margin-top:16px; border:1px solid var(--line); background:var(--panel);
+    display:flex; flex-wrap:wrap; gap:0;
+  }
+  .proof div {
+    padding:8px 16px; border-right:1px solid var(--line); font-size:12px;
+  }
+  .proof div:last-child { border-right:none; }
+  .proof .label { display:block; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; font-size:10px; margin-bottom:2px; }
+  main {
+    max-width:1100px; margin:0 auto;
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px;
+  }
+  .card { border:1px solid var(--line); background:var(--panel); }
+  .caption {
+    display:flex; align-items:baseline; gap:10px; padding:8px 12px;
+    border-bottom:1px solid var(--line); background:var(--wash);
+  }
+  .caption .id { font-weight:700; letter-spacing:.03em; font-size:12px; }
+  .caption .name { font-size:12px; color:var(--muted); }
+  .rationale { margin:0; padding:8px 12px; font-size:12.5px; color:var(--muted); border-bottom:1px solid var(--line); min-height:38px; }
+  .swatchgrid { display:grid; grid-template-columns:40px repeat(3, 1fr); }
+  .sizehead { grid-column:2/5; display:grid; grid-template-columns:repeat(3,1fr); border-bottom:1px solid var(--line); }
+  .sizehead span { text-align:center; font-size:10px; color:var(--faint); padding:4px 0; letter-spacing:.04em; }
+  .rowlabel {
+    display:flex; align-items:center; justify-content:center; font-size:9px;
+    color:var(--faint); letter-spacing:.06em; writing-mode:vertical-rl;
+    border-right:1px solid var(--line); border-top:1px solid var(--line);
+  }
+  .swatchgrid .sizehead + .rowlabel { border-top:none; }
+  .swatch {
+    display:flex; align-items:center; justify-content:center;
+    border-top:1px solid var(--line); border-left:1px solid var(--line);
+    padding:10px 0;
+  }
+  .swatch.paper { background:#fcfcfc; color:#151515; }
+  .swatch.ink { background:#151515; color:#fcfcfc; }
+  .mood { max-width:1100px; margin:40px auto 0; }
+  .mood h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:12px; }
+  .mood-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .mood-grid img { width:100%; display:block; border:1px solid var(--line); }
+  .mood-grid figure { margin:0; }
+  .mood-grid figcaption { font-size:11px; color:var(--muted); padding-top:6px; }
+</style>
+</head>
+<body>
+
+<!-- Reusable mark definitions. Each symbol is one original candidate, drawn as
+     inline SVG paths so it inherits currentColor from whatever swatch wraps it. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+
+<symbol id="m0" viewBox="0 0 24 24">
+  <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"/>
+    <path d="M12 7.5V9"/>
+    <path d="M7.5 12H9"/>
+    <path d="M16.5 12H15"/>
+    <path d="M12 16.5V15"/>
+    <path d="m8 8 1.88 1.88"/>
+    <path d="M14.12 9.88 16 8"/>
+    <path d="m8 16 1.88-1.88"/>
+    <path d="M14.12 14.12 16 16"/>
+  </g>
+</symbol>
+
+<symbol id="m1" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <g transform="rotate(0 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <circle cx="12" cy="12" r="1.5"/>
+  </g>
+</symbol>
+
+<symbol id="m2" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <g transform="rotate(4 12 12)"><path d="M12 12 10.3 9.3 9.7 5.7 12 2.6 14.4 5.8 13.7 9.4Z"/></g>
+    <g transform="rotate(76 12 12)"><path d="M12 12 10.1 9.4 9.8 5.5 12 2.4 14.5 5.9 13.6 9.2Z"/></g>
+    <g transform="rotate(148 12 12)"><path d="M12 12 10.4 9.2 9.6 5.8 12 2.7 14.3 5.6 13.8 9.5Z"/></g>
+    <g transform="rotate(220 12 12)"><path d="M12 12 10.2 9.5 9.9 5.6 12 2.5 14.2 5.7 13.9 9.3Z"/></g>
+    <g transform="rotate(292 12 12)"><path d="M12 12 10.5 9.3 9.7 5.7 12 2.6 14.4 5.8 13.5 9.6Z"/></g>
+    <path d="M12 13.4 13.1 12 12 10.6 10.9 12Z"/>
+  </g>
+</symbol>
+
+<symbol id="m3" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <g transform="rotate(0 12 12)"><path d="M12 12C10.1 10.1 9.4 7.3 12 4.2C14.6 7.3 13.9 10.1 12 12Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 12C10.1 10.1 9.4 7.3 12 4.2C14.6 7.3 13.9 10.1 12 12Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 12C10.1 10.1 9.4 7.3 12 4.2C14.6 7.3 13.9 10.1 12 12Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 12C10.1 10.1 9.4 7.3 12 4.2C14.6 7.3 13.9 10.1 12 12Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 12C10.1 10.1 9.4 7.3 12 4.2C14.6 7.3 13.9 10.1 12 12Z"/></g>
+    <g transform="rotate(36 12 12)"><path d="M12 7.2 11.1 5.1 12.9 5.1Z"/></g>
+    <g transform="rotate(108 12 12)"><path d="M12 7.2 11.1 5.1 12.9 5.1Z"/></g>
+    <g transform="rotate(180 12 12)"><path d="M12 7.2 11.1 5.1 12.9 5.1Z"/></g>
+    <g transform="rotate(252 12 12)"><path d="M12 7.2 11.1 5.1 12.9 5.1Z"/></g>
+    <g transform="rotate(324 12 12)"><path d="M12 7.2 11.1 5.1 12.9 5.1Z"/></g>
+    <circle cx="12" cy="12" r="1.3"/>
+  </g>
+</symbol>
+
+<symbol id="m4" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <g transform="rotate(0 12 12)"><path d="M12 9C10.2 7.3 9.6 4.6 12 2.6C14.4 4.6 13.8 7.3 12 9Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 9C10.2 7.3 9.6 4.6 12 2.6C14.4 4.6 13.8 7.3 12 9Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 9C10.2 7.3 9.6 4.6 12 2.6C14.4 4.6 13.8 7.3 12 9Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 9C10.2 7.3 9.6 4.6 12 2.6C14.4 4.6 13.8 7.3 12 9Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 9C10.2 7.3 9.6 4.6 12 2.6C14.4 4.6 13.8 7.3 12 9Z"/></g>
+  </g>
+  <ellipse cx="12" cy="12" rx="3.1" ry="2.5" fill="none" stroke="currentColor" stroke-width="1.1"/>
+  <circle cx="12" cy="12" r="0.95" fill="currentColor"/>
+</symbol>
+
+<symbol id="m5" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <path d="M12 12C15.5 10.2 19 6.8 18.3 3.4C15.6 5.3 12.8 8.6 12 12Z"/>
+    <path d="M12 12C8.5 10.2 5 6.8 5.7 3.4C8.4 5.3 11.2 8.6 12 12Z"/>
+    <path d="M12 12C14.3 13.6 16.6 16.4 16 19C13.9 17.6 12.4 14.8 12 12Z" opacity="0.85"/>
+    <path d="M12 12C9.7 13.6 7.4 16.4 8 19C10.1 17.6 11.6 14.8 12 12Z" opacity="0.85"/>
+    <circle cx="12" cy="12" r="1.1"/>
+  </g>
+</symbol>
+
+<symbol id="m6" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <g transform="translate(1 5) scale(0.62)">
+      <g transform="rotate(0 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+      <g transform="rotate(72 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+      <g transform="rotate(144 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+      <g transform="rotate(216 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+      <g transform="rotate(288 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+      <circle cx="12" cy="12" r="1.6"/>
+    </g>
+    <circle cx="16.5" cy="9" r="1.5"/>
+    <circle cx="19.3" cy="6.4" r="1.05"/>
+    <circle cx="21.3" cy="4.2" r="0.7"/>
+    <circle cx="22.6" cy="2.6" r="0.45"/>
+  </g>
+</symbol>
+
+<symbol id="m7" viewBox="0 0 24 24">
+  <rect x="2.5" y="2.5" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <g stroke="currentColor" stroke-width="1.2" stroke-linecap="square">
+    <path d="M2.5 6.2H4.6"/><path d="M2.5 2.5V4.6"/>
+    <path d="M21.5 6.2H19.4"/><path d="M21.5 2.5V4.6"/>
+    <path d="M2.5 17.8H4.6"/><path d="M2.5 21.5V19.4"/>
+    <path d="M21.5 17.8H19.4"/><path d="M21.5 21.5V19.4"/>
+  </g>
+  <g fill="currentColor" transform="translate(12 12) scale(0.42) translate(-12 -12)">
+    <g transform="rotate(0 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <circle cx="12" cy="12" r="1.8"/>
+  </g>
+</symbol>
+
+<symbol id="m8" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <rect x="3.2" y="4" width="1.7" height="16"/>
+    <path d="M4.9 4H8.3C10.5 4 10.5 10.3 8.3 10.3H4.9Z"/>
+    <path d="M4.9 11.3H8.6C11 11.3 11 19.5 8.6 19.5H4.9Z"/>
+    <rect x="13.3" y="4" width="1.7" height="16"/>
+    <path d="M15 4H18.4C20.6 4 20.6 10.3 18.4 10.3H15Z"/>
+    <path d="M15 11.3H18.7C21.1 11.3 21.1 19.5 18.7 19.5H15Z"/>
+    <path d="M11.9 8.3C13.5 9.5 13.5 14.5 11.9 15.7C10.3 14.5 10.3 9.5 11.9 8.3Z"/>
+  </g>
+</symbol>
+
+<symbol id="m9" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="7.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+    <path d="M12 4.8 12 2.4"/>
+    <path d="M18.9 8.4 21 7.1"/>
+    <path d="M18.9 15.6 21 16.9"/>
+    <path d="M12 19.2 12 21.6"/>
+    <path d="M5.1 15.6 3 16.9"/>
+    <path d="M5.1 8.4 3 7.1"/>
+  </g>
+</symbol>
+
+<symbol id="m10" viewBox="0 0 24 24">
+  <g fill="currentColor">
+    <g transform="rotate(0 12 12)"><path d="M12 12 10.4 8.6 12 3.2 13.6 8.6Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 12 10.4 8.6 12 3.2 13.6 8.6Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 12 10.4 8.6 12 3.2 13.6 8.6Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 12 10.4 8.6 12 3.2 13.6 8.6Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 12 10.4 8.6 12 3.2 13.6 8.6Z"/></g>
+    <path d="M12 14 10.6 12 12 10 13.4 12Z"/>
+  </g>
+</symbol>
+
+<symbol id="m11" viewBox="0 0 24 24">
+  <g fill="currentColor" transform="translate(12 7) scale(0.5) translate(-12 -12)">
+    <g transform="rotate(0 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <circle cx="12" cy="12" r="1.6"/>
+  </g>
+  <g stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+    <path d="M12 10V21"/>
+    <path d="M12 14 9.5 15.5"/>
+    <path d="M12 17.5 14.5 19"/>
+  </g>
+</symbol>
+
+<symbol id="m12" viewBox="0 0 24 24">
+  <g fill="none" stroke="currentColor" stroke-width="1">
+    <g transform="rotate(0 12 12)"><path d="M12 12C9.3 9.3 8.3 5.4 12 1.8C15.7 5.4 14.7 9.3 12 12Z"/></g>
+    <g transform="rotate(72 12 12)"><path d="M12 12C9.3 9.3 8.3 5.4 12 1.8C15.7 5.4 14.7 9.3 12 12Z"/></g>
+    <g transform="rotate(144 12 12)"><path d="M12 12C9.3 9.3 8.3 5.4 12 1.8C15.7 5.4 14.7 9.3 12 12Z"/></g>
+    <g transform="rotate(216 12 12)"><path d="M12 12C9.3 9.3 8.3 5.4 12 1.8C15.7 5.4 14.7 9.3 12 12Z"/></g>
+    <g transform="rotate(288 12 12)"><path d="M12 12C9.3 9.3 8.3 5.4 12 1.8C15.7 5.4 14.7 9.3 12 12Z"/></g>
+  </g>
+  <g fill="currentColor">
+    <g transform="rotate(36 12 12) translate(12 12) scale(0.55) translate(-12 -12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(108 12 12) translate(12 12) scale(0.55) translate(-12 -12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(180 12 12) translate(12 12) scale(0.55) translate(-12 -12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(252 12 12) translate(12 12) scale(0.55) translate(-12 -12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <g transform="rotate(324 12 12) translate(12 12) scale(0.55) translate(-12 -12)"><path d="M12 12C9.8 9.8 9 6.6 12 3C15 6.6 14.2 9.8 12 12Z"/></g>
+    <circle cx="12" cy="12" r="1"/>
+  </g>
+</symbol>
+
+<symbol id="m13" viewBox="0 0 24 24">
+  <path d="M9.2 6.5C9.2 3.8 10.4 2 12 2C13.6 2 14.8 3.8 14.8 6.5V17.5C14.8 20.2 13.6 22 12 22C10.4 22 9.2 20.2 9.2 17.5Z" fill="none" stroke="currentColor" stroke-width="1.3"/>
+  <path d="M12 2.5 11.3 6 12.6 9 11.4 12 12.6 15 11.3 18 12 21.5" fill="none" stroke="currentColor" stroke-width="0.9"/>
+  <g fill="currentColor">
+    <path d="M15.5 9C16.4 8.3 17.6 8.3 18.2 9.4C17.4 10.3 16.2 10.3 15.5 9Z"/>
+    <circle cx="19.8" cy="6.6" r="0.9"/>
+    <circle cx="21.6" cy="4.4" r="0.55"/>
+  </g>
+</symbol>
+
+</defs>
+</svg>
+
+<header>
+  <h1>Bitterblossom — Mark Candidates</h1>
+  <p>14 candidate brand marks (MARK-0 baseline + MARK-1..13 original) for the Bitterblossom operator UI, rendered at favicon (16px), nav-rail (24px), and review (96px) sizes on both noir-ledger swatches. All SVG, inline, currentColor — zero external requests.</p>
+  <div class="proof mono">
+    <div><span class="label">flavor</span>noir-ledger</div>
+    <div><span class="label">paper</span>#fcfcfc</div>
+    <div><span class="label">ink</span>#151515</div>
+    <div><span class="label">accent</span>#2643d0</div>
+    <div><span class="label">corners</span>hard / 0px</div>
+    <div><span class="label">candidates</span>13 original + 1 baseline</div>
+  </div>
+</header>
+
+<main id="grid"></main>
+
+<script>
+  // Render each card from a small data table instead of hand-duplicating six
+  // <svg><use> nodes per mark in markup.
+  const marks = [
+    ["m0","MARK-0","Lucide Flower (current)","Current placeholder — a generic UI glyph, not a mark. Baseline for comparison only."],
+    ["m1","MARK-1","Geometric Five-Petal","Clean rotational silhouette. Most favicon-safe of the set at 16px."],
+    ["m2","MARK-2","Ink-Stamp Woodcut","Jagged straight-edge petals fake a hand-carved block print with one color only."],
+    ["m3","MARK-3","Thorned Blossom","Five-petal base plus outward thorn ticks between petals — literal 'bitter' cue."],
+    ["m4","MARK-4","Blossom-with-Eye","Deliberate version of the current icon's accidental eye — an intentional vesica pupil at center."],
+    ["m5","MARK-5","Faerie-Wing Abstraction","Four asymmetric sickle wings fanned from a point; reads as flight, not floral."],
+    ["m6","MARK-6","Petal-Scatter / Spawn","One blossom shedding four shrinking dots toward a corner — literal 'spawns a fleet'."],
+    ["m7","MARK-7","Ledger-Stamp Badge","Square crop-mark frame around a mini blossom; doubles as a seal at any size."],
+    ["m8","MARK-8","BB Monogram + Petal","Two blocky B stems with a vertical petal-lens filling the gap between them."],
+    ["m9","MARK-9","Thorn-Vine Ring","Pure linework — a circle with six outward thorn ticks, no filled petals at all."],
+    ["m10","MARK-10","Faceted Star-Blossom","Straight-edge kite petals instead of curves — gem-cut, low-poly feel."],
+    ["m11","MARK-11","Bloom + Stem","Classic botanical glyph — small bloom on a stem with two thorn barbs. Most literal 'flower'."],
+    ["m12","MARK-12","Nested Concentric Petals","Outlined outer ring offset 36° from a solid inner ring — layered 'dark bloom' depth."],
+    ["m13","MARK-13","Spawning Bud","A cracked seed pod shedding three sparks — most literal illustration of fleet-spawn."],
+  ];
+  const sizes = [16, 24, 96];
+  const grid = document.getElementById("grid");
+  for (const [id, markId, name, rationale] of marks) {
+    const card = document.createElement("article");
+    card.className = "card";
+    const swatchCells = ["paper", "ink"].map(bg => {
+      const rowlabel = `<div class="rowlabel mono">${bg.toUpperCase()}</div>`;
+      const cells = sizes.map(sz =>
+        `<div class="swatch ${bg}"><svg width="${sz}" height="${sz}" viewBox="0 0 24 24"><use href="#${id}"/></svg></div>`
+      ).join("");
+      return rowlabel + cells;
+    }).join("");
+    card.innerHTML = `
+      <div class="caption"><span class="id mono">${markId}</span><span class="name">${name}</span></div>
+      <p class="rationale">${rationale}</p>
+      <div class="swatchgrid">
+        <div class="sizehead"><span>16px</span><span>24px</span><span>96px</span></div>
+        ${swatchCells}
+      </div>`;
+    grid.appendChild(card);
+  }
+</script>
+
+<section class="mood">
+  <h2 class="mono">Moodboard References</h2>
+  <div class="mood-grid">
+    <figure>
+      <img src="mood-1.jpg" alt="Moodboard sheet 1: dark botanical ledger-stamp logo studies">
+      <figcaption class="mono">mood-1.jpg — ink-on-paper blossom studies, five-petal variations</figcaption>
+    </figure>
+    <figure>
+      <img src="mood-2.jpg" alt="Moodboard sheet 2: woodcut minimal mark variations">
+      <figcaption class="mono">mood-2.jpg — woodcut minimal mark contact sheet</figcaption>
+    </figure>
+  </div>
+</section>
+
+</body>
+</html>

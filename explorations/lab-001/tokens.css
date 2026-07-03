@@ -1,0 +1,38 @@
+/* DESIGN.md noir-ledger tokens as CSS custom properties.
+   Same variable names as src/operator.html so OPT-0 can reuse them verbatim.
+   Dark mode mirrors the same semantic roles — never swap meanings. */
+:root {
+  --surface: #fcfcfc;
+  --panel: #ffffff;
+  --wash: #f1f1ef;
+  --ink: #151515;
+  --muted: #737373;
+  --faint: #a3a3a3;
+  --line: #d9d9d6;
+  --frame: #202020;
+  --accent: #2643d0;
+  --ok: #15714b;
+  --warn: #8a5f32;
+  --err: #a84138;
+  --font: "Geist", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 0px;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #121212;
+    --panel: #171717;
+    --wash: #1f1f1f;
+    --ink: #ededed;
+    --muted: #8f8f8f;
+    --faint: #5c5c5c;
+    --line: #262626;
+    --frame: #d8d8d8;
+    --accent: #8c9eff;
+    --ok: #6fd2a8;
+    --warn: #c49d72;
+    --err: #e58379;
+  }
+}

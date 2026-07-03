@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-aesthetic="noir-ledger">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAB-001 option frame</title>
+<link rel="stylesheet" href="tokens.css?v=1">
+<link rel="stylesheet" href="frame.css?v=1">
+</head>
+<body>
+<div id="mount" style="margin:0;width:100vw;height:100dvh;"></div>
+
+<script src="data.js?v=1"></script>
+<script src="parts.js?v=1"></script>
+
+<!-- Option lanes build in parallel; a 404 here for an unbuilt opt-N.js is
+     expected mid-round and must not break the page. frame.js falls back to
+     a quiet "not built yet" panel for any OPT-N without a registered spec. -->
+<script src="options/opt-0.js?v=1" onerror="console.debug('[lab-001] opt-0.js not available yet')"></script>
+<script src="options/opt-1.js?v=1" onerror="console.debug('[lab-001] opt-1.js not available yet')"></script>
+<script src="options/opt-2.js?v=1" onerror="console.debug('[lab-001] opt-2.js not available yet')"></script>
+<script src="options/opt-3.js?v=1" onerror="console.debug('[lab-001] opt-3.js not available yet')"></script>
+<script src="options/opt-4.js?v=1" onerror="console.debug('[lab-001] opt-4.js not available yet')"></script>
+<script src="options/opt-5.js?v=1" onerror="console.debug('[lab-001] opt-5.js not available yet')"></script>
+<script src="options/opt-6.js?v=1" onerror="console.debug('[lab-001] opt-6.js not available yet')"></script>
+
+<script src="frame.js?v=1"></script>
+</body>
+</html>

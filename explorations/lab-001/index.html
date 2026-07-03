@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-aesthetic="noir-ledger">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAB-001 — Bitterblossom operator UI redesign</title>
+<link rel="stylesheet" href="tokens.css?v=1">
+<link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand" id="brand"></div>
+    <div class="viewport-controls">
+      <div class="preset-group" id="presetGroup" role="group" aria-label="Viewport presets"></div>
+      <form class="custom-viewport" id="customForm" autocomplete="off">
+        <label>w <input type="number" id="customW" min="200" max="4000" step="1" placeholder="1440"></label>
+        <label>h <input type="number" id="customH" min="200" max="4000" step="1" placeholder="900"></label>
+        <button class="quiet" type="submit">apply</button>
+      </form>
+      <div class="viewport-readout" id="viewportReadout">fit</div>
+    </div>
+  </header>
+  <div class="body">
+    <nav class="registry" aria-label="Option registry">
+      <p class="section-label">SECTION OVR &middot; round 1</p>
+      <ul id="registryList"></ul>
+      <p class="registry-hint">&uarr;&darr; or j/k to step</p>
+    </nav>
+    <main class="stage">
+      <div class="stage-viewport" id="stageViewport">
+        <div class="stage-scale" id="stageScale">
+          <iframe id="optionFrame" title="Option preview"></iframe>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="parts.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>
