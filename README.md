@@ -54,6 +54,25 @@ bugs, delight, and synthesize follow-up backlog. This is repo-local because it
 contains Bitterblossom's own dogfood loop rather than a portable `bb` operator
 contract.
 
+## Installing a released version
+
+Track a pinned release instead of a moving `master` (backlog 097; see
+[`docs/release-policy.md`](docs/release-policy.md) for the versioning
+policy and how releases are cut):
+
+```bash
+cargo install --git https://github.com/misty-step/bitterblossom --tag v<version> --locked
+```
+
+or clone the tagged source directly:
+
+```bash
+git clone --branch v<version> --depth 1 https://github.com/misty-step/bitterblossom.git
+```
+
+Release notes are synthesized automatically on publish and live at
+`docs/releases/<version>.md` (and the index at `docs/releases/releases.json`).
+
 ## Quick start
 
 The one-minute zero-credential golden path — no secrets, no remote
