@@ -87,11 +87,19 @@ fn cron_loop(root: &Path) {
     let mut last_by_task = HashMap::new();
     loop {
         std::thread::sleep(CRON_POLL);
-        let Ok(plane) = Plane::load(root) else {
-            continue;
+        let plane = match Plane::load(root) {
+            Ok(plane) => plane,
+            Err(e) => {
+                report_runtime_error("cron: plane load", "bb.plane.load", &e);
+                continue;
+            }
         };
-        let Ok(mut ledger) = Ledger::open(&plane.db_path()) else {
-            continue;
+        let mut ledger = match Ledger::open(&plane.db_path()) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                report_runtime_error("cron: ledger open", "bb.ledger.open", &e);
+                continue;
+            }
         };
         let mut schedules = Vec::new();
         for task in plane.tasks.values() {
@@ -158,9 +166,19 @@ fn run_cron_tick(
 
 fn dispatch_loop(root: &Path) {
     let in_flight: Arc<Mutex<HashSet<String>>> = Arc::default();
-    let Ok(plane) = Plane::load(root) else { return };
-    let Ok(ledger) = Ledger::open(&plane.db_path()) else {
-        return;
+    let plane = match Plane::load(root) {
+        Ok(plane) => plane,
+        Err(e) => {
+            report_runtime_error("dispatch: plane load", "bb.plane.load", &e);
+            return;
+        }
+    };
+    let ledger = match Ledger::open(&plane.db_path()) {
+        Ok(ledger) => ledger,
+        Err(e) => {
+            report_runtime_error("dispatch: ledger open", "bb.ledger.open", &e);
+            return;
+        }
     };
     loop {
         std::thread::sleep(DISPATCH_POLL);
@@ -232,14 +250,22 @@ fn reflex_dispatch_paused(ledger: &Ledger) -> bool {
 fn notify_loop(root: &Path) {
     loop {
         std::thread::sleep(NOTIFY_RETRY_POLL);
-        let Ok(plane) = Plane::load(root) else {
-            continue;
+        let plane = match Plane::load(root) {
+            Ok(plane) => plane,
+            Err(e) => {
+                report_runtime_error("notify retry: plane load", "bb.plane.load", &e);
+                continue;
+            }
         };
         if plane.spec.notify.webhook_url.is_none() {
             continue;
         }
-        let Ok(ledger) = Ledger::open(&plane.db_path()) else {
-            continue;
+        let ledger = match Ledger::open(&plane.db_path()) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                report_runtime_error("notify retry: ledger open", "bb.ledger.open", &e);
+                continue;
+            }
         };
         match notify::retry_pending(&plane, &ledger, 20) {
             Ok(report) if report.attempted > 0 => eprintln!(
@@ -258,11 +284,19 @@ fn notify_loop(root: &Path) {
 fn watchdog_loop(root: &Path) {
     loop {
         std::thread::sleep(watchdog_poll());
-        let Ok(plane) = Plane::load(root) else {
-            continue;
+        let plane = match Plane::load(root) {
+            Ok(plane) => plane,
+            Err(e) => {
+                report_runtime_error("watchdog: plane load", "bb.plane.load", &e);
+                continue;
+            }
         };
-        let Ok(ledger) = Ledger::open(&plane.db_path()) else {
-            continue;
+        let ledger = match Ledger::open(&plane.db_path()) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                report_runtime_error("watchdog: ledger open", "bb.ledger.open", &e);
+                continue;
+            }
         };
         match watchdog_scan(&plane, &ledger) {
             Ok(n) if n > 0 => eprintln!("watchdog: emitted {n} stale notification(s)"),
@@ -401,6 +435,12 @@ fn run_one(root: &Path, run_id: &str) {
     }
 }
 
+fn report_runtime_error(scope: &str, class: &str, error: &anyhow::Error) {
+    let detail = format!("{scope}: {error:#}");
+    eprintln!("{detail}");
+    canary::report_error(class, &detail);
+}
+
 fn http_loop(root: &Path, bind: &str) -> Result<()> {
     let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
     eprintln!("bb serve listening on {bind}");
@@ -409,7 +449,10 @@ fn http_loop(root: &Path, bind: &str) -> Result<()> {
         let response = handle_request(root, &mut request);
         let (status, body) = match response {
             Ok(r) => r,
-            Err(e) => (500, format!("{{\"error\":\"{e}\"}}")),
+            Err(e) => {
+                report_runtime_error("http request", "bb.http.request", &e);
+                (500, format!("{{\"error\":\"{e}\"}}"))
+            }
         };
         let content_type: &[u8] = if body.starts_with("<!doctype") {
             b"text/html; charset=utf-8"
