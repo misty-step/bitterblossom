@@ -220,6 +220,38 @@ gardener variants force dry-run; build variants default to dry-run unless the
 payload explicitly asks for a live branch; storm variants use eval-only verdict
 kinds and do not change gate arithmetic.
 
+## Builder Dispatch
+
+For a groomed backlog item, prefer the checked-in builder recipe over an
+ad-hoc shell wrapper. It validates a JSON payload file before mutation, refuses
+duplicate active work by a deterministic idempotency key unless `--force` is
+explicit, runs `bb preflight <task> --json` before paid execution, dispatches
+with `bb run --payload-file`, and prints a machine-readable receipt plus the
+safe next log command:
+
+```bash
+cat > /tmp/bb-build-payload.json <<'JSON'
+{
+  "repo": "misty-step/bitterblossom",
+  "backlog": "bitterblossom-086",
+  "base_ref": "origin/master",
+  "branch_slug": "operator-recipes",
+  "prompt": "Implement the groomed backlog item. Keep scope to the oracle.",
+  "model": "openrouter/model-slug"
+}
+JSON
+
+scripts/bb-dispatch-build \
+  --config <plane> \
+  --bb "target/debug/bb" \
+  --payload-file /tmp/bb-build-payload.json \
+  --json
+```
+
+Cron supervisors that need runtime secrets must pass the BB secret helper as
+part of `--bb`. The helper keeps secrets in environment, not argv; the prompt
+must stay in the payload file.
+
 ## Submission Gate
 
 Open a submission:
