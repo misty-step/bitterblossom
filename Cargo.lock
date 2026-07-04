@@ -111,6 +111,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "time",
  "tiny_http",

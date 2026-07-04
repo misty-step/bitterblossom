@@ -5,10 +5,11 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::{Arc, Barrier};
 
-use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
+use bitterblossom::{budget, dispatch};
 
 static NOTIFY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -112,6 +113,76 @@ fn run_task(plane: &Plane, ledger: &mut Ledger) -> bitterblossom::ledger::RunRow
         .unwrap()
         .run_id;
     dispatch::dispatch_run(plane, ledger, &id).unwrap()
+}
+
+#[test]
+fn concurrent_budget_admission_reserves_daily_run_cap_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(dir.path(), "", "[budget]\nmax_runs_per_day = 1\n");
+    let db_path = plane.db_path();
+    let mut ledger = Ledger::open(&db_path).unwrap();
+    let first = ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "manual",
+            idempotency_key: Some("first"),
+            source_event_id: None,
+            payload: None,
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    let second = ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "manual",
+            idempotency_key: Some("second"),
+            source_event_id: None,
+            payload: None,
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    drop(ledger);
+
+    let plane = Arc::new(plane);
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+    for run_id in [first.clone(), second.clone()] {
+        let plane = Arc::clone(&plane);
+        let barrier = Arc::clone(&barrier);
+        let db_path = db_path.clone();
+        handles.push(std::thread::spawn(move || {
+            let mut ledger = Ledger::open(&db_path).unwrap();
+            let task = plane.task("demo").unwrap();
+            barrier.wait();
+            let outcome = budget::admit_dispatch(&plane, &mut ledger, task, &run_id).unwrap();
+            (run_id, outcome)
+        }));
+    }
+
+    let outcomes: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let running = outcomes
+        .iter()
+        .filter(|(_, outcome)| matches!(outcome, budget::DispatchAdmission::Running))
+        .count();
+    let blocked = outcomes
+        .iter()
+        .filter(|(_, outcome)| matches!(outcome, budget::DispatchAdmission::Blocked(_)))
+        .count();
+    assert_eq!(running, 1, "{outcomes:?}");
+    assert_eq!(blocked, 1, "{outcomes:?}");
+
+    let ledger = Ledger::open(&db_path).unwrap();
+    let states: Vec<_> = [first, second]
+        .iter()
+        .map(|id| ledger.run(id).unwrap().state)
+        .collect();
+    assert!(states.iter().any(|state| state == "running"), "{states:?}");
+    assert!(
+        states.iter().any(|state| state == "blocked_budget"),
+        "{states:?}"
+    );
 }
 
 fn setup_streaming_overrun(root: &Path) -> Plane {

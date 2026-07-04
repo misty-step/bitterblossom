@@ -62,22 +62,20 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
         ledger.set_run_config_source(run_id, &source.repo, &source.r#ref)?;
     }
 
-    if let Some(v) = budget::pre_dispatch_check(plane, ledger, task)? {
-        ledger.record_budget_event(Some(&task.name), v.kind, &v.detail)?;
-        if v.kind == "max_runs_per_day" {
-            ledger.park_task(&task.name, &v.detail)?;
+    match budget::admit_dispatch(plane, ledger, task, run_id)? {
+        budget::DispatchAdmission::Running => {}
+        budget::DispatchAdmission::Blocked(v) => {
+            crate::notify::notify(
+                plane,
+                ledger,
+                "budget_blocked",
+                &serde_json::json!({ "run_id": run_id, "task": task.name, "kind": v.kind, "detail": v.detail }),
+            );
+            return ledger.run(run_id);
         }
-        ledger.transition(run_id, "blocked_budget", Some(&v.detail))?;
-        crate::notify::notify(
-            plane,
-            ledger,
-            "budget_blocked",
-            &serde_json::json!({ "run_id": run_id, "task": task.name, "kind": v.kind, "detail": v.detail }),
-        );
-        return ledger.run(run_id);
-    }
-    if !ledger.try_transition(run_id, "running", None)? {
-        return ledger.run(run_id);
+        budget::DispatchAdmission::NotPending => {
+            return ledger.run(run_id);
+        }
     }
     ledger.set_run_agent(run_id, &task.agent_name, task.agent.version)?;
     if task.roster.agent.is_some() || task.roster.brief.is_some() {

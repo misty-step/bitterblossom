@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -6,6 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use cron::Schedule;
+use subtle::ConstantTimeEq;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ingress;
@@ -446,12 +448,25 @@ fn http_loop(root: &Path, bind: &str) -> Result<()> {
     eprintln!("bb serve listening on {bind}");
 
     for mut request in server.incoming_requests() {
-        let response = handle_request(root, &mut request);
+        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_request(root, &mut request)
+        }));
         let (status, body) = match response {
-            Ok(r) => r,
-            Err(e) => {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
                 report_runtime_error("http request", "bb.http.request", &e);
                 (500, format!("{{\"error\":\"{e}\"}}"))
+            }
+            Err(panic) => {
+                let payload = panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("non-string panic payload");
+                let detail = format!("http request panic: {payload}");
+                eprintln!("{detail}");
+                canary::report_error("bb.http.panic", &detail);
+                (500, "{\"error\":\"internal server error\"}".to_string())
             }
         };
         let content_type: &[u8] = if body.starts_with("<!doctype") {
@@ -503,8 +518,15 @@ fn read_authorized(request: &tiny_http::Request) -> bool {
             .as_str()
             .as_str()
             .eq_ignore_ascii_case("authorization")
-            && h.value.as_str() == format!("Bearer {token}")
+            && bearer_matches(h.value.as_str(), &token)
     })
+}
+
+fn bearer_matches(value: &str, token: &str) -> bool {
+    let Some(found) = value.strip_prefix("Bearer ") else {
+        return false;
+    };
+    found.len() == token.len() && found.as_bytes().ct_eq(token.as_bytes()).into()
 }
 
 fn query_param(url: &str, name: &str) -> Option<String> {
@@ -517,6 +539,32 @@ fn query_param(url: &str, name: &str) -> Option<String> {
 
 fn json_error(message: String) -> String {
     serde_json::json!({ "error": message }).to_string()
+}
+
+fn read_capped_body(
+    request: &mut tiny_http::Request,
+    max_body_bytes: usize,
+) -> Result<std::result::Result<String, usize>> {
+    let mut body = String::new();
+    request
+        .as_reader()
+        .take(max_body_bytes.saturating_add(1) as u64)
+        .read_to_string(&mut body)
+        .context("read body")?;
+    if body.len() > max_body_bytes {
+        return Ok(Err(body.len()));
+    }
+    Ok(Ok(body))
+}
+
+fn body_too_large(bytes: usize, max_body_bytes: usize) -> (u16, String) {
+    (
+        413,
+        serde_json::json!({
+            "error": format!("request body {bytes} bytes exceeds max_body_bytes {max_body_bytes}")
+        })
+        .to_string(),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -647,11 +695,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
-        let mut body = String::new();
-        request
-            .as_reader()
-            .read_to_string(&mut body)
-            .context("read body")?;
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
+            Ok(body) => body,
+            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        };
         if method == "POST" {
             let input: ExternalRunCreate = match serde_json::from_str(&body) {
                 Ok(input) => input,
@@ -715,12 +762,28 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                     )
                 })
                 .collect();
-            let mut body = String::new();
-            request
-                .as_reader()
-                .read_to_string(&mut body)
-                .context("read body")?;
             let plane = Plane::load(root)?;
+            if ingress::webhook_target(&plane, &route).is_none() {
+                return Ok((404, format!("{{\"error\":\"no webhook route '{route}'\"}}")));
+            }
+            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
+                Ok(body) => body,
+                Err(bytes) => {
+                    let ledger = Ledger::open(&plane.db_path())?;
+                    if let Some((task, _)) = ingress::webhook_target(&plane, &route) {
+                        ledger.record_guard_event(
+                            "ingress_oversized",
+                            Some(&task.name),
+                            &format!(
+                                "route={route} bytes={bytes} max={}",
+                                plane.spec.ingress.max_body_bytes
+                            ),
+                            1,
+                        )?;
+                    }
+                    return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes));
+                }
+            };
             let mut ledger = Ledger::open(&plane.db_path())?;
             let resp = ingress::handle_webhook(&plane, &mut ledger, &route, &headers, &body)?;
             return Ok((resp.status, resp.body));
