@@ -25,16 +25,30 @@ responders.
 
 ## Oracle
 
-- [ ] Canary-owned incident creation either preserves the originating signal's
+- [x] Canary-owned incident creation either preserves the originating signal's
       low severity or includes a machine-readable `severity_reason` /
       `normalized_from` field.
-- [ ] BB's pinned `canary.incident_event.v1` fixture is refreshed only if the
+- [x] BB's pinned `canary.incident_event.v1` fixture is refreshed only if the
       producer contract intentionally changes.
-- [ ] A low-severity synthetic incident drill demonstrates the expected
+- [x] A low-severity synthetic incident drill demonstrates the expected
       severity in timeline, incident detail, and webhook payload.
-- [ ] `./scripts/verify.sh` passes in BB after any pinned-contract update.
+- [x] `./scripts/verify.sh` passes in BB after any pinned-contract update.
 
 ## Non-goals
 
 Do not add BB-side severity heuristics to guess the producer's intent. Canary
 owns the incident severity contract.
+
+## 2026-07-04 Slice
+
+Canary `origin/master` at `4611e66b57158f727bd30bcc57a11c007e7837a8`
+documents the incident webhook as a wake-up hint and preserves replay as the
+source of truth. `crates/canary-store/src/incidents.rs::desired_severity`
+derives incident severity from active correlated signal count: three or more
+active severity-counting signals produce `high`, otherwise `medium`. BB's
+pinned consumer schema was refreshed for the intentional producer description
+and `tenant_id`/`project_id` properties, while the valid webhook fixture now
+pins the low-originating-signal / medium-incident divergence. The new
+`canary.low_severity_incident_drill.v1.json` fixture captures timeline,
+incident-detail, and webhook payload evidence for the synthetic low-severity
+drill without adding BB-side severity heuristics.
