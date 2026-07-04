@@ -57,6 +57,14 @@ fn write_trigger_plane(root: &std::path::Path) {
     .unwrap();
 }
 
+fn set_max_body_bytes(root: &std::path::Path, max: usize) {
+    fs::write(
+        root.join("plane.toml"),
+        format!("dev = true\n[ingress]\nbind = \"127.0.0.1:0\"\nmax_body_bytes = {max}\n"),
+    )
+    .unwrap();
+}
+
 fn enqueue(root: &std::path::Path, task: &str) -> String {
     let plane = Plane::load(root).unwrap();
     let mut ledger = Ledger::open(&plane.db_path()).unwrap();
@@ -140,10 +148,25 @@ fn http_request(
     bearer: Option<&str>,
     body: Option<&str>,
 ) -> (u16, String) {
+    http_request_with_headers(port, method, path, bearer, &[], body)
+}
+
+fn http_request_with_headers(
+    port: u16,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    extra_headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> (u16, String) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let auth = bearer
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
+    let extra_headers = extra_headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     let body = body.unwrap_or("");
     let content_headers = if body.is_empty() {
         String::new()
@@ -154,7 +177,7 @@ fn http_request(
         )
     };
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}{content_headers}Connection: close\r\n\r\n{body}"
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}{extra_headers}{content_headers}Connection: close\r\n\r\n{body}"
     );
     let mut last_error = None;
     while Instant::now() < deadline {
@@ -189,6 +212,122 @@ fn http_request(
 
 fn response_body(response: &str) -> &str {
     response.split("\r\n\r\n").nth(1).unwrap_or("")
+}
+
+fn http_oversized_stream_probe(
+    port: u16,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    written_body_bytes: usize,
+) -> (u16, String) {
+    let auth = bearer
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Type: application/json\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n"
+    );
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    stream.write_all(&vec![b'x'; written_body_bytes]).unwrap();
+
+    let mut buf = [0_u8; 4096];
+    let n = stream
+        .read(&mut buf)
+        .expect("server should answer before the advertised body is fully sent");
+    let response = String::from_utf8_lossy(&buf[..n]).to_string();
+    let status = response
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("0")
+        .parse()
+        .unwrap();
+    (status, response)
+}
+
+#[test]
+fn malformed_webhook_signature_returns_401_and_keeps_server_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    write_trigger_plane(dir.path());
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_TEST_DEMO", "hunter2")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    let (status, response) = http_request_with_headers(
+        port,
+        "POST",
+        "/hooks/demo",
+        None,
+        &[
+            ("X-Hub-Signature-256", "sha256=not-hex"),
+            ("X-Demo", "panic-repro"),
+        ],
+        Some(r#"{"repository":{"full_name":"misty-step/bitterblossom"}}"#),
+    );
+    assert_eq!(status, 401, "{response}");
+
+    let (status, response) = http_get(port, "/health", None);
+    assert_eq!(status, 200, "{response}");
+}
+
+#[test]
+fn webhook_body_cap_answers_before_buffering_full_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    write_trigger_plane(dir.path());
+    set_max_body_bytes(dir.path(), 8);
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_TEST_DEMO", "hunter2")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    let (status, response) = http_oversized_stream_probe(port, "POST", "/hooks/demo", None, 9);
+    assert_eq!(status, 413, "{response}");
+}
+
+#[test]
+fn external_runs_body_cap_answers_before_buffering_full_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    set_max_body_bytes(dir.path(), 8);
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    let (status, response) =
+        http_oversized_stream_probe(port, "POST", "/api/external-runs", Some("test-token"), 9);
+    assert_eq!(status, 413, "{response}");
 }
 
 struct ChildGuard(Child);

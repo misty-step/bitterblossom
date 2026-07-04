@@ -123,6 +123,27 @@ fn webhook_invalid_signature_rejected_with_no_row() {
 }
 
 #[test]
+fn webhook_non_ascii_malformed_signature_rejected_without_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var(SECRET_ENV, "hunter2");
+
+    let body = r#"{"action":"opened"}"#;
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "demo",
+        &headers("sha256=1é1", "d-1"),
+        body,
+    )
+    .unwrap();
+    assert_eq!(resp.status, 401);
+    assert!(ledger.list_runs(Some("demo"), None).unwrap().is_empty());
+    assert_eq!(ledger.ingress_event_count("demo").unwrap(), 0);
+}
+
+#[test]
 fn webhook_body_cap_rejects_before_ledger_growth() {
     let dir = tempfile::tempdir().unwrap();
     let mut plane = make_plane(dir.path());

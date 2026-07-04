@@ -352,13 +352,27 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    let bytes = s.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
         bail!("odd-length hex");
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).context("bad hex"))
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = hex_nibble(pair[0])?;
+            let lo = hex_nibble(pair[1])?;
+            Ok((hi << 4) | lo)
+        })
         .collect()
+}
+
+fn hex_nibble(byte: u8) -> Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => bail!("bad hex"),
+    }
 }
 pub fn parse_schedule(expr: &str) -> Result<cron::Schedule> {
     let normalized = if expr.split_whitespace().count() == 5 {
