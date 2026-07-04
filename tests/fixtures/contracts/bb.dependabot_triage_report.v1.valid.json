@@ -1,0 +1,133 @@
+{
+  "schema_version": "bb.dependabot_triage_report.v1",
+  "mode": "report",
+  "status": "ok",
+  "run": {
+    "bb_run_id": "run-dependabot-fixture",
+    "task": "dependabot-triage",
+    "trigger_kind": "manual",
+    "idempotency_key": "fixture"
+  },
+  "authority": {
+    "current": "report-only",
+    "merge_enabled": false,
+    "requires_repo_merge_on_green_enabled": true,
+    "requires_env": "DEPENDABOT_TRIAGE_ENABLE_MERGE",
+    "no_side_effects": true,
+    "forbidden_actions": [
+      "merge_major",
+      "merge_runtime_dependency",
+      "merge_red_or_pending_ci"
+    ]
+  },
+  "summary": {
+    "repo_count": 1,
+    "open_dependabot_prs": 4,
+    "merge_candidates": 1,
+    "merged": 0
+  },
+  "repos": [
+    {
+      "repo": "fixture/hygiene",
+      "mode": "report",
+      "merge_enabled": false,
+      "open_dependabot_pr_count": 4,
+      "merge_candidates_count": 1,
+      "merged_count": 0,
+      "merged": [],
+      "merge_errors": [],
+      "prs": [
+        {
+          "number": 10,
+          "title": "Bump actions/checkout from 4.1.0 to 4.1.1",
+          "url": "https://github.com/fixture/hygiene/pull/10",
+          "head_ref": "dependabot/github_actions/actions/checkout-4.1.1",
+          "created_at": "2026-07-01T00:00:00Z",
+          "age_days": 3,
+          "version_class": "patch",
+          "dependency_scope": "ci",
+          "ci_state": "green",
+          "merge_eligible": true,
+          "would_merge": false,
+          "merged": false,
+          "decision": "merge_candidate",
+          "reasons": [],
+          "files": [
+            ".github/workflows/ci.yml"
+          ]
+        },
+        {
+          "number": 11,
+          "title": "Bump requests from 2.32.0 to 2.32.1",
+          "url": "https://github.com/fixture/hygiene/pull/11",
+          "head_ref": "dependabot/pip/requests-2.32.1",
+          "created_at": "2026-06-30T00:00:00Z",
+          "age_days": 4,
+          "version_class": "patch",
+          "dependency_scope": "runtime_or_unknown",
+          "ci_state": "green",
+          "merge_eligible": false,
+          "would_merge": false,
+          "merged": false,
+          "decision": "needs_human_runtime_dependency",
+          "reasons": [
+            "runtime_or_unknown_dependency"
+          ],
+          "files": [
+            "requirements.txt"
+          ]
+        },
+        {
+          "number": 12,
+          "title": "Bump rails from 7.2.1 to 8.0.0",
+          "url": "https://github.com/fixture/hygiene/pull/12",
+          "head_ref": "dependabot/bundler/rails-8.0.0",
+          "created_at": "2026-06-29T00:00:00Z",
+          "age_days": 5,
+          "version_class": "major",
+          "dependency_scope": "runtime_or_unknown",
+          "ci_state": "green",
+          "merge_eligible": false,
+          "would_merge": false,
+          "merged": false,
+          "decision": "needs_human_major",
+          "reasons": [
+            "major_update",
+            "runtime_or_unknown_dependency"
+          ],
+          "files": [
+            "Gemfile.lock"
+          ]
+        },
+        {
+          "number": 13,
+          "title": "Bump actions/setup-node from 4.0.0 to 4.0.1",
+          "url": "https://github.com/fixture/hygiene/pull/13",
+          "head_ref": "dependabot/github_actions/actions/setup-node-4.0.1",
+          "created_at": "2026-07-03T00:00:00Z",
+          "age_days": 1,
+          "version_class": "patch",
+          "dependency_scope": "ci",
+          "ci_state": "pending",
+          "merge_eligible": false,
+          "would_merge": false,
+          "merged": false,
+          "decision": "wait_for_green",
+          "reasons": [
+            "ci_pending"
+          ],
+          "files": [
+            ".github/workflows/test.yml"
+          ]
+        }
+      ]
+    }
+  ],
+  "artifact_paths": [
+    "REPORT.json"
+  ],
+  "residual_risk": [
+    "Dev dependency detection is conservative; unknown package scopes require a human",
+    "Merge mode remains disabled unless mode=merge_on_green, repo merge_on_green_enabled=true, and DEPENDABOT_TRIAGE_ENABLE_MERGE=1"
+  ]
+}

@@ -1,0 +1,14 @@
+version = 1
+role = "branch-pruner"
+harness = "command"
+model = ""
+auth = "api"
+bin = "python3"
+args = ["bitterblossom/scripts/hygiene-reflex.py", "branch-prune"]
+secrets = ["GH_TOKEN"]
+
+[policy]
+trigger_bindings = ["manual", "cron"]
+wall_clock_minutes = 30
+output_bytes_cap = 200000
+side_effect_policy = "kill"

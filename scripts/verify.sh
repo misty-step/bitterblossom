@@ -42,6 +42,7 @@ cargo run --quiet -- --config examples/local-plane check
 cargo run --quiet -- --config examples/canary-responder-plane check
 cargo run --quiet -- --config examples/review-factory-plane check
 cargo run --quiet -- --config examples/docs-sync-plane check
+cargo run --quiet -- --config examples/hygiene-plane check
 cargo run --quiet -- --config tests/fixtures/public-plane check
 
 echo "==> local-plane zero-credential golden path (no secrets, no network)"
