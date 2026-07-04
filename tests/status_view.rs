@@ -168,7 +168,7 @@ fn status_view_covers_operator_truth_fixtures() {
         .enqueue_notification("status_probe", r#"{"event":"status_probe"}"#)
         .unwrap();
     ledger
-        .mark_notification_failed(notification, "webhook down")
+        .mark_notification_failed(notification, "webhook down", None, None)
         .unwrap();
     let external = ledger
         .create_external_run(ExternalRunCreate {

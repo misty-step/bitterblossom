@@ -114,7 +114,14 @@ rm -rf "$self_drill_tmp"
 # operator recovery mechanism (ledger preview, scoped release, and confirmation),
 # not workload judgment. The policy decision about which external targets are
 # stale stays with the operator/runbook; the plane only bounds the release.
-SPINE_LOC_CAP=11750
+# Raised 2026-07-04 for bitterblossom-109: outbound notification delivery
+# (notify.rs) now captures the actual HTTP status code and a bounded,
+# truncated response snippet per attempt instead of trusting curl's exit
+# code alone — a delivery retrying after a non-2xx response is now
+# debuggable (last_status_code/last_response in `bb notify list`/`/api/notify`)
+# without ever persisting an unbounded or secret-bearing response body.
+# Ledger/delivery mechanism, not workload judgment.
+SPINE_LOC_CAP=11900
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

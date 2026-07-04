@@ -16,6 +16,29 @@ cat > /dev/null
 exit 9
 "#;
 
+/// Curl-shaped stub: reads the POST body, prints a small response body, then
+/// appends the same `-w` status-marker format `deliver()` asks curl for.
+/// Simulates a real curl invocation completing a round trip with a non-2xx
+/// status — the "still retrying" state backlog 109 wants visible.
+const RATE_LIMITED_NOTIFY_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"error":"rate limited"}'
+printf '\n__bb_notify_http_status__:429'
+"#;
+
+/// Curl-shaped stub returning 2xx with a response body far larger than the
+/// persisted-response byte cap, to prove the cap actually truncates what's
+/// stored rather than the caller having to trust it.
+const OVERSIZED_RESPONSE_NOTIFY_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+i=0
+while [ "$i" -lt 3000 ]; do
+  printf 'A'
+  i=$((i + 1))
+done
+printf '\n__bb_notify_http_status__:200'
+"#;
+
 fn write_executable(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -114,6 +137,83 @@ fn notify_retry_retries_failed_rows_until_delivery() {
     let rows: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
     assert_eq!(rows[0]["status"], "delivered");
     assert_eq!(rows[0]["attempts"], 2);
+}
+
+#[test]
+fn notify_list_exposes_status_code_and_response_snippet_while_retrying() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = write_plane(dir.path());
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .enqueue_notification("rate_limited_probe", r#"{"event":"rate_limited_probe"}"#)
+        .unwrap();
+    let stub = dir.path().join("rate-limited-notify-stub.sh");
+    write_executable(&stub, RATE_LIMITED_NOTIFY_STUB);
+
+    let out = bb(dir.path(), &["notify", "retry", "--json"])
+        .env("BB_NOTIFY_BIN", &stub)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["attempted"], 1);
+    assert_eq!(report["failed"], 1);
+    assert!(report["rows"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("http_status=429"));
+
+    let list = bb(dir.path(), &["notify", "list", "--json"])
+        .output()
+        .unwrap();
+    let rows: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    // Still "failed" (retryable), not acknowledged/discarded -- this is the
+    // mid-retry state the card's live drill found opaque.
+    assert_eq!(rows[0]["status"], "failed");
+    assert_eq!(rows[0]["last_status_code"], 429);
+    assert_eq!(rows[0]["last_response"], "{\"error\":\"rate limited\"}");
+}
+
+#[test]
+fn notify_truncates_oversized_response_bodies_before_storing() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = write_plane(dir.path());
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .enqueue_notification("big_response_probe", r#"{"event":"big_response_probe"}"#)
+        .unwrap();
+    let stub = dir.path().join("oversized-notify-stub.sh");
+    write_executable(&stub, OVERSIZED_RESPONSE_NOTIFY_STUB);
+
+    let out = bb(dir.path(), &["notify", "retry", "--json"])
+        .env("BB_NOTIFY_BIN", &stub)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["delivered"], 1);
+
+    let list = bb(dir.path(), &["notify", "list", "--json"])
+        .output()
+        .unwrap();
+    let rows: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(rows[0]["status"], "delivered");
+    assert_eq!(rows[0]["last_status_code"], 200);
+    let stored = rows[0]["last_response"].as_str().unwrap();
+    assert!(
+        stored.len() < 3000,
+        "response was not truncated: {} bytes",
+        stored.len()
+    );
+    assert!(stored.ends_with("(truncated)"), "{stored}");
+    assert!(
+        !stored.contains(&"A".repeat(3000)),
+        "the full oversized body must never be persisted"
+    );
 }
 
 #[test]
