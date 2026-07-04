@@ -1,0 +1,9 @@
+{
+  "mode": "report",
+  "repos": [
+    {
+      "repo": "example-org/repo",
+      "merge_on_green_enabled": false
+    }
+  ]
+}

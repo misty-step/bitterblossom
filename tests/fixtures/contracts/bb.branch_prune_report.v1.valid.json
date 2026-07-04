@@ -1,0 +1,93 @@
+{
+  "schema_version": "bb.branch_prune_report.v1",
+  "mode": "report",
+  "status": "ok",
+  "run": {
+    "bb_run_id": "run-branch-prune-fixture",
+    "task": "branch-prune",
+    "trigger_kind": "manual",
+    "idempotency_key": "fixture"
+  },
+  "authority": {
+    "current": "report-only",
+    "delete_enabled": false,
+    "requires_repo_delete_enabled": true,
+    "requires_env": "BRANCH_PRUNE_ENABLE_DELETE",
+    "no_side_effects": true,
+    "forbidden_actions": [
+      "force_push",
+      "delete_default_branch",
+      "delete_unmerged_branch",
+      "delete_open_pr_branch"
+    ]
+  },
+  "summary": {
+    "repo_count": 1,
+    "total_remote_branches": 6,
+    "total_merged_remote_branches": 5,
+    "total_would_delete": 2,
+    "total_deleted": 0
+  },
+  "repos": [
+    {
+      "repo": "fixture/hygiene",
+      "remote": "https://github.com/fixture/hygiene.git",
+      "default_branch": "master",
+      "mode": "report",
+      "delete_requested": false,
+      "delete_enabled": false,
+      "total_remote_branches": 6,
+      "merged_remote_branches": 5,
+      "open_pr_branches": [
+        "dependabot/npm/foo-1.2.3"
+      ],
+      "never": [
+        "HEAD",
+        "master",
+        "release/*"
+      ],
+      "would_delete_count": 2,
+      "would_delete": [
+        "old/merged-1",
+        "old/merged-2"
+      ],
+      "deleted_count": 0,
+      "deleted": [],
+      "delete_errors": [],
+      "kept": [
+        {
+          "branch": "master",
+          "reasons": [
+            "default_branch",
+            "explicit_never"
+          ]
+        },
+        {
+          "branch": "feature/unmerged",
+          "reasons": [
+            "unmerged"
+          ]
+        },
+        {
+          "branch": "dependabot/npm/foo-1.2.3",
+          "reasons": [
+            "open_pr"
+          ]
+        },
+        {
+          "branch": "release/keep",
+          "reasons": [
+            "explicit_never"
+          ]
+        }
+      ]
+    }
+  ],
+  "artifact_paths": [
+    "REPORT.json"
+  ],
+  "residual_risk": [
+    "GitHub branch protection is not consulted in report mode",
+    "Deletion mode remains disabled unless mode=delete, repo delete_enabled=true, and BRANCH_PRUNE_ENABLE_DELETE=1"
+  ]
+}

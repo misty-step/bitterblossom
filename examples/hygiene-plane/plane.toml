@@ -1,0 +1,16 @@
+# Production-shaped repository hygiene template.
+#
+# This file is public starter config, not an operator instance plane. Replace
+# example hosts, budgets, and schedules in your runtime copy.
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7077"
+max_body_bytes = 1048576
+max_cron_catchup_fires = 1
+
+[notify]
+# webhook_url = "https://ntfy.sh/my-hygiene-plane"
+
+[budget]
+max_cost_per_day_usd = 1.0

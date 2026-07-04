@@ -1,0 +1,14 @@
+{
+  "mode": "report",
+  "repos": [
+    {
+      "repo": "example-org/repo",
+      "default_branch": "main",
+      "never": [
+        "release/*",
+        "protected/*"
+      ],
+      "delete_enabled": false
+    }
+  ]
+}
