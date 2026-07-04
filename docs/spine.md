@@ -315,7 +315,10 @@ Deployment contract:
   Litestream env-name contract without storing the replica URL.
 - Runtime secrets live on Fly, never in git: `BB_API_TOKEN`,
   `BB_HOOK_REVIEW`, `BB_HOOK_CI_DIAGNOSE`, `OPENROUTER_API_KEY`, `GH_TOKEN`,
-  `SPRITE_TOKEN`, and `LITESTREAM_REPLICA_URL`.
+  `CERBERUS_REVIEW_GH_TOKEN`, `SPRITE_TOKEN`, and
+  `LITESTREAM_REPLICA_URL`. The Cerberus review task uses
+  `CERBERUS_REVIEW_GH_TOKEN` for bot/app posting identity; operator
+  `GH_TOKEN` is for other explicit GitHub-backed dispatch only.
 - GitHub `pull_request` webhooks for the reviewed repo subset point at
   `https://bitterblossom-plane.fly.dev/hooks/review`; the current subset is
   `misty-step/bitterblossom`, enforced again by the task filter. In-scope
@@ -388,7 +391,7 @@ Daedalus handoff and future `gen_ai.*` adapters. The v1 schema and
 compatibility rules live in `docs/run-telemetry-export-v1.md`.
 
 The review workload also supports explicit manual tokenomics probes:
-`bb --config <runtime-plane> run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
+`CERBERUS_REVIEW_GH_TOKEN="$CERBERUS_REVIEW_GH_TOKEN" bb --config <runtime-plane> run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
 Measurement mode runs the same real PR review path but suppresses the
 GitHub comment and leaves the full findings in `result.md`; webhook
 reviews post exactly one PR comment and also start the mechanical submission

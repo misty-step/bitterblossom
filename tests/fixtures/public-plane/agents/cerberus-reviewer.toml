@@ -5,5 +5,14 @@ role = "reviewer"
 auth = "api"
 skills = ["cerberus/review-pr#external-specialist"]
 bin = "bitterblossom/scripts/cerberus-review-wrapper.sh"
-secrets = ["GH_TOKEN", "OPENROUTER_API_KEY"]
+secrets = ["CERBERUS_REVIEW_GH_TOKEN", "OPENROUTER_API_KEY"]
 
+[policy]
+authority = "edit"
+provider_key_name = "cerberus-reviewer"
+provider_spend_cap_usd = 1.25
+trigger_bindings = ["manual", "webhook"]
+tool_action_cap = 80
+output_bytes_cap = 50000
+wall_clock_minutes = 30
+side_effect_policy = "kill"

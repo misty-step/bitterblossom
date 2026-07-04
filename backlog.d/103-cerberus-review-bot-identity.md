@@ -35,3 +35,16 @@ wrote them by hand.
 Not urgent — advisory-only, no authority implications — but worth doing
 before Cerberus is the default reviewer across more fleet repos, since the
 identity confusion gets worse with scale.
+
+## Implementation Note
+
+The BB-side seam now expects `CERBERUS_REVIEW_GH_TOKEN` for the `review` task,
+not the operator's ambient `GH_TOKEN`. Runtime operators must back that env name
+with a GitHub App installation token or least-privilege machine-user token and
+then verify the comment author with:
+
+```sh
+gh api repos/<owner>/<repo>/issues/<pr>/comments --jq '.[].user.login'
+```
+
+The manual bot/app provisioning step remains outside this product repo.

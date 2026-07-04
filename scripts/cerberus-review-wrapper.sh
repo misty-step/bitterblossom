@@ -9,25 +9,39 @@ run_file="${BB_RUN_FILE:-RUN.json}"
 out_dir="${CERBERUS_REVIEW_OUT_DIR:-cerberus-review}"
 summary_target="${CERBERUS_SUMMARY_TARGET:-status}"
 timeout_seconds="${CERBERUS_TIMEOUT_SECONDS:-900}"
-harness="${CERBERUS_HARNESS:-}"
+harness="${CERBERUS_HARNESS:-container-opencode}"
+openrouter_provisioning_env="${CERBERUS_OPENROUTER_PROVISIONING_KEY_ENV:-OPENROUTER_API_KEY}"
+openrouter_key_limit_usd="${CERBERUS_OPENROUTER_KEY_LIMIT_USD:-1.25}"
+container_binary="${CERBERUS_CONTAINER_BINARY:-}"
+container_egress_allow_host="${CERBERUS_CONTAINER_EGRESS_ALLOW_HOST:-openrouter.ai:443}"
 
-# Cerberus gets its own OpenRouter key so usage is attributable and governable
-# separately from the plane's shared long-lived OPENROUTER_API_KEY (backlog
-# 104 context). Prefer the dedicated key when the secret is declared for this
-# agent; fall back to the shared key so the wrapper keeps working before
-# CERBERUS_OPENROUTER_API_KEY is wired everywhere.
-if [ -n "${CERBERUS_OPENROUTER_API_KEY:-}" ]; then
-  OPENROUTER_API_KEY="$CERBERUS_OPENROUTER_API_KEY"
-  export OPENROUTER_API_KEY
-fi
+validate_env_name() {
+  label="$1"
+  value="$2"
+  stripped=$(printf '%s' "$value" | tr -d 'A-Za-z0-9_')
+  case "$value" in
+    [A-Za-z_]*) ;;
+    *)
+      echo "$label must be a valid environment variable name, got: $value" >&2
+      exit 64
+      ;;
+  esac
+  if [ -n "$stripped" ]; then
+    echo "$label must be a valid environment variable name, got: $value" >&2
+    exit 64
+  fi
+}
 
-if [ -z "$harness" ]; then
-  if command -v opencode >/dev/null 2>&1; then
-    harness="opencode"
-  elif command -v omp >/dev/null 2>&1; then
-    harness="omp"
+env_value_present() {
+  name="$1"
+  [ -n "$(eval "printf '%s' \"\${${name}:-}\"")" ]
+}
+
+if [ "$harness" = "container-opencode" ] && [ -z "$container_binary" ]; then
+  if [ -n "${CERBERUS_OPENCODE_BINARY:-}" ]; then
+    container_binary="$CERBERUS_OPENCODE_BINARY"
   else
-    harness="opencode"
+    container_binary="$(command -v opencode 2>/dev/null || true)"
   fi
 fi
 
@@ -95,38 +109,41 @@ set -- review-pr \
   --timeout-seconds "$timeout_seconds" \
   --receipt-bundle "$out_dir/receipt-bundle.json"
 
-# Cerberus refuses ambient `gh` auth for both reads and posting; it requires
-# an explicit token source. GH_TOKEN is a declared agent secret (see
-# agents/cerberus-reviewer.toml), so it is present in this run's environment.
+# Cerberus refuses ambient `gh` auth for both reads and posting; it requires an
+# explicit token source. The default is a bot/app token env declared on the
+# review agent, not the operator's personal GH_TOKEN.
 #
 # gh_token_env names the env var, it is never used as data, but the value
 # still reaches an indirect-expansion `eval` below. Validate it as a plain
 # shell identifier first so a malformed override can't inject shell syntax
-# into this process's environment (which also holds GH_TOKEN/OPENROUTER_API_KEY).
-gh_token_env="${CERBERUS_GH_TOKEN_ENV:-GH_TOKEN}"
-# Shell case/glob patterns can't express "one-or-more of a character class"
-# ([A-Za-z0-9_]* means one class-char then ANY trailing bytes, not a repeated
-# class) -- strip every legal identifier byte and require nothing remains.
-gh_token_env_stripped=$(printf '%s' "$gh_token_env" | tr -d 'A-Za-z0-9_')
+# into this process's environment.
+gh_token_env="${CERBERUS_GH_TOKEN_ENV:-CERBERUS_REVIEW_GH_TOKEN}"
+validate_env_name "CERBERUS_GH_TOKEN_ENV" "$gh_token_env"
 case "$gh_token_env" in
-  [A-Za-z_]*) ;;
-  *)
-    echo "CERBERUS_GH_TOKEN_ENV must be a valid environment variable name, got: $gh_token_env" >&2
+  GH_TOKEN|GITHUB_TOKEN)
+    echo "CERBERUS_GH_TOKEN_ENV must name a bot/app token env, not operator env $gh_token_env" >&2
     exit 64
     ;;
 esac
-if [ -n "$gh_token_env_stripped" ]; then
-  echo "CERBERUS_GH_TOKEN_ENV must be a valid environment variable name, got: $gh_token_env" >&2
-  exit 64
-fi
-if [ -n "$(eval "printf '%s' \"\${${gh_token_env}:-}\"")" ]; then
+if env_value_present "$gh_token_env"; then
   set -- "$@" --gh-token-env "$gh_token_env"
 else
   echo "warning: \$${gh_token_env} is unset; review-pr will refuse ambient gh auth" >&2
 fi
 
-if [ -n "${OPENROUTER_API_KEY:-}" ]; then
-  set -- "$@" --allow-env OPENROUTER_API_KEY
+# Backlog 104: never forward OPENROUTER_API_KEY as raw child env. BB injects
+# this run's scoped per-workload-family provider key by name, and Cerberus M1
+# uses it only as the explicit provisioning source for a per-review capped key.
+if [ -z "${CERBERUS_FIXTURE_OUTPUT:-}" ]; then
+  validate_env_name "CERBERUS_OPENROUTER_PROVISIONING_KEY_ENV" "$openrouter_provisioning_env"
+  if ! env_value_present "$openrouter_provisioning_env"; then
+    echo "$openrouter_provisioning_env is unset; cannot mint a scoped Cerberus review key" >&2
+    exit 64
+  fi
+  set -- "$@" \
+    --openrouter-scoped-key \
+    --openrouter-provisioning-key-env "$openrouter_provisioning_env" \
+    --openrouter-key-limit-usd "$openrouter_key_limit_usd"
 fi
 
 if [ "$mode" = "dry-run" ]; then
@@ -139,6 +156,23 @@ if [ -n "${CERBERUS_FIXTURE_OUTPUT:-}" ]; then
   set -- "$@" --harness fixture --fixture-output "$CERBERUS_FIXTURE_OUTPUT"
 else
   set -- "$@" --harness "$harness"
+  if [ "$harness" = "container-opencode" ]; then
+    if [ -n "$container_binary" ]; then
+      set -- "$@" --container-binary "$container_binary"
+    fi
+    if [ -n "$container_egress_allow_host" ]; then
+      set -- "$@" --container-egress-allow-host "$container_egress_allow_host"
+    fi
+    if [ -n "${CERBERUS_DOCKER_BINARY:-}" ]; then
+      set -- "$@" --docker-binary "$CERBERUS_DOCKER_BINARY"
+    fi
+    if [ -n "${CERBERUS_CONTAINER_IMAGE:-}" ]; then
+      set -- "$@" --container-image "$CERBERUS_CONTAINER_IMAGE"
+    fi
+    if [ -n "${CERBERUS_CONTAINER_HOST_ROOT:-}" ]; then
+      set -- "$@" --container-host-root "$CERBERUS_CONTAINER_HOST_ROOT"
+    fi
+  fi
 fi
 
 if [ -n "${CERBERUS_MODEL:-}" ]; then

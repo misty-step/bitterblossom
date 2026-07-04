@@ -115,8 +115,10 @@ rules and per-task scorecards: [`docs/rollout-scorecards.md`](../../docs/rollout
 - Secrets travel through declared env/secrets and stdin plumbing. Never put
   tokens in argv, task cards, or payload JSON unless the task contract explicitly
   says the value is non-secret.
-- For GitHub-backed runs, prefer `GH_TOKEN=$(gh auth token) bb ...` over copying
-  tokens into shell history.
+- For GitHub-backed operator-dispatch runs, prefer `GH_TOKEN=$(gh auth token) bb ...`
+  over copying tokens into shell history. Cerberus `review` is the exception:
+  it posts with `CERBERUS_REVIEW_GH_TOKEN`, a bot/app or least-privilege
+  machine-user token, per `references/operator-recipes.md`.
 - Reflex triggers must use API-auth agents. Subscription-auth agents belong to
   manual dispatch only.
 - The checked-in `build` task is a manual API-auth OMP/GLM builder lane. Use
