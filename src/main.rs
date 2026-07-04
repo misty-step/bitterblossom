@@ -435,6 +435,12 @@ enum ArtifactsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export a portable artifact bundle directory with manifest.json.
+    Bundle {
+        run_id: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 #[derive(Subcommand)]
 enum McpCommand {
@@ -779,6 +785,14 @@ fn run() -> Result<()> {
                         bail!("no artifact {path:?} found in any attempt of run {run_id}");
                     }
                 }
+            }
+            ArtifactsCommand::Bundle { run_id, out } => {
+                let manifest = artifacts::bundle(&ledger, &run_id, &out)?;
+                println!(
+                    "wrote artifact bundle for run {run_id}: {} ({} entries)",
+                    out.join("manifest.json").display(),
+                    manifest.entries.len()
+                );
             }
         },
         Command::Dlq { command } => match command {

@@ -131,6 +131,57 @@ fn artifacts_list_and_read_report_json_through_cli() {
 }
 
 #[test]
+fn artifacts_bundle_cli_writes_portable_manifest_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let run_id = run_hello(root);
+    fs::write(artifact_dir(root, &run_id).join("binary.bin"), [0, 1, 2]).unwrap();
+
+    let out_dir = dir.path().join("bundle");
+    let out = bb(
+        root,
+        &[
+            "artifacts",
+            "bundle",
+            &run_id,
+            "--out",
+            out_dir.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("manifest.json"), "{stdout}");
+
+    let manifest_path = out_dir.join("manifest.json");
+    assert!(manifest_path.is_file());
+    let doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(doc["schema"], "bb.artifact_bundle.v1");
+    assert_eq!(doc["run_id"], run_id);
+    let entries = doc["entries"].as_array().unwrap();
+    let report = entries
+        .iter()
+        .find(|e| e["path"] == "REPORT.json")
+        .expect("REPORT.json bundled");
+    assert_eq!(report["included"], true);
+    assert_eq!(report["bundle_path"], "attempt-1/REPORT.json");
+    assert!(out_dir.join("attempt-1/REPORT.json").is_file());
+
+    let binary = entries
+        .iter()
+        .find(|e| e["path"] == "binary.bin")
+        .expect("binary artifact manifest entry");
+    assert_eq!(binary["included"], false);
+    assert_eq!(binary["policy"]["kind"], "manifest_only_binary");
+    assert!(!out_dir.join("attempt-1/binary.bin").exists());
+}
+
+#[test]
 fn artifacts_read_missing_exits_nonzero_with_structured_error() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());

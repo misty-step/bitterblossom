@@ -96,6 +96,33 @@ pub enum ReadOutcome {
     Missing { path: String },
 }
 
+#[derive(Debug, Serialize)]
+pub struct ArtifactBundleManifest {
+    pub schema: &'static str,
+    pub run_id: String,
+    pub entries: Vec<ArtifactBundleEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArtifactBundleEntry {
+    pub attempt: i64,
+    pub path: String,
+    pub size: u64,
+    pub content_type: String,
+    pub binary: bool,
+    pub included: bool,
+    pub bundle_path: Option<String>,
+    pub policy: Option<ArtifactBundlePolicy>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArtifactBundlePolicy {
+    pub kind: &'static str,
+    pub reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
 /// List artifact files across every attempt of a run, in attempt order.
 /// Only top-level files of each attempt's artifact dir are returned — the
 /// `workspace/` scratch clone and internal harness markers are excluded.
@@ -227,6 +254,151 @@ pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
     })
 }
 
+/// Export a portable artifact bundle directory for a run. Text artifacts at or
+/// below `READ_LIMIT` are copied under `attempt-<n>/`; binary, oversized, and
+/// symlink artifacts are represented in `manifest.json` only. The bundle never
+/// follows symlinks and never records host artifact-dir paths.
+pub fn bundle(ledger: &Ledger, run_id: &str, out_dir: &Path) -> Result<ArtifactBundleManifest> {
+    ensure_run_exists(ledger, run_id)?;
+    prepare_bundle_out_dir(out_dir)?;
+
+    let mut attempts = ledger.attempts(run_id)?;
+    attempts.sort_by_key(|attempt| attempt.n);
+    let mut entries = Vec::new();
+    for attempt in attempts {
+        let Some(dir) = &attempt.artifact_dir else {
+            continue;
+        };
+        let dir = Path::new(dir);
+        if !dir.exists() {
+            continue;
+        }
+        let root_c = fs::canonicalize(dir).context("canonicalize artifact dir")?;
+        let candidates = bundle_candidates(dir).with_context(|| {
+            format!(
+                "enumerate artifact bundle candidates for run {run_id} attempt {}",
+                attempt.n
+            )
+        })?;
+        for candidate in candidates {
+            let rel = manifest_path(&candidate.rel);
+            let content_type = content_type(&candidate.rel);
+            if candidate.symlink {
+                entries.push(ArtifactBundleEntry {
+                    attempt: attempt.n,
+                    path: rel,
+                    size: candidate.size,
+                    content_type,
+                    binary: true,
+                    included: false,
+                    bundle_path: None,
+                    policy: Some(ArtifactBundlePolicy {
+                        kind: "manifest_only_symlink",
+                        reason: "symlink artifacts are never followed",
+                        limit: None,
+                    }),
+                });
+                continue;
+            }
+
+            let file = dir.join(&candidate.rel);
+            let file_c = fs::canonicalize(&file).with_context(|| {
+                format!(
+                    "canonicalize artifact for run {run_id} attempt {} at {}",
+                    attempt.n, rel
+                )
+            })?;
+            if !file_c.starts_with(&root_c) {
+                entries.push(ArtifactBundleEntry {
+                    attempt: attempt.n,
+                    path: rel,
+                    size: candidate.size,
+                    content_type,
+                    binary: true,
+                    included: false,
+                    bundle_path: None,
+                    policy: Some(ArtifactBundlePolicy {
+                        kind: "manifest_only_escapes_root",
+                        reason: "artifact path escapes attempt artifact root",
+                        limit: None,
+                    }),
+                });
+                continue;
+            }
+
+            let profile = bundle_file_profile(&file, &candidate.rel).with_context(|| {
+                format!(
+                    "classify artifact for run {run_id} attempt {} at {}",
+                    attempt.n, rel
+                )
+            })?;
+            let policy = if profile.size > READ_LIMIT {
+                Some(ArtifactBundlePolicy {
+                    kind: "manifest_only_oversized",
+                    reason: "artifact exceeds bundle inline byte limit",
+                    limit: Some(READ_LIMIT),
+                })
+            } else if profile.binary {
+                Some(ArtifactBundlePolicy {
+                    kind: "manifest_only_binary",
+                    reason: "binary artifacts are recorded in the manifest only",
+                    limit: None,
+                })
+            } else {
+                None
+            };
+            if let Some(policy) = policy {
+                entries.push(ArtifactBundleEntry {
+                    attempt: attempt.n,
+                    path: rel,
+                    size: profile.size,
+                    content_type: profile.content_type,
+                    binary: profile.binary,
+                    included: false,
+                    bundle_path: None,
+                    policy: Some(policy),
+                });
+                continue;
+            }
+
+            let bundle_path = format!("attempt-{}/{}", attempt.n, rel);
+            let dest = out_dir.join(&bundle_path);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("create artifact bundle directory {}", parent.display())
+                })?;
+            }
+            let bytes = profile
+                .bytes
+                .expect("included bundle artifacts are read into memory");
+            fs::write(&dest, bytes)
+                .with_context(|| format!("copy artifact into bundle at {}", dest.display()))?;
+            entries.push(ArtifactBundleEntry {
+                attempt: attempt.n,
+                path: rel,
+                size: profile.size,
+                content_type: profile.content_type,
+                binary: profile.binary,
+                included: true,
+                bundle_path: Some(bundle_path),
+                policy: None,
+            });
+        }
+    }
+
+    let manifest = ArtifactBundleManifest {
+        schema: "bb.artifact_bundle.v1",
+        run_id: run_id.to_string(),
+        entries,
+    };
+    fs::write(
+        out_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .with_context(|| format!("write artifact bundle manifest {}", out_dir.display()))?;
+    Ok(manifest)
+}
+
 /// Validate a caller-supplied artifact path: non-empty, relative, no `.`/`..`
 /// or prefix components. Mirrors `spec::validate_required_artifacts` at the
 /// read boundary so a consumer can never traverse out of the artifact root.
@@ -257,9 +429,172 @@ fn is_not_found(err: &anyhow::Error) -> bool {
     })
 }
 
+struct BundleCandidate {
+    rel: PathBuf,
+    size: u64,
+    symlink: bool,
+}
+
+fn prepare_bundle_out_dir(out_dir: &Path) -> Result<()> {
+    if out_dir.exists() {
+        if !out_dir.is_dir() {
+            bail!(
+                "artifact bundle output path is not a directory: {}",
+                out_dir.display()
+            );
+        }
+        if fs::read_dir(out_dir)?.next().transpose()?.is_some() {
+            bail!(
+                "artifact bundle output directory must be empty: {}",
+                out_dir.display()
+            );
+        }
+        return Ok(());
+    }
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("create artifact bundle output {}", out_dir.display()))
+}
+
+fn bundle_candidates(root: &Path) -> Result<Vec<BundleCandidate>> {
+    let mut out = Vec::new();
+    collect_bundle_candidates(root, root, &mut out)?;
+    out.sort_by_key(|candidate| manifest_path(&candidate.rel));
+    Ok(out)
+}
+
+fn collect_bundle_candidates(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<BundleCandidate>,
+) -> Result<()> {
+    let mut entries = fs::read_dir(dir)?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read artifact bundle dir {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .expect("candidate path is under bundle root")
+            .to_path_buf();
+        if bundle_skip_path(&rel) {
+            continue;
+        }
+        let meta = path
+            .symlink_metadata()
+            .with_context(|| format!("stat artifact bundle candidate {}", path.display()))?;
+        let file_type = meta.file_type();
+        if file_type.is_symlink() {
+            out.push(BundleCandidate {
+                rel,
+                size: meta.len(),
+                symlink: true,
+            });
+        } else if file_type.is_file() {
+            out.push(BundleCandidate {
+                rel,
+                size: meta.len(),
+                symlink: false,
+            });
+        } else if file_type.is_dir() {
+            collect_bundle_candidates(root, &path, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn bundle_skip_path(rel: &Path) -> bool {
+    let mut components = rel.components();
+    let Some(Component::Normal(first)) = components.next() else {
+        return true;
+    };
+    if first == "workspace" {
+        return true;
+    }
+    components.next().is_none() && INTERNAL_ARTIFACTS.contains(&first.to_string_lossy().as_ref())
+}
+
+fn manifest_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 struct ArtifactProfile {
     content_type: String,
     binary: bool,
+}
+
+struct BundleFileProfile {
+    size: u64,
+    content_type: String,
+    binary: bool,
+    bytes: Option<Vec<u8>>,
+}
+
+fn bundle_file_profile(path: &Path, rel: &Path) -> Result<BundleFileProfile> {
+    let mut file = open_bundle_file_no_symlink(path)?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat opened artifact {}", path.display()))?;
+    if !meta.is_file() {
+        bail!(
+            "artifact bundle candidate is not a regular file: {}",
+            path.display()
+        );
+    }
+    let size = meta.len();
+    let content_type = content_type(rel);
+    if size <= READ_LIMIT {
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        file.read_to_end(&mut bytes)
+            .with_context(|| format!("read artifact {}", path.display()))?;
+        let binary = is_binary_full_bytes(&bytes);
+        Ok(BundleFileProfile {
+            size,
+            content_type,
+            binary,
+            bytes: Some(bytes),
+        })
+    } else {
+        use std::io::Read;
+        let mut buf = [0u8; 8192];
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("read artifact sniff {}", path.display()))?;
+        Ok(BundleFileProfile {
+            size,
+            content_type,
+            binary: is_binary_sniff_bytes(&buf[..n]),
+            bytes: None,
+        })
+    }
+}
+
+fn open_bundle_file_no_symlink(path: &Path) -> Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .with_context(|| {
+                format!(
+                    "open artifact without following symlinks {}",
+                    path.display()
+                )
+            })
+    }
+    #[cfg(not(unix))]
+    {
+        fs::File::open(path).with_context(|| format!("open artifact {}", path.display()))
+    }
 }
 
 fn artifact_profile(path: &Path, size: u64) -> Result<ArtifactProfile> {
