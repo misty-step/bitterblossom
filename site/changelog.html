@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bitterblossom release notes</title>
+    <meta
+      name="description"
+      content="User-facing release notes for Bitterblossom."
+    />
+    <script>
+      try {
+        var m = localStorage.getItem('ae-mode');
+        if (m === 'dark' || m === 'light') {
+          document.documentElement.classList.add(m);
+          document.documentElement.style.colorScheme = m;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="aesthetic.css" />
+    <link rel="stylesheet" href="marketing.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" width="0" height="0" style="position: absolute">
+      <symbol id="i-flower" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path
+          d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"
+        />
+        <path d="M12 7.5V9" />
+        <path d="M7.5 12H9" />
+        <path d="M16.5 12H15" />
+        <path d="M12 16.5V15" />
+        <path d="m8 8 1.88 1.88" />
+        <path d="M14.12 9.88 16 8" />
+        <path d="m8 16 1.88-1.88" />
+        <path d="M14.12 14.12 16 16" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-circle-check" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <path d="m9 12 2 2 4-4" />
+      </symbol>
+    </svg>
+
+    <div class="ae-screen ae-wide">
+      <header class="ae-bar msk-bar">
+        <a class="ae-logo" href="./" aria-label="Bitterblossom home">
+          <span class="ae-app-mark" aria-hidden="true">
+            <svg class="ae-icon" data-lucide="flower">
+              <use href="#i-flower" />
+            </svg>
+          </span>
+          <span class="ae-name">Bitterblossom</span>
+        </a>
+        <span class="msk-actions">
+          <nav class="ae-chrome msk-nav" aria-label="Site">
+            <a href="./">home</a>
+            <a href="changelog.html" aria-current="page">release notes</a>
+          </nav>
+          <button class="ae-mode" aria-label="toggle color mode">
+            <svg class="ae-icon ae-sun"><use href="#i-sun" /></svg>
+            <svg class="ae-icon ae-moon"><use href="#i-moon" /></svg>
+          </button>
+        </span>
+      </header>
+
+      <main class="ae-stage ae-stage-scroll">
+        <article class="ae-doc msk-page" aria-labelledby="release-notes-title">
+          <h1 id="release-notes-title">Release notes</h1>
+          <p class="ae-lede">
+            Read this before assuming the tagged history below describes the
+            software running today — it doesn't, and papering over that would
+            be worse than saying so.
+          </p>
+
+          <section class="msk-release">
+            <p class="ae-chrome">About the version history</p>
+            <h2>A real discontinuity: the v3 Rust rewrite has no tag yet</h2>
+            <p>
+              Bitterblossom has tagged GitHub releases going back through
+              <code>v1.79.0</code> and earlier — but every one of them
+              belongs to the retired Elixir/Python conductor, not the current
+              Rust <code>bb</code> binary. The rewrite has been running as
+              the plane's actual mechanism for months without a version
+              number: <code>Cargo.toml</code> still carries the
+              <code>0.1.0</code> placeholder from <code>cargo init</code>.
+            </p>
+            <p>
+              <code>docs/release-policy.md</code> (<code>bitterblossom-097</code>,
+              merged 2026-07-04) fixes the mechanism problem: a semver policy
+              scoped to what an operator or agent actually depends on (CLI
+              flags, config fields, <code>/api/*</code> routes, the ledger
+              schema) and <code>scripts/bb-cut-release</code>, a script that
+              computes the next version and — only with <code>--live</code>,
+              only off a clean tree, never silently — tags, pushes, and cuts
+              a real GitHub Release. What it deliberately does not do is pick
+              the first v3 version number; that's an operator decision, left
+              open on purpose rather than defaulted.
+            </p>
+            <p class="ae-status">
+              <svg class="ae-icon ae-ok" data-lucide="circle-check">
+                <use href="#i-circle-check" />
+              </svg>
+              <span class="ae-status-label"
+                >Evidence: <code>docs/release-policy.md</code>,
+                <code>scripts/bb-cut-release</code>, and
+                <code>Cargo.toml</code>'s current
+                <code>0.1.0</code>.</span
+              >
+            </p>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">2026-07-04 - hub site launched</p>
+            <h2>Public site launched</h2>
+            <ul>
+              <li>
+                Added a Misty Step branded public site: what Bitterblossom
+                actually runs (the durable ledger, the budget containment,
+                the submission-loop review gate), with real drill screenshots
+                instead of mockups.
+              </li>
+              <li>
+                Documented the version-history discontinuity above instead of
+                letting the old Elixir/Python tags imply they describe the
+                current Rust binary.
+              </li>
+            </ul>
+            <p class="ae-status">
+              <svg class="ae-icon ae-ok" data-lucide="circle-check">
+                <use href="#i-circle-check" />
+              </svg>
+              <span class="ae-status-label"
+                >Evidence: GitHub Pages deploy from this repo's
+                <code>master</code>.</span
+              >
+            </p>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">2026-07-04 - release mechanism shipped</p>
+            <h2>A real, repeatable way to cut the first v3 release</h2>
+            <ul>
+              <li>
+                Shipped <code>scripts/bb-cut-release</code> and
+                <code>docs/release-policy.md</code>
+                (<code>bitterblossom-097</code>, first slice): dry-run by
+                default, refuses to run live on a dirty tree, off
+                <code>master</code>, or against an existing tag.
+              </li>
+              <li>
+                Publishing a release already triggers Landmark synthesis
+                (<code>.github/workflows/landmark-release.yml</code>) into
+                <code>docs/releases/</code> — this slice supplies the missing
+                piece: an actual way to cut the release that fires it.
+              </li>
+            </ul>
+          </section>
+        </article>
+      </main>
+
+      <footer class="ae-bar msk-footer">
+        <p class="ae-chrome">
+          Bitterblossom release notes are public by default.
+        </p>
+        <nav class="ae-foot-links ae-chrome" aria-label="Footer">
+          <a
+            data-footer-link="github"
+            href="https://github.com/misty-step/bitterblossom"
+            >GitHub</a
+          >
+          <a data-footer-link="misty-step" href="https://mistystep.io"
+            >Misty Step</a
+          >
+          <a data-footer-link="weave" href="https://misty-step.github.io/weave/"
+            >Weave</a
+          >
+        </nav>
+      </footer>
+    </div>
+
+    <script src="mode.js"></script>
+  </body>
+</html>
