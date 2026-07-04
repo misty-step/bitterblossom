@@ -228,7 +228,7 @@ trigger_bindings = ["manual"]
 iteration_cap = 24
 turn_cap = 40
 tool_action_cap = 80
-output_bytes_cap = 30000
+output_bytes_cap = 120000
 wall_clock_minutes = 30
 side_effect_policy = "kill"
 "#,
