@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Cut one Bitterblossom release safely (backlog 097).
+
+Reads the current version from Cargo.toml, computes the next version for a
+semver bump kind, runs a small set of preconditions (clean tree, tag not
+already used), and — only with --live — tags, pushes, and creates a GitHub
+Release via `gh release create --generate-notes`. --dry-run (the default)
+never mutates anything: it reports what a --live run would do and whether
+each precondition currently passes.
+
+Publishing the release triggers .github/workflows/landmark-release.yml,
+which synthesizes release notes and writes docs/releases/<version>.md.
+See docs/release-policy.md for the full versioning policy.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List
+
+BUMP_KINDS = ("patch", "minor", "major")
+VERSION_LINE = re.compile(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"\s*$', re.MULTILINE)
+PLACEHOLDER_VERSION = "0.1.0"
+
+
+def eprint(*parts: object) -> None:
+    print(*parts, file=sys.stderr)
+
+
+def read_current_version(cargo_toml: Path) -> str:
+    try:
+        text = cargo_toml.read_text()
+    except OSError as exc:
+        raise SystemExit(f"cannot read {cargo_toml}: {exc}")
+
+    # Scope the search to the [package] table specifically -- a bare
+    # `version = "x.y.z"` line can also appear in an expanded-table
+    # dependency (e.g. `[dependencies.foo]`), and nothing should let one of
+    # those silently outrank the package's own version.
+    package_match = re.search(r"^\[package\]\s*$", text, re.MULTILINE)
+    if not package_match:
+        raise SystemExit(f"{cargo_toml}: no [package] section found")
+    next_table = re.search(r"^\[", text[package_match.end() :], re.MULTILINE)
+    package_text = text[package_match.end() : package_match.end() + next_table.start()] if next_table else text[package_match.end() :]
+
+    match = VERSION_LINE.search(package_text)
+    if not match:
+        raise SystemExit(f"{cargo_toml}: no version = \"X.Y.Z\" line found in [package]")
+    return f"{match.group(1)}.{match.group(2)}.{match.group(3)}"
+
+
+def bump_version(current: str, kind: str) -> str:
+    major, minor, patch = (int(part) for part in current.split("."))
+    if kind == "major":
+        return f"{major + 1}.0.0"
+    if kind == "minor":
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def git(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo_root)] + args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def is_tree_clean(repo_root: Path) -> bool:
+    proc = git(repo_root, ["status", "--porcelain"])
+    return proc.returncode == 0 and proc.stdout.strip() == ""
+
+
+def tag_exists(repo_root: Path, tag: str) -> bool:
+    proc = git(repo_root, ["tag", "-l", tag])
+    if proc.returncode != 0:
+        # Cannot confirm the tag is free -- fail closed (treat as taken/
+        # blocked) rather than silently reporting it as available.
+        return True
+    return proc.stdout.strip() != ""
+
+
+def current_branch(repo_root: Path) -> str:
+    proc = git(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def commits_since(repo_root: Path, last_tag: str) -> int:
+    range_arg = f"{last_tag}..HEAD" if last_tag else "HEAD"
+    proc = git(repo_root, ["rev-list", "--count", range_arg])
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return 0
+
+
+def latest_tag(repo_root: Path) -> str:
+    proc = git(repo_root, ["describe", "--tags", "--abbrev=0"])
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def run_checks(repo_root: Path, tag: str, branch: str, allow_dirty: bool, allow_branch: bool) -> Dict[str, bool]:
+    return {
+        "clean_tree": allow_dirty or is_tree_clean(repo_root),
+        "on_branch": allow_branch or current_branch(repo_root) == branch,
+        "tag_available": not tag_exists(repo_root, tag),
+    }
+
+
+def build_report(
+    repo_root: Path,
+    current_version: str,
+    next_version: str,
+    tag: str,
+    bump: str,
+    dry_run: bool,
+    checks: Dict[str, bool],
+) -> Dict[str, object]:
+    return {
+        "current_version": current_version,
+        "next_version": next_version,
+        "tag": tag,
+        "bump": bump,
+        "dry_run": dry_run,
+        "checks": checks,
+        "commits_since_last_tag": commits_since(repo_root, latest_tag(repo_root)),
+    }
+
+
+def fail_checks(checks: Dict[str, bool]) -> List[str]:
+    return [name for name, ok in checks.items() if not ok]
+
+
+def cut_release_live(
+    repo_root: Path,
+    tag: str,
+    push: bool,
+    remote: str,
+    git_bin: str,
+    gh_bin: str,
+) -> None:
+    tag_proc = subprocess.run(
+        [git_bin, "-C", str(repo_root), "tag", "-a", tag, "-m", f"bb {tag}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if tag_proc.returncode != 0:
+        raise SystemExit(f"git tag failed: {tag_proc.stderr}")
+
+    if not push:
+        # `gh release create <tag>` with no matching remote tag does not
+        # fail -- it silently creates its own tag from the tip of the
+        # default branch, publishing a real release against the wrong
+        # commit. So --no-push must mean "nothing touches GitHub", not just
+        # "skip the push": stop here, tag-only.
+        return
+
+    push_proc = subprocess.run(
+        [git_bin, "-C", str(repo_root), "push", remote, tag],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if push_proc.returncode != 0:
+        raise SystemExit(f"git push failed: {push_proc.stderr}")
+
+    release_proc = subprocess.run(
+        [gh_bin, "release", "create", tag, "--title", tag, "--generate-notes"],
+        cwd=str(repo_root),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if release_proc.returncode != 0:
+        raise SystemExit(f"gh release create failed: {release_proc.stderr}")
+
+
+def parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", default=".", help="Repository root (default: cwd)")
+    parser.add_argument("--bump", choices=BUMP_KINDS, default="patch")
+    parser.add_argument("--branch", default="master", help="Branch a live release must be cut from")
+    parser.add_argument("--remote", default="origin", help="Remote to push the tag to")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Report only; never mutates (default)")
+    mode.add_argument("--live", action="store_true", help="Tag, push, and create the GitHub Release")
+    parser.add_argument(
+        "--no-push",
+        action="store_true",
+        help="Local tag only -- skip push AND GitHub Release creation; testing only",
+    )
+    parser.add_argument("--allow-dirty", action="store_true", help="Skip the clean-tree check")
+    parser.add_argument("--allow-branch", action="store_true", help="Skip the on-branch check")
+    parser.add_argument("--git-bin", default="git")
+    parser.add_argument("--gh-bin", default="gh")
+    parser.add_argument("--json", action="store_true", help="Emit the report as JSON (always emitted; flag kept for parity with other bb-* recipes)")
+    return parser.parse_args(argv)
+
+
+def main(argv: List[str]) -> int:
+    args = parse_args(argv)
+    repo_root = Path(args.repo_root).resolve()
+    cargo_toml = repo_root / "Cargo.toml"
+
+    current_version = read_current_version(cargo_toml)
+    if current_version == PLACEHOLDER_VERSION:
+        eprint(
+            f"note: Cargo.toml is still at the cargo-init placeholder {PLACEHOLDER_VERSION} -- "
+            "confirm this is really meant to be the first released version before --live "
+            "(see docs/release-policy.md)."
+        )
+    next_version = bump_version(current_version, args.bump)
+    tag = f"v{next_version}"
+    live = args.live
+
+    checks = run_checks(repo_root, tag, args.branch, args.allow_dirty, args.allow_branch)
+    report = build_report(repo_root, current_version, next_version, tag, args.bump, not live, checks)
+
+    if not live:
+        print(json.dumps(report))
+        return 0
+
+    failing = fail_checks(checks)
+    if failing:
+        eprint(f"refusing --live release: failing check(s): {', '.join(failing)}")
+        eprint(json.dumps(report))
+        return 1
+
+    cut_release_live(
+        repo_root,
+        tag,
+        push=not args.no_push,
+        remote=args.remote,
+        git_bin=args.git_bin,
+        gh_bin=args.gh_bin,
+    )
+    print(json.dumps(report))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
