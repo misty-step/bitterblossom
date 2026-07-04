@@ -162,6 +162,8 @@ pub struct NotificationOutboxRow {
     pub status: String,
     pub attempts: i64,
     pub last_error: Option<String>,
+    pub last_status_code: Option<i64>,
+    pub last_response: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub acknowledged_reason: Option<String>,
@@ -253,6 +255,8 @@ impl Ledger {
         ensure_column(&conn, "dead_letters", "acknowledged_reason", "TEXT")?;
         ensure_column(&conn, "dead_letters", "acknowledged_at", "TEXT")?;
         ensure_column(&conn, "submissions", "head_version", "TEXT")?;
+        ensure_column(&conn, "notification_outbox", "last_status_code", "INTEGER")?;
+        ensure_column(&conn, "notification_outbox", "last_response", "TEXT")?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
@@ -1093,25 +1097,38 @@ impl Ledger {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn mark_notification_delivered(&self, id: i64) -> Result<()> {
+    pub fn mark_notification_delivered(
+        &self,
+        id: i64,
+        status_code: Option<i64>,
+        response: Option<&str>,
+    ) -> Result<()> {
         let ts = now();
         self.conn.execute(
             "UPDATE notification_outbox
              SET status = 'delivered', attempts = attempts + 1, last_error = NULL,
-                 updated_at = ?2, delivered_at = ?2
+                 last_status_code = ?2, last_response = ?3,
+                 updated_at = ?4, delivered_at = ?4
              WHERE id = ?1",
-            params![id, ts],
+            params![id, status_code, response, ts],
         )?;
         Ok(())
     }
 
-    pub fn mark_notification_failed(&self, id: i64, error: &str) -> Result<()> {
+    pub fn mark_notification_failed(
+        &self,
+        id: i64,
+        error: &str,
+        status_code: Option<i64>,
+        response: Option<&str>,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE notification_outbox
              SET status = 'failed', attempts = attempts + 1, last_error = ?2,
-                 updated_at = ?3
+                 last_status_code = ?3, last_response = ?4,
+                 updated_at = ?5
              WHERE id = ?1",
-            params![id, error, now()],
+            params![id, error, status_code, response, now()],
         )?;
         Ok(())
     }
@@ -1150,7 +1167,8 @@ impl Ledger {
     pub fn notification_outbox(&self, id: i64) -> Result<NotificationOutboxRow> {
         self.conn
             .query_row(
-                "SELECT id, event, status, attempts, last_error, created_at, updated_at,
+                "SELECT id, event, status, attempts, last_error, last_status_code,
+                        last_response, created_at, updated_at,
                         acknowledged_reason, acknowledged_at
                  FROM notification_outbox WHERE id = ?1",
                 params![id],
@@ -1162,7 +1180,8 @@ impl Ledger {
     pub fn list_notification_outbox(&self, limit: i64) -> Result<Vec<NotificationOutboxRow>> {
         let limit = limit.clamp(1, 200);
         let mut stmt = self.conn.prepare(
-            "SELECT id, event, status, attempts, last_error, created_at, updated_at,
+            "SELECT id, event, status, attempts, last_error, last_status_code,
+                    last_response, created_at, updated_at,
                     acknowledged_reason, acknowledged_at
              FROM notification_outbox ORDER BY id DESC LIMIT ?1",
         )?;
@@ -1326,10 +1345,12 @@ fn row_to_notification_outbox(r: &rusqlite::Row<'_>) -> rusqlite::Result<Notific
         status: r.get(2)?,
         attempts: r.get(3)?,
         last_error: r.get(4)?,
-        created_at: r.get(5)?,
-        updated_at: r.get(6)?,
-        acknowledged_reason: r.get(7)?,
-        acknowledged_at: r.get(8)?,
+        last_status_code: r.get(5)?,
+        last_response: r.get(6)?,
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
+        acknowledged_reason: r.get(9)?,
+        acknowledged_at: r.get(10)?,
     })
 }
 

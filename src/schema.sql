@@ -182,6 +182,11 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
   status TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
+  -- Backlog 109: bounded, secret-scrubbed webhook response visibility while a
+  -- delivery is retrying, so the actual status/response is debuggable before
+  -- the retry budget exhausts it into a final `failed`/discard state.
+  last_status_code INTEGER,
+  last_response TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   delivered_at TEXT,

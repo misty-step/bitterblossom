@@ -859,6 +859,12 @@ fn run() -> Result<()> {
                         if let Some(err) = &n.last_error {
                             println!("    last_error: {err}");
                         }
+                        if let Some(code) = n.last_status_code {
+                            println!("    last_status_code: {code}");
+                        }
+                        if let Some(response) = &n.last_response {
+                            println!("    last_response: {response}");
+                        }
                         if let Some(reason) = &n.acknowledged_reason {
                             println!("    acknowledged: {reason}");
                         }
