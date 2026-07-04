@@ -35,7 +35,6 @@ curl_config() {
   url=$2
   {
     printf '%s\n' 'silent'
-    printf '%s\n' 'show-error = false'
     printf 'max-time = %s\n' "$timeout"
     printf 'request = "%s"\n' "$method"
     printf 'url = "%s"\n' "$url"
