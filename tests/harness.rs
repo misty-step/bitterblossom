@@ -30,6 +30,8 @@ fn pi_command_carries_provider_and_model() {
     assert_eq!(cmd[0], "sh");
     assert!(joined.contains("while IFS= read -r line"), "{joined}");
     assert!(joined.contains("message_update"), "{joined}");
+    assert!(joined.contains("tool_execution_end"), "{joined}");
+    assert!(joined.contains("toolResult"), "{joined}");
 }
 
 #[test]
@@ -128,6 +130,8 @@ args = ["--thinking", "high"]
     assert!(joined.contains("LANE_CARD.md"), "{joined}");
     assert!(joined.contains("while IFS= read -r line"), "{joined}");
     assert!(joined.contains("message_update"), "{joined}");
+    assert!(joined.contains("tool_execution_end"), "{joined}");
+    assert!(joined.contains("toolResult"), "{joined}");
 }
 
 #[test]
