@@ -29,18 +29,31 @@ artifact did not reflect that success.
 
 ## Oracle
 
-- [ ] If the agent writes `REPORT.json` before a late model-stream failure, the
+- [x] If the agent writes `REPORT.json` before a late model-stream failure, the
       wrapper preserves and validates that report instead of overwriting it.
-- [ ] If the agent reaches Canary terminal writebacks but fails before writing
+- [x] If the agent reaches Canary terminal writebacks but fails before writing
       `REPORT.json`, the wrapper synthesizes a report that reflects observed
       writebacks rather than `blocked_before_agent`.
-- [ ] The wrapper's transcript cap is enforced by byte-counting the subprocess
+- [x] The wrapper's transcript cap is enforced by byte-counting the subprocess
       stream, not by a shell `ulimit` that varies by shell/platform.
-- [ ] Regression tests cover late non-zero exit with existing `REPORT.json` and
+- [x] Regression tests cover late non-zero exit with existing `REPORT.json` and
       late non-zero exit after mocked writeback receipt artifacts.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Non-goals
 
 Do not remove the stdout cap. The cap is needed; the missing piece is preserving
 the truthful completion artifact under capped-stream conditions.
+
+## 2026-07-04 Slice
+
+The wrapper now enforces `INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES` by streaming
+the agent stdout through a byte-counting FIFO writer instead of shell
+`ulimit -f`. If the cap or a late non-zero exit occurs after `REPORT.json`
+exists, the wrapper preserves and validates the agent's report. If no report
+exists but terminal Canary writeback receipt JSON files are present under
+`incident-triage/writebacks/`, the wrapper synthesizes
+`canary_writebacks_preserved` with the observed writebacks, a truthful
+`agent_failed_after_canary_terminal_writebacks` stop reason, and residual risk
+naming the late failure. Regression tests cover both paths plus the removal of
+the shell `ulimit` cap. `./scripts/verify.sh` passed with `src LOC: 11528`.
