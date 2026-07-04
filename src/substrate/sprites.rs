@@ -74,6 +74,61 @@ impl Substrate for SpritesSubstrate {
     }
 }
 
+/// Check whether a command-harness binary resolves on the sprite host without
+/// preparing or mutating a workspace. Bare names use the remote PATH. Relative
+/// paths with separators are checked from the same task workspace directory
+/// that dispatch uses, if it already exists.
+pub(crate) fn remote_command_unspawnable_detail(
+    host: &str,
+    workspace_name: &str,
+    bin: &str,
+) -> Option<String> {
+    let workspace = remote_workspace_path(workspace_name);
+    let script = remote_command_probe_script(&workspace, bin);
+    let mut cmd = vec![sprite_bin(), "exec".into()];
+    cmd.extend(selector_args(host));
+    cmd.extend(["--".into(), "sh".into(), "-c".into(), script]);
+    match run_with_timeout(
+        &cmd,
+        None,
+        &relay_cwd(),
+        &[],
+        false,
+        Duration::from_secs(60),
+        RunControl::default(),
+    ) {
+        Ok(out) if out.exit_code == 0 => None,
+        Ok(out) => {
+            let detail = out.stderr.trim().lines().last().unwrap_or("");
+            Some(format!(
+                "command harness bin '{bin}' is not executable on sprite host '{host}' from workspace '{workspace}': {detail}"
+            ))
+        }
+        Err(e) => Some(format!(
+            "command harness bin '{bin}' could not be checked on sprite host '{host}' from workspace '{workspace}': {e:#}"
+        )),
+    }
+}
+
+fn remote_command_probe_script(workspace: &str, bin: &str) -> String {
+    let workspace = shell_quote(workspace);
+    let bin = shell_quote(bin);
+    format!(
+        "workspace={workspace}\n\
+         bin={bin}\n\
+         case \"$bin\" in\n\
+           /*)\n\
+             [ -x \"$bin\" ] || {{ echo \"absolute command '$bin' is not executable\" >&2; exit 127; }} ;;\n\
+           */*)\n\
+             [ -d \"$workspace\" ] || {{ echo \"workspace '$workspace' is absent; cannot verify relative command '$bin'\" >&2; exit 127; }}\n\
+             cd \"$workspace\" || exit 126\n\
+             [ -x \"$bin\" ] || {{ echo \"workspace-relative command '$bin' is not executable\" >&2; exit 127; }} ;;\n\
+           *)\n\
+             command -v \"$bin\" >/dev/null 2>&1 || {{ echo \"command '$bin' not found on PATH\" >&2; exit 127; }} ;;\n\
+         esac"
+    )
+}
+
 pub struct SpriteSession {
     host: String,
     artifacts: PathBuf,

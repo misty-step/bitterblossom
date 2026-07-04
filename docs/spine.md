@@ -744,8 +744,11 @@ missing declared secrets, missing policy-bound provider keys, and unspawnable
 `command`-harness binaries (the `/bin/true`-missing and missing-`GH_TOKEN`
 storm classes) for one task or the submission-storm member set, before dispatch
 creates run rows. Secret and provider-key checks apply on every substrate;
-binary checks apply only to `substrate = "local"`, the only substrate whose
-binaries `bb` can inspect.
+binary checks run on `substrate = "local"` directly and on sprite tasks through
+a read-only `sprite exec` probe against the declared host.
+For sprite tasks, bare command names resolve on the remote PATH; path-like
+command bins are checked from the task workspace path when that workspace
+already exists, without preparing, cloning, or installing anything.
 
 For manual-only Codex/Claude subscription-auth tasks, preflight also reports a
 classified readiness finding before authoring begins. Operators can set
