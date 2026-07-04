@@ -54,7 +54,10 @@ cargo run --quiet -- --config tests/fixtures/public-plane check
 
 echo "==> local-plane zero-credential golden path (no secrets, no network)"
 BB=./target/debug/bb
-CFG=examples/local-plane
+local_plane_tmp=$(mktemp -d "${TMPDIR:-/tmp}/bb-local-plane-verify.XXXXXX")
+cp -R examples/local-plane/. "$local_plane_tmp/"
+rm -rf "$local_plane_tmp/.bb"
+CFG=$local_plane_tmp
 run_count() {
   $BB --config $CFG runs list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'
 }
@@ -69,6 +72,7 @@ run_id=$(printf '%s' "$run_json" | python3 -c 'import json, sys; print(json.load
 $BB --config $CFG status --json >/dev/null
 $BB --config $CFG runs show "$run_id" --json >/dev/null
 $BB --config $CFG artifacts read "$run_id" REPORT.json --json >/dev/null
+rm -rf "$local_plane_tmp"
 
 echo "==> operations smoke drill"
 BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null
