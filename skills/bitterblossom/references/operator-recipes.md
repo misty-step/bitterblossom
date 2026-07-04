@@ -140,7 +140,8 @@ does not fan out storm members.
 For a real review comment:
 
 ```bash
-GH_TOKEN=$(gh auth token) bb --config <plane> run review \
+bb --config <plane> keys sync cerberus-reviewer --check --json
+CERBERUS_REVIEW_GH_TOKEN="$CERBERUS_REVIEW_GH_TOKEN" bb --config <plane> run review \
   --payload '{"repo":"owner/repo","pr":123}' \
   --json
 ```
@@ -148,13 +149,17 @@ GH_TOKEN=$(gh auth token) bb --config <plane> run review \
 For measurement without posting:
 
 ```bash
-GH_TOKEN=$(gh auth token) bb --config <plane> run review \
+bb --config <plane> keys sync cerberus-reviewer --check --json
+CERBERUS_REVIEW_GH_TOKEN="$CERBERUS_REVIEW_GH_TOKEN" bb --config <plane> run review \
   --payload '{"repo":"owner/repo","pr":123,"measurement":true}' \
   --json
 ```
 
 Evidence is both the ledger row and the external effect: PR comment for normal
 mode, artifact/result output for measurement mode.
+The GitHub token env must be a bot/app installation token or least-privilege
+machine-user token; do not use `GH_TOKEN=$(gh auth token)` for Cerberus review
+posting.
 
 ## CI Diagnose Workload
 

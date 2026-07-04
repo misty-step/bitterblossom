@@ -809,11 +809,24 @@ fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
     assert_eq!(task.agent_name, "cerberus-reviewer");
     assert_eq!(task.agent.harness, "command");
     assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
-    assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"CERBERUS_REVIEW_GH_TOKEN".to_string()));
     assert!(task
         .agent
         .secrets
         .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert_eq!(task.agent.policy.authority.as_deref(), Some("edit"));
+    assert_eq!(
+        task.agent.policy.provider_key_name.as_deref(),
+        Some("cerberus-reviewer")
+    );
+    assert_eq!(task.agent.policy.provider_spend_cap_usd, Some(1.25));
+    assert_eq!(
+        task.agent.policy.trigger_bindings,
+        vec!["manual".to_string(), "webhook".to_string()]
+    );
     assert!(task
         .spec
         .workspace

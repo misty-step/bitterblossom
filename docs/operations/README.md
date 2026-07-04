@@ -47,9 +47,66 @@ GH_TOKEN=$(gh auth token) ./target/debug/bb --config "$BB_RUNTIME_PLANE" run ver
   --json
 ```
 
-If a task needs `OPENROUTER_API_KEY`, `GH_TOKEN`, `BB_API_TOKEN`, or
-`SPRITE_TOKEN`, missing env should be treated as an operator preflight failure,
-not as a useful agent run.
+If a task needs `OPENROUTER_API_KEY`, `GH_TOKEN`, `CERBERUS_REVIEW_GH_TOKEN`,
+`BB_API_TOKEN`, or `SPRITE_TOKEN`, missing env should be treated as an operator
+preflight failure, not as a useful agent run.
+
+### Cerberus Review Identity And Keys
+
+The `review` task posts through Cerberus and must not use the operator's
+personal `GH_TOKEN`. Configure a GitHub App installation token or
+least-privilege machine-user token as `CERBERUS_REVIEW_GH_TOKEN` on the runtime
+plane. Recommended repository permissions:
+
+- Metadata: read
+- Contents: read
+- Pull requests: read/write
+- Commit statuses: read/write for `CERBERUS_SUMMARY_TARGET=status`
+- Checks: read/write only if the runtime task switches to
+  `CERBERUS_SUMMARY_TARGET=check-run`
+
+For GitHub App rotation, mint a fresh installation token outside the agent run,
+import it by name, restart/recover the plane, then verify the next review
+comment identity:
+
+```sh
+printf 'CERBERUS_REVIEW_GH_TOKEN=%s\n' "$CERBERUS_REVIEW_GH_TOKEN" \
+  | flyctl secrets import --app "$BB_FLY_APP"
+flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"'
+gh api repos/<owner>/<repo>/issues/<pr>/comments --jq '.[].user.login'
+```
+
+For a machine-user fallback, use a fine-grained PAT restricted to the reviewed
+repositories and the same permissions. The fallback is acceptable only while
+the distinct bot identity is visible in the `gh api ... user.login` readback.
+
+The review model key path is also name-only. The runtime
+`agents/cerberus-reviewer.toml` should declare
+`secrets = ["CERBERUS_REVIEW_GH_TOKEN", "OPENROUTER_API_KEY"]` plus:
+
+```toml
+[policy]
+provider_key_name = "cerberus-reviewer"
+provider_spend_cap_usd = 1.25
+trigger_bindings = ["manual", "webhook"]
+side_effect_policy = "kill"
+```
+
+Before enabling review dispatch after a fresh plane setup or key rotation:
+
+```sh
+OPENROUTER_MANAGEMENT_KEY="$OPENROUTER_MANAGEMENT_KEY" \
+  ./target/debug/bb --config "$BB_RUNTIME_PLANE" keys mint cerberus-reviewer --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" keys sync cerberus-reviewer --check --json
+CERBERUS_REVIEW_GH_TOKEN="$CERBERUS_REVIEW_GH_TOKEN" \
+  ./target/debug/bb --config "$BB_RUNTIME_PLANE" preflight review --json
+```
+
+`OPENROUTER_MANAGEMENT_KEY` is used only by `bb keys` provisioning. It is not a
+declared review-run secret. At dispatch, BB injects the stored, capped
+per-workload-family key as `OPENROUTER_API_KEY`; the wrapper passes only that
+env name to Cerberus `--openrouter-scoped-key`, and Cerberus mints/revokes the
+per-review child key inside its isolated `container-opencode` path.
 
 ## Deploy
 
@@ -292,6 +349,7 @@ flyctl secrets list --app "$BB_FLY_APP"
   printf 'BB_API_TOKEN=%s\n' "$BB_API_TOKEN"
   printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY"
   printf 'GH_TOKEN=%s\n' "$GH_TOKEN"
+  printf 'CERBERUS_REVIEW_GH_TOKEN=%s\n' "$CERBERUS_REVIEW_GH_TOKEN"
   printf 'SPRITE_TOKEN=%s\n' "$SPRITE_TOKEN"
   printf 'LITESTREAM_REPLICA_URL=%s\n' "$LITESTREAM_REPLICA_URL"
 } | flyctl secrets import --app "$BB_FLY_APP"

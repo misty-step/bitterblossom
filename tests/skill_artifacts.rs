@@ -29,7 +29,9 @@ fn bitterblossom_skill_is_exportable_agent_interface() {
     assert!(skill.contains("payload has no 'submission' field"));
     assert!(!skill.contains("TODO"));
 
-    assert!(recipes.contains("GH_TOKEN=$(gh auth token) bb --config <plane> run review"));
+    assert!(recipes.contains(
+        "CERBERUS_REVIEW_GH_TOKEN=\"$CERBERUS_REVIEW_GH_TOKEN\" bb --config <plane> run review"
+    ));
     assert!(recipes.contains("GH_TOKEN=$(gh auth token) bb --config <plane> run ci-diagnose"));
     assert!(recipes.contains("bb --config <plane> run model-eval"));
     assert!(recipes.contains("bb --config <plane> run build"));

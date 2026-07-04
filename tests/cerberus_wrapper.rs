@@ -63,6 +63,7 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
         .current_dir(dir.path())
         .env("CERBERUS_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
         .output()
         .unwrap();
     assert!(
@@ -93,12 +94,12 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
 }
 
 #[test]
-fn cerberus_wrapper_passes_explicit_gh_token_env() {
+fn cerberus_wrapper_passes_explicit_bot_gh_token_env() {
     // Regression: review-pr refuses ambient `gh` auth and requires an explicit
-    // --gh-token-file/--gh-token-env source. GH_TOKEN is a declared agent
-    // secret, so the wrapper must forward it or every real run fails with
-    // "requires an explicit GitHub token" (as happened in production before
-    // this test existed).
+    // --gh-token-file/--gh-token-env source. CERBERUS_REVIEW_GH_TOKEN is a
+    // declared bot/app identity secret, so the wrapper must forward that name
+    // instead of the operator's personal GH_TOKEN or every real run fails with
+    // "requires an explicit GitHub token".
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("cerberus-stub.sh");
     write_executable(
@@ -116,7 +117,7 @@ while [ "$#" -gt 0 ]; do
     *) shift;;
   esac
 done
-[ "$gh_token_env" = "GH_TOKEN" ] || { echo "gh_token_env=$gh_token_env" >&2; exit 1; }
+[ "$gh_token_env" = "CERBERUS_REVIEW_GH_TOKEN" ] || { echo "gh_token_env=$gh_token_env" >&2; exit 1; }
 mkdir -p "$out_dir"
 printf '{"run":{}}\n' > "$out_dir/artifact.json"
 printf 'review body\n' > "$out_dir/review.md"
@@ -128,7 +129,8 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
         .current_dir(dir.path())
         .env("CERBERUS_BIN", &stub)
-        .env("GH_TOKEN", "test-gh-token")
+        .env("CERBERUS_REVIEW_GH_TOKEN", "test-bot-gh-token")
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
         .output()
         .unwrap();
     assert!(
@@ -152,6 +154,7 @@ fn cerberus_wrapper_rejects_malformed_gh_token_env_name() {
         .current_dir(dir.path())
         .env("CERBERUS_GH_TOKEN_ENV", "GH_TOKEN}\"; touch injected; #")
         .env("GH_TOKEN", "test-gh-token")
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
         .output()
         .unwrap();
     assert!(
@@ -170,62 +173,101 @@ fn cerberus_wrapper_rejects_malformed_gh_token_env_name() {
 }
 
 #[test]
-fn cerberus_wrapper_prefers_dedicated_openrouter_key() {
-    // Cerberus gets its own OpenRouter key so usage is attributable and
-    // governable separately from the plane's shared long-lived
-    // OPENROUTER_API_KEY (backlog 104 context). When CERBERUS_OPENROUTER_API_KEY
-    // is set, the wrapper must export it as OPENROUTER_API_KEY for the
-    // cerberus subprocess, not the shared key.
+fn cerberus_wrapper_rejects_operator_gh_token_env_name() {
     let dir = tempfile::tempdir().unwrap();
-    let stub = dir.path().join("cerberus-stub.sh");
-    write_executable(
-        &stub,
-        r#"#!/bin/sh
-set -eu
-out_dir=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --out-dir) out_dir="$2"; shift 2;;
-    --dry-run) shift;;
-    --post) shift;;
-    *) shift;;
-  esac
-done
-mkdir -p "$out_dir"
-printf '%s' "${OPENROUTER_API_KEY:-}" > "$out_dir/seen-openrouter-key.txt"
-printf '{"run":{}}\n' > "$out_dir/artifact.json"
-printf 'review body\n' > "$out_dir/review.md"
-printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
-"#,
-    );
     write_event_and_run(dir.path());
 
     let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
         .current_dir(dir.path())
-        .env("CERBERUS_BIN", &stub)
-        .env("OPENROUTER_API_KEY", "shared-plane-key")
-        .env("CERBERUS_OPENROUTER_API_KEY", "cerberus-scoped-key")
+        .env("CERBERUS_GH_TOKEN_ENV", "GH_TOKEN")
+        .env("GH_TOKEN", "test-personal-token")
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
-        "stdout={}\nstderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "Cerberus review must not accept the operator GH_TOKEN env"
     );
-
-    let seen =
-        fs::read_to_string(dir.path().join("cerberus-review/seen-openrouter-key.txt")).unwrap();
-    assert_eq!(
-        seen, "cerberus-scoped-key",
-        "wrapper must prefer CERBERUS_OPENROUTER_API_KEY over the shared OPENROUTER_API_KEY"
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must name a bot/app token env"),
+        "stderr={stderr}"
     );
 }
 
 #[test]
-fn cerberus_wrapper_falls_back_to_shared_openrouter_key_when_dedicated_key_unset() {
-    // Without CERBERUS_OPENROUTER_API_KEY, the wrapper must keep working off
-    // the ambient shared OPENROUTER_API_KEY exactly as before this change.
+fn cerberus_wrapper_uses_scoped_openrouter_key_and_container_harness() {
+    // Regression for backlog 104: the wrapper must not forward a raw
+    // OPENROUTER_API_KEY into the review substrate. It gives Cerberus an
+    // explicit provisioning-key env name for M1 scoped key minting, then runs
+    // the review under the M2 container-opencode substrate.
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("cerberus-stub.sh");
+    let container_binary = dir.path().join("opencode-container");
+    write_executable(&container_binary, "#!/bin/sh\nexit 0\n");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+out_dir=""
+allow_env=""
+gh_token_env=""
+harness=""
+container_binary=""
+egress=""
+scoped_key=0
+provisioning_env=""
+key_limit=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --allow-env) allow_env="${allow_env}${allow_env:+,}$2"; shift 2;;
+    --gh-token-env) gh_token_env="$2"; shift 2;;
+    --harness) harness="$2"; shift 2;;
+    --container-binary) container_binary="$2"; shift 2;;
+    --container-egress-allow-host) egress="$2"; shift 2;;
+    --openrouter-scoped-key) scoped_key=1; shift;;
+    --openrouter-provisioning-key-env) provisioning_env="$2"; shift 2;;
+    --openrouter-key-limit-usd) key_limit="$2"; shift 2;;
+    --dry-run) shift;;
+    --post) shift;;
+    *) shift;;
+  esac
+done
+[ "$allow_env" = "" ] || { echo "allow_env=$allow_env" >&2; exit 1; }
+[ "$gh_token_env" = "CERBERUS_REVIEW_GH_TOKEN" ] || { echo "gh_token_env=$gh_token_env" >&2; exit 1; }
+[ "$harness" = "container-opencode" ] || { echo "harness=$harness" >&2; exit 1; }
+[ -x "$container_binary" ] || { echo "container_binary=$container_binary" >&2; exit 1; }
+[ "$egress" = "openrouter.ai:443" ] || { echo "egress=$egress" >&2; exit 1; }
+[ "$scoped_key" = "1" ] || { echo "missing --openrouter-scoped-key" >&2; exit 1; }
+[ "$provisioning_env" = "OPENROUTER_API_KEY" ] || { echo "provisioning_env=$provisioning_env" >&2; exit 1; }
+[ "$key_limit" = "1.25" ] || { echo "key_limit=$key_limit" >&2; exit 1; }
+mkdir -p "$out_dir"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+"#,
+    );
+    write_event_and_run(dir.path());
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CERBERUS_BIN", &stub)
+        .env("CERBERUS_REVIEW_GH_TOKEN", "test-bot-gh-token")
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
+        .env("CERBERUS_CONTAINER_BINARY", &container_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cerberus_wrapper_requires_scoped_openrouter_provisioning_key() {
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("cerberus-stub.sh");
     write_executable(
@@ -242,7 +284,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 mkdir -p "$out_dir"
-printf '%s' "${OPENROUTER_API_KEY:-}" > "$out_dir/seen-openrouter-key.txt"
 printf '{"run":{}}\n' > "$out_dir/artifact.json"
 printf 'review body\n' > "$out_dir/review.md"
 printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
@@ -253,20 +294,22 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
         .current_dir(dir.path())
         .env("CERBERUS_BIN", &stub)
-        .env("OPENROUTER_API_KEY", "shared-plane-key")
-        .env_remove("CERBERUS_OPENROUTER_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
-        "stdout={}\nstderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "missing scoped provisioning key must fail closed"
     );
-
-    let seen =
-        fs::read_to_string(dir.path().join("cerberus-review/seen-openrouter-key.txt")).unwrap();
-    assert_eq!(seen, "shared-plane-key");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("OPENROUTER_API_KEY is unset"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !dir.path().join("cerberus-review/artifact.json").exists(),
+        "cerberus must not run without the scoped provisioning key"
+    );
 }
 
 #[test]
@@ -312,6 +355,7 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
 
     let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
         .current_dir(dir.path())
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
         .env(
             "PATH",
             format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", fake_bin.display()),
@@ -330,7 +374,7 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
 }
 
 #[test]
-fn cerberus_wrapper_uses_omp_when_opencode_is_unavailable() {
+fn cerberus_wrapper_can_override_to_omp_for_trusted_compatibility() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path());
     fs::create_dir_all(dir.path().join("cerberus")).unwrap();
@@ -349,6 +393,8 @@ mode=""
 harness=""
 omp_binary=""
 allow_env=""
+scoped_key=0
+provisioning_env=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out-dir) out_dir="$2"; shift 2;;
@@ -357,6 +403,9 @@ while [ "$#" -gt 0 ]; do
     --harness) harness="$2"; shift 2;;
     --omp-binary) omp_binary="$2"; shift 2;;
     --allow-env) allow_env="$2"; shift 2;;
+    --openrouter-scoped-key) scoped_key=1; shift;;
+    --openrouter-provisioning-key-env) provisioning_env="$2"; shift 2;;
+    --openrouter-key-limit-usd) shift 2;;
     *) shift;;
   esac
 done
@@ -368,7 +417,9 @@ case "$omp_binary" in
 esac
 [ -x "$omp_binary" ] || { echo "omp_binary is not executable: $omp_binary" >&2; exit 1; }
 [ -x "$HOME/.local/bin/bun" ] || { echo "bun shim missing" >&2; exit 1; }
-[ "$allow_env" = "OPENROUTER_API_KEY" ] || { echo "allow_env=$allow_env" >&2; exit 1; }
+[ "$allow_env" = "" ] || { echo "allow_env=$allow_env" >&2; exit 1; }
+[ "$scoped_key" = "1" ] || { echo "missing --openrouter-scoped-key" >&2; exit 1; }
+[ "$provisioning_env" = "OPENROUTER_API_KEY" ] || { echo "provisioning_env=$provisioning_env" >&2; exit 1; }
 mkdir -p "$out_dir"
 printf '{"run":{}}\n' > "$out_dir/artifact.json"
 printf 'review body\n' > "$out_dir/review.md"
@@ -383,7 +434,8 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
             format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", fake_bin.display()),
         )
         .env("HOME", dir.path().join("home"))
-        .env("OPENROUTER_API_KEY", "test-key")
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
+        .env("CERBERUS_HARNESS", "omp")
         .output()
         .unwrap();
     assert!(
