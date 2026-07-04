@@ -23,16 +23,16 @@ These are not model-intelligence problems. They are BB operator UX and product-c
 
 ## Oracle
 
-- [ ] A builder dispatch recipe/command can run a groomed backlog item with one safe command or checked-in script.
-- [ ] A submit-and-storm recipe/command can open a submission and dispatch required lanes with one safe command or checked-in script.
-- [ ] Payload JSON is accepted via `--payload-file` and validated before ledger mutation.
-- [ ] Required fields (`repo`, `change`, `rev`, `backlog`, `base_ref`, etc.) are validated with source-specific errors.
-- [ ] Required secrets are preflighted before paid remote execution; missing secrets fail before storm fanout.
-- [ ] Duplicate active work is refused unless `--force` is explicit and recorded.
-- [ ] The command returns a receipt: run/submission id, idempotency key, branch/change, watcher command or status URL, and safe next command.
-- [ ] `bb submit list --json` exposes recent submission/gate state so supervisors can find active or stale review work without direct SQLite queries.
-- [ ] Secrets and prompts travel on stdin/env-safe paths, not process-table-visible argv where avoidable.
-- [ ] `./scripts/verify.sh` passes.
+- [x] A builder dispatch recipe/command can run a groomed backlog item with one safe command or checked-in script. → `scripts/bb-dispatch-build`.
+- [x] A submit-and-storm recipe/command can open a submission and dispatch required lanes with one safe command or checked-in script. → `scripts/bb-submit-storm`.
+- [x] Payload JSON is accepted via `--payload-file` and validated before ledger mutation.
+- [x] Required fields (`repo`, `change`, `rev`, `backlog`, `base_ref`, etc.) are validated with source-specific errors.
+- [x] Required secrets are preflighted before paid remote execution; missing secrets fail before storm fanout.
+- [x] Duplicate active work is refused unless `--force` is explicit and recorded.
+- [x] The command returns a receipt: run/submission id, idempotency key, branch/change, watcher command or status URL, and safe next command.
+- [x] `bb submit list --json` exposes recent submission/gate state so supervisors can find active or stale review work without direct SQLite queries.
+- [x] Secrets and prompts travel on stdin/env-safe paths, not process-table-visible argv where avoidable.
+- [x] `./scripts/verify.sh` passes.
 
 ## Verification System
 
@@ -80,3 +80,13 @@ This is the BB-side complement to backlog 085. Hermes can schedule a loop, but B
 2026-06-30 follow-up slice: the cron loop also had to query `plane/.bb/plane.db` directly because the shell-level `bb submit list --json` recipe was absent from the CLI even though the ledger already had a typed `list_submissions` shape. Add `bb submit list --json` as the smallest BB-owned discovery primitive before larger submit-and-storm recipes.
 
 2026-06-30 follow-up slice 2: added checked-in `scripts/bb-submit-storm` as the first submit-and-storm recipe. It validates `repo`/`change`/`rev` plus caller-declared required fields from `--payload-file` before mutation, runs `bb preflight --storm --json` before `submit open`, relies on `submit open`'s CAS refusal for duplicate open submissions, dispatches members with `bb run --payload-file` after injecting the submission id into a temporary payload file, and returns a JSON receipt with member run ids plus the safe next `gate` command. This is still script-owned; promote to CLI only after dogfood metrics show the contract is stable.
+
+2026-07-04 follow-up slice 3: added checked-in `scripts/bb-dispatch-build` as
+the matching builder recipe. It validates `repo`/`backlog`/`base_ref`/
+`branch_slug`/`prompt` from `--payload-file` before mutation, computes a
+deterministic build idempotency key, refuses duplicate active work unless
+`--force` is explicit and recorded in the receipt, runs `bb preflight <task>
+--json` before `bb run`, dispatches with `--payload-file`, and returns a JSON
+receipt with run id, task, backlog, base ref, branch slug, idempotency key,
+duplicate override state, watcher command, and safe next command. The operator
+recipe docs now show both the builder and storm paths.

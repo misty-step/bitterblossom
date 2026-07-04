@@ -715,6 +715,7 @@ bb keys sync <agent> | --all [--check] [--json]   # refresh provider usage/cap m
 bb preflight <task> | --storm [--json]            # missing secrets, local command bins, subscription auth readiness; pre-dispatch
 bb task list [--json]                               # agent-facing task inventory
 bb task park|unpark <task>
+scripts/bb-dispatch-build --config <plane> --payload-file build.json [--bb "target/debug/bb"] [--json] # checked-in operator recipe: validate groomed builder packet, refuse duplicate active work unless --force, preflight, run with --payload-file, return receipt
 bb submit open --change K --rev SHA [--context TEXT]
 scripts/bb-submit-storm --config <plane> --payload-file storm.json [--bb "target/debug/bb"] [--json] # checked-in operator recipe: validate payload, storm preflight, open, run members via --payload-file, return receipt
 bb submit reject --change K --fingerprint FP --reason TEXT
