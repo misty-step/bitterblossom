@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bitterblossom - the agent event plane</title>
+    <meta
+      name="description"
+      content="Bitterblossom runs recurring agent workloads as durable, budgeted jobs — with a real dead-letter queue, a review gate that blocks bad merges, and a fleet heartbeat, instead of a cron job you have to trust blindly."
+    />
+    <script>
+      try {
+        var m = localStorage.getItem('ae-mode');
+        if (m === 'dark' || m === 'light') {
+          document.documentElement.classList.add(m);
+          document.documentElement.style.colorScheme = m;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="aesthetic.css" />
+    <link rel="stylesheet" href="marketing.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" width="0" height="0" style="position: absolute">
+      <symbol id="i-flower" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path
+          d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"
+        />
+        <path d="M12 7.5V9" />
+        <path d="M7.5 12H9" />
+        <path d="M16.5 12H15" />
+        <path d="M12 16.5V15" />
+        <path d="m8 8 1.88 1.88" />
+        <path d="M14.12 9.88 16 8" />
+        <path d="m8 16 1.88-1.88" />
+        <path d="M14.12 14.12 16 16" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-circle-check" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <path d="m9 12 2 2 4-4" />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18" />
+        <path d="m6 6 12 12" />
+      </symbol>
+    </svg>
+
+    <div class="ae-screen ae-wide">
+      <header class="ae-bar msk-bar">
+        <a class="ae-logo" href="./" aria-label="Bitterblossom home">
+          <span class="ae-app-mark" aria-hidden="true">
+            <svg class="ae-icon" data-lucide="flower">
+              <use href="#i-flower" />
+            </svg>
+          </span>
+          <span class="ae-name">Bitterblossom</span>
+        </a>
+        <span class="msk-actions">
+          <nav class="ae-chrome msk-nav" aria-label="Site">
+            <a href="#features">why it matters</a>
+            <a href="#gate">the review gate</a>
+            <a href="#screens">proof</a>
+            <a href="changelog.html">release notes</a>
+          </nav>
+          <button class="ae-mode" aria-label="toggle color mode">
+            <svg class="ae-icon ae-sun"><use href="#i-sun" /></svg>
+            <svg class="ae-icon ae-moon"><use href="#i-moon" /></svg>
+          </button>
+        </span>
+      </header>
+
+      <main class="ae-stage ae-stage-scroll" id="content">
+        <div class="msk-page">
+          <section class="msk-hero" aria-labelledby="hero-title">
+            <p class="ae-chrome">THE AGENT EVENT PLANE</p>
+            <h1 class="ae-h" id="hero-title">
+              Recurring agent work, run durably — not a cron job you have to
+              trust blindly.
+            </h1>
+            <p class="msk-pitch">
+              Bitterblossom is <code>bb</code>: tasks, agents, and triggers
+              declared as files, dispatched onto isolated infrastructure with
+              cost, budget, queue, trace, and dead-letter handling visible
+              from the CLI or a live dashboard. One Rust binary, two
+              personalities — <code>bb serve</code> (webhook ingress, cron
+              scheduler, dispatch) and <code>bb run</code> (dispatch one job
+              from a terminal).
+            </p>
+            <p class="ae-status">
+              <svg class="ae-icon ae-ok" data-lucide="circle-check">
+                <use href="#i-circle-check" />
+              </svg>
+              <span class="ae-status-label"
+                >Every claim below is a real capture from a live drill or the
+                repo's own gate script — linked in the gallery, not
+                asserted.</span
+              >
+            </p>
+          </section>
+
+          <section
+            class="msk-section"
+            id="features"
+            aria-labelledby="features-title"
+          >
+            <h2 class="ae-h" id="features-title">Why it matters</h2>
+            <div class="ae-list-rows">
+              <div class="ae-list-row">
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">budget</span>
+                  <span class="ae-list-value">Caps enforced, not advisory.</span>
+                </span>
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">proof</span>
+                  <span class="ae-list-value"
+                    >A ledger row, every run.</span
+                  >
+                </span>
+              </div>
+              <div class="ae-list-row">
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">failure</span>
+                  <span class="ae-list-value"
+                    >Real DLQ, not a silent drop.</span
+                  >
+                </span>
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">shape</span>
+                  <span class="ae-list-value"
+                    >One binary; workloads are config.</span
+                  >
+                </span>
+              </div>
+              <div class="ae-list-row">
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">health</span>
+                  <span class="ae-list-value"
+                    >Reports liveness to Canary.</span
+                  >
+                </span>
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">fit</span>
+                  <span class="ae-list-value"
+                    >Aesthetic tokens with the Bitterblossom mark.</span
+                  >
+                </span>
+              </div>
+            </div>
+            <p class="ae-dim">
+              "Failure fails visibly" is the design premise: a
+              <code>bb</code> plane reports its own liveness to Canary
+              (<code>src/canary.rs</code>, a 60-second check-in named
+              <code>bb-plane</code>) so an operator finds out the plane is
+              dead from the fleet's own monitoring, not from a missed cron
+              job three days later.
+            </p>
+          </section>
+
+          <section class="msk-section" id="gate" aria-labelledby="gate-title">
+            <h2 class="ae-h" id="gate-title">The review gate</h2>
+            <p>
+              Agent-authored changes go through a submission loop before they
+              land: open a submission, dispatch the review "storm" (each
+              reviewer runs as its own budgeted, ledgered job), then
+              <code>bb gate</code> reads the recorded verdicts and returns
+              <code>clear</code> (proceed), <code>blocked</code> (names the
+              fix), or <code>escalated</code> (round limit hit, one notify —
+              never silent, never eternal pending). Fix, re-round, repeat
+              until clear. The drill is repeatable and documented in
+              <code>AGENTS.md</code>: a planted flaw blocks round one, a fix
+              clears round two, and a persistent blocker escalates exactly at
+              the round cap instead of looping forever.
+            </p>
+          </section>
+
+          <section
+            class="msk-section"
+            id="screens"
+            aria-labelledby="screens-title"
+          >
+            <div class="msk-section-head">
+              <h2 class="ae-h" id="screens-title">Proof</h2>
+              <p class="ae-dim">
+                Click a frame to inspect it. Every image below is a real
+                capture from one dev-plane drill
+                (<code>BB_DRILL_KEEP_TMP=1
+                ./scripts/control-loop-drill.sh</code>, then <code>bb
+                serve</code> against the kept plane) or the repo's own gate
+                script — nothing staged.
+              </p>
+            </div>
+            <div class="msk-gallery" aria-label="Product screenshots">
+              <button
+                class="msk-shot"
+                type="button"
+                data-full="assets/screenshots/01-dashboard-storm-drill.png"
+                data-title="Live dashboard: containment working"
+              >
+                <img
+                  src="assets/screenshots/01-dashboard-storm-drill.png"
+                  alt="Bitterblossom operator dashboard showing a real containment drill: five webhook events, one success, four blocked by budget"
+                />
+                <span class="ae-chrome">Live dashboard: containment working</span>
+              </button>
+              <button
+                class="msk-shot"
+                type="button"
+                data-full="assets/screenshots/02-status-runs-cli.png"
+                data-title="Same ledger, from the terminal"
+              >
+                <img
+                  src="assets/screenshots/02-status-runs-cli.png"
+                  alt="bb status and bb runs list terminal output showing the same drill state as the dashboard"
+                />
+                <span class="ae-chrome">Same ledger, from the terminal</span>
+              </button>
+              <button
+                class="msk-shot"
+                type="button"
+                data-full="assets/screenshots/03-loc-tripwire.png"
+                data-title="The spine's own bloat tripwire"
+              >
+                <img
+                  src="assets/screenshots/03-loc-tripwire.png"
+                  alt="scripts/verify.sh output showing the Rust spine at 12,205 of a 12,210-line LOC budget"
+                />
+                <span class="ae-chrome">The spine's own bloat tripwire</span>
+              </button>
+            </div>
+          </section>
+
+          <section
+            class="msk-section msk-release-slot"
+            aria-labelledby="release-title"
+          >
+            <h2 class="ae-h" id="release-title">Release notes</h2>
+            <p>
+              Read the <a href="changelog.html">current release notes</a> for
+              user-facing changes and the evidence behind them — including an
+              honest note on the version-history discontinuity from the
+              Elixir/Python era to the current Rust rewrite.
+            </p>
+          </section>
+        </div>
+      </main>
+
+      <footer class="ae-bar msk-footer">
+        <p class="ae-chrome">Bitterblossom is the Weave execution plane.</p>
+        <nav class="ae-foot-links ae-chrome" aria-label="Footer">
+          <a
+            data-footer-link="github"
+            href="https://github.com/misty-step/bitterblossom"
+            >GitHub</a
+          >
+          <a data-footer-link="misty-step" href="https://mistystep.io"
+            >Misty Step</a
+          >
+          <a data-footer-link="weave" href="https://misty-step.github.io/weave/"
+            >Weave</a
+          >
+        </nav>
+      </footer>
+    </div>
+
+    <dialog class="ae-dialog msk-zoom" aria-labelledby="zoom-title">
+      <div class="msk-zoom-head">
+        <h2 class="ae-dialog-title" id="zoom-title">Screenshot</h2>
+        <button
+          class="ae-button"
+          type="button"
+          data-zoom-close
+          aria-label="Close screenshot"
+        >
+          <svg class="ae-icon" aria-hidden="true"><use href="#i-x" /></svg>
+        </button>
+      </div>
+      <img class="msk-zoom-img" alt="" />
+    </dialog>
+
+    <script src="mode.js"></script>
+    <script src="marketing.js"></script>
+  </body>
+</html>
