@@ -80,7 +80,21 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   color: var(--ink);
   font-weight: 800;
   margin-bottom: 1.2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
 }
+.brand-mark {
+  width: 2em;
+  height: 2em;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.brand-mark svg { width: 1.2em; height: 1.2em; }
 .rail button {
   display: block;
   width: 100%;
@@ -441,7 +455,7 @@ tbody tr:first-child td { border-top: 0; }
 </section>
 <div id="dashboardShell" class="shell is-locked" aria-hidden="true">
   <nav class="rail" aria-label="Dashboard views">
-    <div class="brand">bitterblossom</div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"/><path d="M12 7.5V9"/><path d="M7.5 12H9"/><path d="M16.5 12H15"/><path d="M12 16.5V15"/></svg></span>bitterblossom</div>
     <button class="is-active" data-view-button="overview">overview</button>
     <button data-view-button="runs">runs</button>
     <button data-view-button="tasks">tasks</button>
