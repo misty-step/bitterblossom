@@ -99,7 +99,18 @@ rm -rf "$self_drill_tmp"
 # not workload judgment; keep route-through authority out until separately earned.
 # bb-912 raised this for generic serve/ingress/budget security mechanism:
 # bounded request reads, panic containment, constant-time auth, and atomic budget admission.
-SPINE_LOC_CAP=11550
+# bitterblossom-107 raised this to 11550 for sprite command-binary preflight
+# checks (bb preflight <task> now validates command-harness binaries exist on
+# the declared sprite host, not only the local plane host).
+# Raised 2026-07-04 for bitterblossom-088: a required gate member (e.g. the
+# Thermo-Nuclear maintainability lens) can be explicitly waived per change with
+# a risk-tier-tagged reason instead of hanging the gate pending forever — the
+# same generic mechanism shape as the existing finding-level rejection/arbiter
+# path (member_waivers table, Ledger::waive_member/member_waiver, evaluate()
+# quorum arithmetic, `bb submit waive`). Gate/ledger mechanism, not workload
+# judgment: which diffs qualify for a risk tier stays driver/operator
+# judgment recorded in the reason string, not plane policy.
+SPINE_LOC_CAP=11635
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

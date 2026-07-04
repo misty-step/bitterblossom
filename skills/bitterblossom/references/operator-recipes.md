@@ -312,6 +312,25 @@ producing a verdict, `gate --json` escalates and the failed member carries
 clean replacement submission command instead of trying to make a replay count.
 The command includes the plane `--config` path used for the gate evaluation.
 
+A docs-only or tiny-config-only change can waive a required member (e.g. the
+Thermo-Nuclear maintainability lens Cerberus otherwise runs on every
+meaningful implementation diff) instead of leaving the gate pending on a
+member the risk tier says never applies:
+
+```bash
+bb --config <plane> submit waive \
+  --change <change> \
+  --rev <rev> \
+  --kind <kind> \
+  --reason "risk-tier:docs-only"
+```
+
+`reason` must name an explicit tier (`docs-only` or `tiny-config`); the
+waiver applies only to `<rev>` (the next rev needs its own) and never
+overrides a verdict that member already reported this round. The gate
+then reports that member's `status` as `waived` with the reason instead of
+hanging `pending`.
+
 ## Dead Letters and Recovery
 
 List pre-execute failures:

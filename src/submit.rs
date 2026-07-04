@@ -11,6 +11,10 @@ pub const SUBMISSION_LIST_LIMIT_MAX: i64 = 200;
 
 pub const VERDICTS: &[&str] = &["pass", "blocking", "advisory"];
 pub const SEVERITIES: &[&str] = &["blocking", "serious", "minor"];
+/// Explicit risk tiers a required gate member may be waived under (backlog
+/// 088). Mechanical allow-list only — whether a given diff actually IS
+/// docs-only or tiny-config is driver/operator judgment, not plane policy.
+pub const RISK_TIERS: &[&str] = &["docs-only", "tiny-config"];
 
 pub fn clamp_submission_list_limit(limit: i64) -> i64 {
     limit.clamp(SUBMISSION_LIST_LIMIT_MIN, SUBMISSION_LIST_LIMIT_MAX)
@@ -320,6 +324,47 @@ impl Ledger {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    /// Waive one required gate member for one specific revision of a change
+    /// (backlog 088): that storm member is not required to resolve the gate
+    /// for `rev`. Scoped per-`rev`, not per-`change_key` — a later rev of the
+    /// same change (a different diff entirely) needs its own waiver, so a
+    /// stale docs-only waiver can never silently exempt a later rewrite.
+    /// `reason` must be `risk-tier:<tier>` naming one of [`RISK_TIERS`] — an
+    /// explicit skip rule, not a free-form excuse.
+    pub fn waive_member(
+        &self,
+        change_key: &str,
+        rev: &str,
+        kind: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let tier = reason
+            .strip_prefix("risk-tier:")
+            .context("waiver reason must be 'risk-tier:<tier>' naming an explicit skip rule")?;
+        if !RISK_TIERS.contains(&tier) {
+            bail!("risk tier '{tier}' not one of {}", RISK_TIERS.join("|"));
+        }
+        self.conn.execute(
+            "INSERT INTO member_waivers (change_key, rev, kind, reason, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(change_key, rev, kind) DO UPDATE SET reason = ?4, created_at = ?5",
+            params![change_key, rev, kind, reason, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn member_waiver(&self, change_key: &str, rev: &str, kind: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT reason FROM member_waivers
+                 WHERE change_key = ?1 AND rev = ?2 AND kind = ?3",
+                params![change_key, rev, kind],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
     fn arbiter_sustains(&self, change_key: &str, arbiter_kind: &str, fp: &str) -> Result<bool> {
         let mut stmt = self.conn.prepare(
             "SELECT v.verdict, v.findings_json FROM verdicts v
@@ -428,6 +473,8 @@ pub struct MemberStatus {
     pub safe_next_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safe_next_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -459,10 +506,33 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     let mut counted: Vec<&VerdictRow> = Vec::new();
     let mut pending_count = 0usize;
     let mut unavailable_count = 0usize;
+    let mut waived_count = 0usize;
     let now = OffsetDateTime::now_utc();
     let quorum = gate.effective_quorum();
     let arm_timeout = i64::try_from(gate.arm_timeout_seconds).unwrap_or(i64::MAX);
     for kind in &gate.required {
+        // A waiver never overrides a verdict this round already recorded —
+        // it only fills in for a member nothing has reported on yet, and
+        // only for the exact rev it was granted against (`sub.rev`), so a
+        // stale waiver from an earlier, genuinely-docs-only rev can never
+        // silently exempt a later rev that turned into a real rewrite.
+        let already_verdicted = verdicts.iter().any(|v| v.kind == *kind);
+        if !already_verdicted {
+            if let Some(reason) = ledger.member_waiver(&sub.change_key, &sub.rev, kind)? {
+                waived_count += 1;
+                members.push(MemberStatus {
+                    kind: kind.clone(),
+                    status: "waived".to_string(),
+                    run_id: None,
+                    cost_usd: None,
+                    timed_out_after_seconds: None,
+                    safe_next_command: None,
+                    safe_next_reason: None,
+                    waiver_reason: Some(reason),
+                });
+                continue;
+            }
+        }
         let task = plane
             .tasks
             .values()
@@ -570,6 +640,7 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
             timed_out_after_seconds,
             safe_next_command,
             safe_next_reason,
+            waiver_reason: None,
         });
     }
 
@@ -599,8 +670,8 @@ pub fn evaluate(plane: &Plane, ledger: &Ledger, submission_id: &str) -> Result<G
     }
 
     let verdict_count = counted.len();
-    let quorum_possible = verdict_count + pending_count >= quorum;
-    let quorum_met = verdict_count >= quorum;
+    let quorum_possible = verdict_count + waived_count + pending_count >= quorum;
+    let quorum_met = verdict_count + waived_count >= quorum;
     let blocker_decision = || {
         if sub.round >= gate.max_rounds as i64 {
             "escalated"

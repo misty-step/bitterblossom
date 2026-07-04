@@ -613,6 +613,23 @@ arbiter = "arbiter"               # verdict kind that settles disputes
   verdict independently sustains the rejection. Rejections and reasons
   appear verbatim in every subsequent report.
 - `blocked` at `round == max_rounds` → `escalated` (one notify).
+- **Waiving a whole required member** (backlog 088) is a different act from
+  rejecting one finding: `bb submit waive --change <key> --rev <rev> --kind
+  <kind> --reason "risk-tier:<tier>"` marks a required storm member resolved
+  for this exact rev without a run, so a docs-only or tiny-config-only diff
+  does not hang the gate pending on a member the tier rule says never
+  applies (e.g. the Thermo-Nuclear maintainability lens Cerberus otherwise
+  runs on every meaningful implementation diff — see `vendor/skills/
+  thermo-nuclear-code-quality-review/` and `vendor/roster/agents/cerberus/`).
+  `reason` must name an explicit tier from `submit::RISK_TIERS`
+  (`docs-only`, `tiny-config`) — a mechanical allow-list, not a judgment
+  call the plane makes; whether a diff actually qualifies stays
+  driver/operator judgment. A waiver is scoped to `--rev`: a later rev of
+  the same change is a different diff and needs its own waiver, and a
+  waiver never overrides a verdict that member already reported this round.
+  `bb gate` reports a waived member's `status` as `waived` with the reason,
+  distinct from `not_started`/`pending`, so the gate JSON always shows
+  whether the lens ran, passed, blocked, or was intentionally waived.
 
 **The driver (convention, not spine).** Manual dispatch can still run the
 loop explicitly: push the branch → `bb submit open` → fire required storm

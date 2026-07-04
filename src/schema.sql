@@ -144,6 +144,21 @@ CREATE TABLE IF NOT EXISTS rejections (
   PRIMARY KEY (change_key, fingerprint)
 );
 
+-- Backlog 088: a required gate member (e.g. the Thermo-Nuclear maintainability
+-- lens) can be explicitly waived for one specific rev of a change by an
+-- operator/agent-recorded, risk-tier-tagged reason, instead of hanging the
+-- gate pending forever on a diff the tier rule says never needs that member.
+-- Scoped by (change_key, rev, kind), not just (change_key, kind): a later rev
+-- of the same change is a different diff and needs its own waiver.
+CREATE TABLE IF NOT EXISTS member_waivers (
+  change_key TEXT NOT NULL,
+  rev TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (change_key, rev, kind)
+);
+
 -- Backlog 083: unattended-loop guardrails. Guard events are the durable,
 -- operator-visible surface for circuit breakers: ingress body rejections,
 -- cron catch-up collapses, notification failures, and plane pause/resume.

@@ -1,6 +1,68 @@
 use std::fs;
 use std::path::Path;
 
+/// Backlog 088: Cerberus must invoke the Thermo-Nuclear maintainability lens
+/// for ship-bound implementation diffs, sourced from a pinned/provenance-
+/// tracked copy rather than retyped, drift-prone prose.
+#[test]
+fn thermo_nuclear_lens_is_vendored_with_provenance_and_wired_into_cerberus() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lens_dir = root.join("vendor/skills/thermo-nuclear-code-quality-review");
+    let skill = fs::read_to_string(lens_dir.join("SKILL.md")).unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(lens_dir.join(".sync-meta.json")).unwrap())
+            .unwrap();
+
+    // The vendored copy is byte-identical to the hash recorded at vendoring
+    // time — proof this file is a mechanical copy, not a hand-retyped
+    // paraphrase, and that nobody has silently hand-edited it since. This
+    // does NOT detect the upstream Harness Kit skill changing later; keeping
+    // this copy current with upstream is a separate, manual re-vendor step.
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(skill.as_bytes());
+    let actual_sha256 = format!("{:x}", hasher.finalize());
+    assert_eq!(
+        meta["vendored_from_sha256"].as_str().unwrap(),
+        actual_sha256,
+        "vendored SKILL.md no longer matches the hash recorded at vendoring time"
+    );
+    assert!(meta["upstream"]["repo"]
+        .as_str()
+        .unwrap()
+        .contains("cursor/plugins"));
+    assert!(meta["upstream"]["sha"].as_str().unwrap().len() >= 7);
+    assert!(skill.contains("1000 lines"));
+    assert!(skill.contains("code judo"));
+
+    let role = fs::read_to_string(root.join("vendor/roster/agents/cerberus/role.yaml")).unwrap();
+    assert!(role.contains("name: thermo-nuclear-maintainability"));
+    assert!(role.contains("vendor/skills/thermo-nuclear-code-quality-review/SKILL.md"));
+    assert!(role.contains("backlog 088"));
+
+    let instructions =
+        fs::read_to_string(root.join("vendor/roster/agents/cerberus/instructions.md")).unwrap();
+    assert!(instructions.contains("Maintainability lens"));
+    assert!(instructions.contains("severity: \"blocking\""));
+    assert!(instructions.contains("risk-tier"));
+    assert!(instructions.contains("bb submit waive"));
+
+    let roster_card =
+        fs::read_to_string(root.join("examples/roster-cerberus-plane/tasks/review/card.md"))
+            .unwrap();
+    assert!(roster_card.contains("Thermo-Nuclear maintainability lens"));
+
+    let factory_agent =
+        fs::read_to_string(root.join("examples/review-factory-plane/agents/reviewer.toml"))
+            .unwrap();
+    assert!(factory_agent.contains("cursor-thermo-nuclear-code-quality-review"));
+    let factory_card =
+        fs::read_to_string(root.join("examples/review-factory-plane/tasks/review/card.md"))
+            .unwrap();
+    assert!(factory_card.contains("Thermo-Nuclear maintainability lens"));
+    assert!(factory_card.contains("risk-tier:<tier>"));
+}
+
 #[test]
 fn bitterblossom_skill_is_exportable_agent_interface() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/bitterblossom");

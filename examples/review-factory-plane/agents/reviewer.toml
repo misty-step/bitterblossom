@@ -7,6 +7,7 @@ secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
 skills = [
   "harness-kit/code-review#pr-review",
   "harness-kit/ci#diff-risk",
+  "harness-kit/cursor-thermo-nuclear-code-quality-review#maintainability-lens",
   "bitterblossom/operator-min",
 ]
 

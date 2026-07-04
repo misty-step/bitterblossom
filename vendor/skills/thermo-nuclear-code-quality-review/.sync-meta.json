@@ -1,0 +1,12 @@
+{
+  "vendored_at": "2026-07-04T00:00:00Z",
+  "vendored_from": "/Users/phaedrus/Development/harness-kit/skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md",
+  "vendored_from_sha256": "7faca08b51b643b2ddd0836f92af15574444024685dcc1e677dbbb39ae8c9e8f",
+  "upstream": {
+    "repo": "cursor/plugins",
+    "sha": "e46364b8be46000b7df0f260550cd712afbb8d36",
+    "src_path_suffix": "thermo-nuclear-code-quality-review",
+    "note": "Harness Kit's own .sync-meta.json for this skill records this upstream provenance; this file records the byte-for-byte copy of Harness Kit's synced SKILL.md, not a retyped paraphrase."
+  },
+  "reason": "bitterblossom-088: Cerberus needs this lens available inside its own review workspace (e.g. a synced bitterblossom checkout on a sprite), not only on the operator's local machine where Harness Kit is checked out."
+}
