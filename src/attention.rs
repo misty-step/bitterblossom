@@ -45,6 +45,56 @@ pub fn scan(plane: &Plane, ledger: &Ledger, now: OffsetDateTime) -> Result<Atten
     let open_dlq = dead_letters.iter().filter(|d| d.status == "open").count();
     let notification_pending = outbox_total(&notification_counts, "pending");
     let notification_failed = outbox_total(&notification_counts, "failed");
+    Ok(build_debt(
+        open_dlq,
+        parked_tasks,
+        stale_runs,
+        awaiting_recovery,
+        notification_pending,
+        notification_failed,
+    ))
+}
+
+pub fn scan_task(ledger: &Ledger, task: &str, now: OffsetDateTime) -> Result<AttentionDebt> {
+    let dead_letters = ledger.list_dead_letters()?;
+    let runs = ledger.list_runs(Some(task), None)?;
+    let parked_tasks = usize::from(ledger.parked_reason(task)?.is_some());
+    let mut stale_runs = 0usize;
+    let mut awaiting_recovery = 0usize;
+    for run in runs
+        .iter()
+        .filter(|r| r.state == "running" || r.state == "awaiting_recovery")
+    {
+        if run.state == "awaiting_recovery" {
+            awaiting_recovery += 1;
+        }
+        let view = progress::from_ledger(ledger, run, now)?;
+        if view.classification == "stale_executing" {
+            stale_runs += 1;
+        }
+    }
+    let open_dlq = dead_letters
+        .iter()
+        .filter(|d| d.task == task && d.status == "open")
+        .count();
+    Ok(build_debt(
+        open_dlq,
+        parked_tasks,
+        stale_runs,
+        awaiting_recovery,
+        0,
+        0,
+    ))
+}
+
+fn build_debt(
+    open_dlq: usize,
+    parked_tasks: usize,
+    stale_runs: usize,
+    awaiting_recovery: usize,
+    notification_pending: i64,
+    notification_failed: i64,
+) -> AttentionDebt {
     let mut reasons = Vec::new();
     if open_dlq > 0 {
         reasons.push(format!("open_dlq={open_dlq}"));
@@ -65,7 +115,7 @@ pub fn scan(plane: &Plane, ledger: &Ledger, now: OffsetDateTime) -> Result<Atten
         reasons.push(format!("notification_failed={notification_failed}"));
     }
     let blocking = !reasons.is_empty();
-    Ok(AttentionDebt {
+    AttentionDebt {
         open_dlq,
         parked_tasks,
         stale_runs,
@@ -78,7 +128,7 @@ pub fn scan(plane: &Plane, ledger: &Ledger, now: OffsetDateTime) -> Result<Atten
         } else {
             "clear".into()
         },
-    })
+    }
 }
 
 fn outbox_total(counts: &[crate::ledger::NotificationOutboxCount], status: &str) -> i64 {

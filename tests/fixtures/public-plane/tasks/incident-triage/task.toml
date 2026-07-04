@@ -25,6 +25,9 @@ repos = [
 # cycle instead of a single read-only report. max_cost_per_run_usd and
 # max_runs_per_day are sized the same way (>6x and <2/day vs canary-triage's
 # 8/day) for a heavier, rarer workload.
+[admission]
+attention_debt = "task"
+
 [budget]
 timeout_minutes = 120
 max_runs_per_day = 3

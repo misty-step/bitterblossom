@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use bitterblossom::ingress::{handle_webhook, sign_hmac};
 use bitterblossom::ledger::Ledger;
-use bitterblossom::spec::{AuthClass, Plane, TriggerSpec};
+use bitterblossom::spec::{AttentionDebtPolicy, AuthClass, Plane, TriggerSpec};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -246,6 +246,10 @@ fn incident_triage_task_is_glm_command_responder_contract() {
     assert_eq!(task.spec.budget.max_runs_per_day, Some(3));
     assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(5.0));
     assert_eq!(task.spec.budget.timeout_minutes, Some(120));
+    assert_eq!(
+        task.spec.admission.attention_debt,
+        AttentionDebtPolicy::Task
+    );
     assert_eq!(task.spec.workspace.repos.len(), 4);
 
     let webhook = task

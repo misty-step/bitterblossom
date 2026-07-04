@@ -5,11 +5,20 @@ use sha2::Sha256;
 use time::OffsetDateTime;
 
 use crate::attention::{self, AttentionDebt};
+use crate::budget::{self, Violation};
 use crate::ledger::{IngressOutcome, IngressRequest, Ledger};
-use crate::spec::{Plane, Task, TriggerSpec, WebhookActionSpec};
+use crate::spec::{AttentionDebtPolicy, Plane, Task, TriggerSpec, WebhookActionSpec};
 pub struct WebhookResponse {
     pub status: u16,
     pub body: String,
+}
+
+#[derive(serde::Serialize)]
+struct AdmissionRefusal {
+    kind: String,
+    detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debt: Option<AttentionDebt>,
 }
 pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Option<(&'p Task, &'p TriggerSpec)> {
     for task in plane.tasks.values() {
@@ -95,13 +104,14 @@ pub fn handle_webhook(
         }
     }
 
-    if let Some(debt) = attention_debt_brake(plane, ledger, &task.name, "webhook")? {
+    if let Some(refusal) = reflex_admission_refusal(plane, ledger, task, "webhook")? {
         return Ok(WebhookResponse {
             status: 429,
             body: serde_json::json!({
                 "error": "attention debt brake refused reflex admission",
                 "task": task.name,
-                "debt": debt,
+                "debt": refusal.debt.as_ref(),
+                "refusal": refusal,
             })
             .to_string(),
         });
@@ -458,7 +468,11 @@ fn cron_catchup_inner(
         return Ok(CronCatchupOutcome::default());
     }
     if let Some(plane) = plane {
-        if attention_debt_brake(plane, ledger, task, "cron")?.is_some() {
+        let refused = match plane.task(task) {
+            Ok(task_spec) => reflex_admission_refusal(plane, ledger, task_spec, "cron")?.is_some(),
+            Err(_) => attention_debt_brake(plane, ledger, task, "cron")?.is_some(),
+        };
+        if refused {
             return Ok(CronCatchupOutcome {
                 skipped: fires.len(),
                 ..Default::default()
@@ -511,4 +525,65 @@ pub fn attention_debt_brake(
         1,
     )?;
     Ok(Some(debt))
+}
+
+fn reflex_admission_refusal(
+    plane: &Plane,
+    ledger: &Ledger,
+    task: &Task,
+    source: &str,
+) -> Result<Option<AdmissionRefusal>> {
+    match task.spec.admission.attention_debt {
+        AttentionDebtPolicy::Global => {
+            attention_debt_brake(plane, ledger, &task.name, source).map(|debt| {
+                debt.map(|debt| AdmissionRefusal {
+                    kind: "attention_debt".to_string(),
+                    detail: debt.reason.clone(),
+                    debt: Some(debt),
+                })
+            })
+        }
+        AttentionDebtPolicy::Task => {
+            if let Some(violation) = budget::pre_dispatch_check(plane, ledger, task)? {
+                record_admission_refusal(ledger, &task.name, source, &violation)?;
+                return Ok(Some(AdmissionRefusal {
+                    kind: violation.kind.to_string(),
+                    detail: violation.detail,
+                    debt: None,
+                }));
+            }
+            let debt = attention::scan_task(ledger, &task.name, OffsetDateTime::now_utc())?;
+            if !debt.blocking {
+                return Ok(None);
+            }
+            ledger.record_guard_event(
+                "attention_debt_brake",
+                Some(&task.name),
+                &format!("source={source} policy=task {}", debt.reason),
+                1,
+            )?;
+            Ok(Some(AdmissionRefusal {
+                kind: "attention_debt".to_string(),
+                detail: debt.reason.clone(),
+                debt: Some(debt),
+            }))
+        }
+    }
+}
+
+fn record_admission_refusal(
+    ledger: &Ledger,
+    task: &str,
+    source: &str,
+    violation: &Violation,
+) -> Result<()> {
+    ledger.record_guard_event(
+        "attention_debt_brake",
+        Some(task),
+        &format!(
+            "source={source} policy=task {}={}",
+            violation.kind, violation.detail
+        ),
+        1,
+    )
 }
