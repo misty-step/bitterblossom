@@ -377,7 +377,7 @@ The ledger is the system of record; everything reads from it:
   `CANARY_ENDPOINT` (e.g. `https://canary-obs.fly.dev`) and
   `CANARY_INGEST_KEY` (a scoped `ingest-only` key bound to service
   `bitterblossom-plane`, minted via canary's `POST /api/v1/keys`). Both must
-  be set or `canary::enabled()` silently no-ops. The check-in name is
+  be set or the module no-ops with a one-time stderr warning. The check-in name is
   `bb-plane`; canary needs a matching monitor (`POST /api/v1/monitors` with
   `"name":"bb-plane"`) or check-ins 404. This is a different secret from
   `BB_API_TOKEN` and unrelated to `CANARY_API_KEY` (canary's own admin key,
