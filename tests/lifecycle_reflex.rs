@@ -864,19 +864,24 @@ fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
         .expect("review webhook trigger");
 
     assert_eq!(webhook.0, "review");
-    assert_eq!(
-        webhook.1.as_deref(),
-        Some("json:/pull_request/html_url|json:/pull_request/head/sha")
-    );
+    assert_eq!(webhook.1.as_deref(), Some("json:/idempotency_key"));
     assert!(webhook.2.iter().any(|f| {
-        f.pointer == "/repository/owner/login"
+        f.pointer == "/schema_version"
+            && f.equals.as_ref() == Some(&serde_json::json!("weave.remote_event.v1"))
+    }));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/subject/kind"
+            && f.equals.as_ref() == Some(&serde_json::json!("pull_request"))
+    }));
+    assert!(webhook.2.iter().any(|f| {
+        f.pointer == "/repository/full_name"
             && f.any_of.as_ref().is_some_and(|values| {
-                values.contains(&serde_json::json!("example-org"))
-                    && values.contains(&serde_json::json!("external-example"))
+                values.contains(&serde_json::json!("misty-step/bitterblossom"))
+                    && values.contains(&serde_json::json!("external-example/review-target"))
             })
     }));
     assert!(webhook.2.iter().any(|f| {
-        f.pointer == "/sender/login"
+        f.pointer == "/actor/login"
             && f.not_any_of.as_ref().is_some_and(|values| {
                 values.contains(&serde_json::json!("dependabot[bot]"))
                     && values.contains(&serde_json::json!("renovate[bot]"))
@@ -885,12 +890,16 @@ fn review_webhook_is_cerberus_reflex_with_org_and_noise_controls() {
     assert!(webhook
         .2
         .iter()
-        .any(|f| f.pointer == "/pull_request/additions" && f.max == Some(2500.0)));
+        .any(|f| f.pointer == "/payload/draft"
+            && f.equals.as_ref() == Some(&serde_json::json!(false))));
     assert!(webhook
         .2
         .iter()
-        .any(|f| f.pointer == "/pull_request/changed_files" && f.max == Some(50.0)));
-    assert!(webhook.2.iter().any(|f| f.pointer == "/pull_request/draft"));
+        .any(|f| f.pointer == "/payload/additions" && f.max == Some(2500.0)));
+    assert!(webhook
+        .2
+        .iter()
+        .any(|f| f.pointer == "/payload/changed_files" && f.max == Some(50.0)));
 
     assert!(
         webhook.3.is_none(),
@@ -920,37 +929,88 @@ fn review_webhook_filters_org_rollout_without_storm_fanout() {
         .unwrap()
     };
 
-    let in_scope = r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"external-example/review-target","owner":{"login":"external-example"}},"pull_request":{"number":121,"draft":false,"html_url":"https://github.com/external-example/review-target/pull/121","updated_at":"2026-06-25T10:00:00Z","additions":42,"changed_files":3,"head":{"sha":"abc123"}}}"#;
-    assert_eq!(deliver(&mut ledger, in_scope, "d1").status, 202);
+    let review_event = || -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "fixtures/contracts/weave.remote_event.v1.github-pr-opened.json"
+        ))
+        .unwrap()
+    };
+    let event_body = |mut mutate: Box<dyn FnMut(&mut serde_json::Value)>| -> String {
+        let mut event = review_event();
+        mutate(&mut event);
+        event.to_string()
+    };
+
+    let in_scope = event_body(Box::new(|_| {}));
+    assert_eq!(deliver(&mut ledger, &in_scope, "d1").status, 202);
     assert_eq!(ledger.list_runs(Some("review"), None).unwrap().len(), 1);
     assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
+    let payload = ledger
+        .run_payload(&ledger.list_runs(Some("review"), None).unwrap()[0].id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        payload.contains("\"schema_version\":\"weave.remote_event.v1\""),
+        "run payload must be the normalized Weave envelope, not raw GitHub webhook JSON: {payload}"
+    );
+    assert!(
+        payload.contains("\"merge_policy\":\"agent-mergeable\""),
+        "run payload must carry remote-event policy input without converting it into a BB merge decision: {payload}"
+    );
 
-    let duplicate = deliver(&mut ledger, in_scope, "d2");
+    let duplicate = deliver(&mut ledger, &in_scope, "d2");
     assert_eq!(duplicate.status, 202);
     assert!(duplicate.body.contains("\"duplicate\":true"));
     assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
 
-    for (body, delivery) in [
+    for (body, delivery, expected) in [
         (
-            r#"{"action":"opened","sender":{"login":"dependabot[bot]"},"repository":{"full_name":"external-example/review-target","owner":{"login":"external-example"}},"pull_request":{"number":122,"draft":false,"html_url":"https://github.com/external-example/review-target/pull/122","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"botsha"}}}"#,
+            event_body(Box::new(|event| {
+                event["actor"]["login"] = "dependabot[bot]".into()
+            })),
             "d3",
+            None,
         ),
         (
-            r#"{"action":"opened","repository":{"full_name":"external-example/review-target","owner":{"login":"external-example"}},"pull_request":{"number":123,"draft":false,"html_url":"https://github.com/external-example/review-target/pull/123","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"nosender"}}}"#,
+            event_body(Box::new(|event| {
+                event.as_object_mut().unwrap().remove("actor");
+            })),
             "d4",
+            None,
         ),
         (
-            r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"other/repo","owner":{"login":"other"}},"pull_request":{"number":1,"draft":false,"html_url":"https://github.com/other/repo/pull/1","updated_at":"2026-06-25T10:00:00Z","additions":1,"changed_files":1,"head":{"sha":"outsider"}}}"#,
+            event_body(Box::new(|event| {
+                event["repository"]["full_name"] = "other/repo".into()
+            })),
             "d5",
+            None,
         ),
         (
-            r#"{"action":"opened","sender":{"login":"allie"},"repository":{"full_name":"example-org/big","owner":{"login":"example-org"}},"pull_request":{"number":9,"draft":false,"html_url":"https://github.com/example-org/big/pull/9","updated_at":"2026-06-25T10:00:00Z","additions":2501,"changed_files":1,"head":{"sha":"bigsha"}}}"#,
+            event_body(Box::new(|event| event["payload"]["draft"] = true.into())),
             "d6",
+            None,
+        ),
+        (
+            event_body(Box::new(|event| {
+                event["payload"]["additions"] = 2501.into()
+            })),
+            "d7",
+            None,
+        ),
+        (
+            event_body(Box::new(|event| {
+                event["schema_version"] = "weave.remote_event.v2".into()
+            })),
+            "d8",
+            Some("weave.remote_event.v2"),
         ),
     ] {
-        let resp = deliver(&mut ledger, body, delivery);
+        let resp = deliver(&mut ledger, &body, delivery);
         assert_eq!(resp.status, 200, "{body} -> {}", resp.body);
         assert!(resp.body.contains("filtered"), "{}", resp.body);
+        if let Some(expected) = expected {
+            assert!(resp.body.contains(expected), "{}", resp.body);
+        }
     }
     assert_eq!(ledger.list_runs(None, None).unwrap().len(), 1);
 }

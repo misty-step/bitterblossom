@@ -25,29 +25,36 @@ kind = "manual"
 kind = "webhook"
 route = "review"
 secret_env = "BB_HOOK_REVIEW"
-dedupe_key = "json:/pull_request/html_url|json:/pull_request/head/sha"
+dedupe_key = "json:/idempotency_key"
 
 [[trigger.filter]]
-pointer = "/repository/owner/login"
-any_of = ["example-org", "external-example"]
+pointer = "/schema_version"
+equals = "weave.remote_event.v1"
+
+[[trigger.filter]]
+pointer = "/subject/kind"
+equals = "pull_request"
+
+[[trigger.filter]]
+pointer = "/repository/full_name"
+any_of = ["misty-step/bitterblossom", "external-example/review-target"]
 
 [[trigger.filter]]
 pointer = "/action"
 any_of = ["opened", "ready_for_review", "synchronize"]
 
 [[trigger.filter]]
-pointer = "/sender/login"
+pointer = "/actor/login"
 not_any_of = ["dependabot[bot]", "renovate[bot]"]
 
 [[trigger.filter]]
-pointer = "/pull_request/draft"
+pointer = "/payload/draft"
 equals = false
 
 [[trigger.filter]]
-pointer = "/pull_request/additions"
+pointer = "/payload/additions"
 max = 2500
 
 [[trigger.filter]]
-pointer = "/pull_request/changed_files"
+pointer = "/payload/changed_files"
 max = 50
-

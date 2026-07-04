@@ -22,6 +22,40 @@ fn write_event_and_run(dir: &std::path::Path) {
     fs::write(dir.join("RUN.json"), r#"{"run_id":"r1","task":"review"}"#).unwrap();
 }
 
+fn write_remote_event_and_run(dir: &std::path::Path) {
+    fs::write(
+        dir.join("EVENT.json"),
+        r#"{
+  "schema_version": "weave.remote_event.v1",
+  "id": "evt_github_fixture_review_pr",
+  "producer": {"name": "github-adapter", "version": "0.1.0"},
+  "produced_at": "2026-07-04T20:00:00Z",
+  "occurred_at": "2026-07-04T19:59:58Z",
+  "correlation_id": "github:example/fixture:pull_request:7:opened",
+  "source": {"kind": "github", "host": "github.com", "external_id": "delivery-review-pr-7"},
+  "repository": {"id": "repo-fixture", "full_name": "example/fixture", "default_branch": "main"},
+  "subject": {"kind": "pull_request", "id": "7", "number": 7, "url": "https://github.com/example/fixture/pull/7"},
+  "actor": {"id": "user-fixture", "login": "codex-worker", "kind": "bot"},
+  "action": "opened",
+  "idempotency_key": "github:delivery-review-pr-7:pull_request:7:opened:0123456789abcdef",
+  "host_payload": {
+    "event_name": "pull_request",
+    "delivery_id": "delivery-review-pr-7",
+    "links": [{"rel": "html", "href": "https://github.com/example/fixture/pull/7"}]
+  },
+  "payload": {
+    "base_ref": "main",
+    "head_ref": "fix/ratio-zero",
+    "head_sha": "0123456789abcdef",
+    "draft": false,
+    "state": "open"
+  }
+}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("RUN.json"), r#"{"run_id":"r1","task":"review"}"#).unwrap();
+}
+
 #[test]
 fn cerberus_wrapper_emits_report_and_structured_command_result() {
     let dir = tempfile::tempdir().unwrap();
@@ -91,6 +125,59 @@ printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
     assert_eq!(parsed.stats.tokens_in, Some(1234));
     assert_eq!(parsed.stats.tokens_out, Some(567));
     assert_eq!(parsed.stats.cost_usd, Some(0.375));
+}
+
+#[test]
+fn cerberus_wrapper_passes_weave_remote_event_to_cerberus() {
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("cerberus-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+out_dir=""
+remote_event=""
+mode=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out_dir="$2"; shift 2;;
+    --remote-event) remote_event="$2"; shift 2;;
+    --number|--repo) echo "raw PR arg reached cerberus: $1" >&2; exit 1;;
+    --dry-run) mode="dry-run"; shift;;
+    --post) mode="post"; shift;;
+    *) shift;;
+  esac
+done
+[ "$remote_event" = "EVENT.json" ] || { echo "remote_event=$remote_event" >&2; exit 1; }
+test "$mode" = "post"
+mkdir -p "$out_dir"
+printf '{"run":{}}\n' > "$out_dir/artifact.json"
+printf 'review body\n' > "$out_dir/review.md"
+printf '{"receipt":true}\n' > "$out_dir/receipt-bundle.json"
+printf '{"posted":true}\n' > "$out_dir/post-result.json"
+"#,
+    );
+    write_remote_event_and_run(dir.path());
+
+    let output = Command::new(repo_root().join("scripts/cerberus-review-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CERBERUS_BIN", &stub)
+        .env("CERBERUS_REVIEW_GH_TOKEN", "test-bot-gh-token")
+        .env("OPENROUTER_API_KEY", "test-scoped-provisioning-key")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["repo"], "example/fixture");
+    assert_eq!(report["pr"], 7);
+    assert_eq!(report["mode"], "post");
 }
 
 #[test]

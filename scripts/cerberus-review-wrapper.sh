@@ -74,10 +74,24 @@ with open(event_path, "r", encoding="utf-8") as f:
 with open(run_path, "r", encoding="utf-8") as f:
     run = json.load(f)
 
-pr = event.get("pr") or event.get("number") or event.get("pull_request", {}).get("number")
-repo = event.get("repo") or event.get("repository", {}).get("full_name")
-head_sha = event.get("head_sha") or event.get("pull_request", {}).get("head", {}).get("sha") or ""
-measurement = bool(event.get("measurement")) or event.get("comment") is False
+schema_version = event.get("schema_version")
+remote_event = False
+if schema_version == "weave.remote_event.v1":
+    subject = event.get("subject") or {}
+    if subject.get("kind") != "pull_request":
+        raise SystemExit("weave.remote_event.v1 subject.kind must be pull_request")
+    pr = subject.get("number")
+    repo = (event.get("repository") or {}).get("full_name")
+    head_sha = (event.get("payload") or {}).get("head_sha") or ""
+    measurement = bool((event.get("payload") or {}).get("measurement")) or event.get("comment") is False
+    remote_event = True
+elif isinstance(schema_version, str) and schema_version.startswith("weave.remote_event.v"):
+    raise SystemExit(f"unsupported remote event schema_version {schema_version}")
+else:
+    pr = event.get("pr") or event.get("number") or event.get("pull_request", {}).get("number")
+    repo = event.get("repo") or event.get("repository", {}).get("full_name")
+    head_sha = event.get("head_sha") or event.get("pull_request", {}).get("head", {}).get("sha") or ""
+    measurement = bool(event.get("measurement")) or event.get("comment") is False
 task = run.get("task", "")
 
 if not repo or not pr:
@@ -89,6 +103,7 @@ values = {
     "BB_REVIEW_HEAD_SHA": head_sha,
     "BB_REVIEW_TASK": task,
     "BB_REVIEW_MEASUREMENT": "1" if measurement else "0",
+    "BB_REVIEW_REMOTE_EVENT": "1" if remote_event else "0",
 }
 for key, value in values.items():
     print(f"{key}={shlex.quote(value)}")
@@ -101,13 +116,19 @@ if [ "$BB_REVIEW_MEASUREMENT" = "1" ] || [ "$BB_REVIEW_TASK" != "review" ] || [ 
 fi
 
 set -- review-pr \
-  --number "$BB_REVIEW_PR" \
-  --repo "$BB_REVIEW_REPO" \
   --out-dir "$out_dir" \
   --summary-target "$summary_target" \
-  --request-id "bb:${BB_REVIEW_REPO}#${BB_REVIEW_PR}:${BB_REVIEW_HEAD_SHA:-manual}" \
   --timeout-seconds "$timeout_seconds" \
   --receipt-bundle "$out_dir/receipt-bundle.json"
+
+if [ "$BB_REVIEW_REMOTE_EVENT" = "1" ]; then
+  set -- "$@" --remote-event "$event_file"
+else
+  set -- "$@" \
+    --number "$BB_REVIEW_PR" \
+    --repo "$BB_REVIEW_REPO" \
+    --request-id "bb:${BB_REVIEW_REPO}#${BB_REVIEW_PR}:${BB_REVIEW_HEAD_SHA:-manual}"
+fi
 
 # Cerberus refuses ambient `gh` auth for both reads and posting; it requires an
 # explicit token source. The default is a bot/app token env declared on the
