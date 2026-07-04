@@ -87,6 +87,12 @@ fn live_help_exposes_current_agent_cli_contract() {
     assert!(export.contains("Usage: bb runs export [OPTIONS]"));
     assert!(!export.contains("--since"));
 
+    let unpark = help(&["task", "unpark", "--help"]);
+    assert!(unpark.contains("Usage: bb task unpark [OPTIONS] <TASK>"));
+    assert!(unpark.contains("--since <SINCE>"));
+    assert!(unpark.contains("--run-id <RUN_IDS>"));
+    assert!(unpark.contains("--yes"));
+
     let gate = help(&["gate", "--help"]);
     assert!(gate.contains("--submission <SUBMISSION>"));
     assert!(gate.contains("--change <CHANGE>"));
@@ -111,7 +117,6 @@ fn current_docs_and_skills_match_live_cli_contract() {
     for rel in current_contracts {
         let text = read(rel);
         assert!(!text.contains("--var"), "{rel} documents stale --var");
-        assert!(!text.contains("--since"), "{rel} documents stale --since");
     }
 
     let spine = read("docs/spine.md");
@@ -165,10 +170,8 @@ fn stale_operational_commands_stay_out_of_current_guidance() {
             continue;
         }
         let text = read(&rel);
-        let stale = text.contains("cmd/bb")
-            || text.contains("--var")
-            || text.contains("--since")
-            || has_stale_go_test_command(&text);
+        let stale =
+            text.contains("cmd/bb") || text.contains("--var") || has_stale_go_test_command(&text);
         if stale {
             offenders.push(rel);
         }

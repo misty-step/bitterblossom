@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     thread,
     time::Duration,
@@ -10,11 +10,13 @@ use bitterblossom::{
     artifacts, budget, canary, dispatch, ledger, mcp, provider_keys, recovery, serve, spec,
 };
 use clap::{Parser, Subcommand};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use ledger::{IngressRequest, Ledger};
 use spec::{Plane, TriggerSpec};
 
 const DISPATCH_BRIEF_MAX_BYTES: u64 = 1_048_576;
+const TASK_UNPARK_CONFIRMATION_LIMIT: usize = 1;
 
 #[derive(Parser)]
 #[command(
@@ -398,8 +400,19 @@ enum TaskCommand {
         #[arg(long, default_value = "parked by operator")]
         reason: String,
     },
-    /// Unpark a task and re-queue its blocked-budget runs.
-    Unpark { task: String },
+    /// Unpark a task and re-queue selected blocked-budget runs.
+    Unpark {
+        task: String,
+        /// Confirm release when more than one blocked-budget run is selected.
+        #[arg(long)]
+        yes: bool,
+        /// Release only blocked-budget runs created at or after this RFC3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Release only this blocked-budget run id. Repeat for a bounded batch.
+        #[arg(long = "run-id")]
+        run_ids: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -438,6 +451,76 @@ fn main() {
         canary::report_error("bb.startup", &msg);
         std::process::exit(1);
     }
+}
+
+fn select_task_unpark_runs(
+    blocked: &[ledger::RunRow],
+    since: Option<&str>,
+    run_ids: &[String],
+) -> Result<Vec<String>> {
+    let since = since
+        .map(|value| {
+            OffsetDateTime::parse(value, &Rfc3339)
+                .with_context(|| format!("--since must be an RFC3339 timestamp: {value}"))
+        })
+        .transpose()?;
+    let requested: BTreeSet<&str> = run_ids.iter().map(String::as_str).collect();
+    if !requested.is_empty() {
+        let blocked_ids: BTreeSet<&str> = blocked.iter().map(|run| run.id.as_str()).collect();
+        let missing: Vec<&str> = requested.difference(&blocked_ids).copied().collect();
+        if !missing.is_empty() {
+            bail!(
+                "run id(s) not blocked_budget for this task: {}",
+                missing.join(", ")
+            );
+        }
+    }
+
+    let mut selected = Vec::new();
+    for run in blocked {
+        if let Some(since) = &since {
+            let created = OffsetDateTime::parse(&run.created_at, &Rfc3339)
+                .with_context(|| format!("run {} created_at is not RFC3339", run.id))?;
+            if created < *since {
+                continue;
+            }
+        }
+        if !requested.is_empty() && !requested.contains(run.id.as_str()) {
+            continue;
+        }
+        selected.push(run.id.clone());
+    }
+    Ok(selected)
+}
+
+fn print_task_unpark_preview(task: &str, blocked: &[ledger::RunRow], selected_count: usize) {
+    match (blocked.first(), blocked.last()) {
+        (Some(oldest), Some(newest)) => println!(
+            "{task}: {} blocked_budget run(s); oldest {}; newest {}",
+            blocked.len(),
+            oldest.created_at,
+            newest.created_at
+        ),
+        _ => println!("{task}: 0 blocked_budget run(s)"),
+    }
+    println!("{selected_count} selected for release");
+}
+
+fn task_unpark_budget_detail(
+    total_blocked: usize,
+    released: usize,
+    since: Option<&str>,
+    run_ids: &[String],
+) -> String {
+    let mut detail =
+        format!("operator unpark; released {released}/{total_blocked} blocked_budget run(s)");
+    if let Some(since) = since {
+        detail.push_str(&format!("; since {since}"));
+    }
+    if !run_ids.is_empty() {
+        detail.push_str(&format!("; run_ids {}", run_ids.join(",")));
+    }
+    detail
 }
 
 fn run() -> Result<()> {
@@ -956,12 +1039,35 @@ fn run() -> Result<()> {
                 ledger.record_budget_event(Some(&task), "parked", &reason)?;
                 println!("parked {task}");
             }
-            TaskCommand::Unpark { task } => {
-                let released = ledger.unpark_task(&task)?;
-                ledger.record_budget_event(Some(&task), "unparked", "operator unpark")?;
+            TaskCommand::Unpark {
+                task,
+                yes,
+                since,
+                run_ids,
+            } => {
+                plane.task(&task)?;
+                let blocked = ledger.blocked_budget_runs_for_task(&task)?;
+                let selected = select_task_unpark_runs(&blocked, since.as_deref(), &run_ids)?;
+                print_task_unpark_preview(&task, &blocked, selected.len());
+                if selected.len() > TASK_UNPARK_CONFIRMATION_LIMIT && !yes {
+                    bail!(
+                        "refusing to release {} blocked_budget run(s) for {task}; pass --yes to confirm",
+                        selected.len()
+                    );
+                }
+
+                let released = ledger.unpark_task_runs(&task, &selected, "unparked")?;
+                let detail = task_unpark_budget_detail(
+                    blocked.len(),
+                    released.len(),
+                    since.as_deref(),
+                    &run_ids,
+                );
+                ledger.record_budget_event(Some(&task), "unparked", &detail)?;
                 println!(
-                    "unparked {task}; {} blocked run(s) now pending",
-                    released.len()
+                    "unparked {task}; {} blocked run(s) now pending; {} left blocked_budget",
+                    released.len(),
+                    blocked.len().saturating_sub(released.len())
                 );
                 for id in released {
                     println!("  {id}");

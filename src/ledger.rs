@@ -705,19 +705,44 @@ impl Ledger {
         }
     }
 
+    pub fn blocked_budget_runs_for_task(&self, task: &str) -> Result<Vec<RunRow>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{RUN_SELECT} WHERE task = ?1 AND state = 'blocked_budget' \
+             ORDER BY created_at ASC, id ASC"
+        ))?;
+        let rows = stmt
+            .query_map(params![task], row_to_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn unpark_task(&self, task: &str) -> Result<Vec<String>> {
+        let blocked: Vec<String> = self
+            .blocked_budget_runs_for_task(task)?
+            .into_iter()
+            .map(|run| run.id)
+            .collect();
+        self.unpark_task_runs(task, &blocked, "unparked")
+    }
+
+    pub fn unpark_task_runs(
+        &self,
+        task: &str,
+        run_ids: &[String],
+        reason: &str,
+    ) -> Result<Vec<String>> {
+        for run_id in run_ids {
+            let run = self.require_blocked_budget(run_id)?;
+            if run.task != task {
+                bail!("run {run_id} belongs to task '{}', not '{task}'", run.task);
+            }
+        }
         self.conn
             .execute("DELETE FROM parked_tasks WHERE task = ?1", params![task])?;
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id FROM runs WHERE task = ?1 AND state = 'blocked_budget'")?;
-        let blocked: Vec<String> = stmt
-            .query_map(params![task], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for run_id in &blocked {
-            self.transition(run_id, "pending", Some("unparked"))?;
+        for run_id in run_ids {
+            self.transition(run_id, "pending", Some(reason))?;
         }
-        Ok(blocked)
+        Ok(run_ids.to_vec())
     }
 
     pub fn parked_reason(&self, task: &str) -> Result<Option<String>> {
