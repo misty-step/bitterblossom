@@ -1,0 +1,25 @@
+schema_version: roster.mcp_registry.v1
+provenance: ~/.claude.json inspected 2026-07-04; env refs only, no secret values.
+mcps:
+  - name: qmd
+    transport: stdio
+    command: /Users/phaedrus/.bun/bin/qmd
+    args:
+      - mcp
+    env_refs: []
+    notes: Project-scoped qmd shape found under the daybook Claude config.
+  - name: powder
+    transport: stdio
+    command: bash
+    args:
+      - -c
+      - source ~/.secrets && exec powder-mcp
+    env_refs:
+      - POWDER_API_BASE_URL
+      - POWDER_API_KEY
+    notes: Canonical Powder remote conventions come from ~/.secrets.
+  - name: todoist
+    transport: http
+    url: https://ai.todoist.net/mcp
+    env_refs: []
+    notes: Top-level Claude config exposes Todoist as an HTTP MCP.

@@ -1,0 +1,23 @@
+agent = "cerberus"
+substrate = "sprites"
+
+[roster_brief]
+root = "../../vendor/roster"
+agent = "cerberus"
+
+[workspace]
+host = "example-org/roster-cerberus"
+repos = [
+  { url = "https://github.com/misty-step/bitterblossom.git", ref = "master" },
+]
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 3
+max_cost_per_run_usd = 1.25
+turn_cap = 20
+tool_action_cap = 80
+output_bytes_cap = 30000
+
+[[trigger]]
+kind = "manual"

@@ -1,0 +1,3 @@
+[roster]
+root = "../../vendor/roster"
+agent = "cerberus"

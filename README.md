@@ -90,6 +90,10 @@ Copyable workload templates beyond the demo live under `examples/`:
   pull-request review factory with agent policy, webhook containment filters,
   budgets, sample GitHub payload, expected `REPORT.json`, and a local
   validation recipe.
+- `examples/roster-cerberus-plane/` is a credential-free-to-validate proof
+  that one bb task can materialize the Cerberus role and lane brief from a
+  pinned `vendor/roster` snapshot without copying role prompt text into bb
+  config.
 - `examples/canary-responder-plane/` is a credential-free-to-validate
   report-only incident responder for Canary-style wake-up events with
   containment filters, budgets, sample incident payload, expected
@@ -109,6 +113,7 @@ payloads, not Rust changes.
 
 ```bash
 ./target/debug/bb --config examples/review-factory-plane check --json
+./target/debug/bb --config examples/roster-cerberus-plane check --json
 ./target/debug/bb --config examples/canary-responder-plane check --json
 ./target/debug/bb --config examples/docs-sync-plane check --json
 ```

@@ -1,0 +1,37 @@
+schema_version: roster.role.v1
+name: sweep
+description: Cheap read-only research and repository sweep lane for broad scanning, source collection, and concise discrepancy reports.
+model_policy:
+  preferred: openrouter-class
+  fallbacks:
+    - openrouter/moonshotai/kimi-k2.7-code
+    - openrouter/deepseek/deepseek-v4-flash
+    - openrouter/qwen/qwen3-coder-next
+  reasoning: medium
+permissions:
+  filesystem: read-only
+  commands: read-only
+  network: allowed
+  secrets: none
+  mutations: none
+skills:
+  - name: research
+    path: /Users/phaedrus/Development/harness-kit/skills/research/SKILL.md
+    reason: source-backed web and repository research
+  - name: orient
+    path: /Users/phaedrus/Development/harness-kit/skills/orient/SKILL.md
+    reason: fast repository orientation from live evidence
+  - name: diagnose
+    path: /Users/phaedrus/Development/harness-kit/skills/diagnose/SKILL.md
+    reason: structured triage when the sweep finds a contradiction
+mcps:
+  - qmd
+subagent_rights:
+  may_dispatch: false
+  may_spawn_subagents: false
+  may_use_peer_harnesses: false
+evidence_expectations:
+  - Report sources, commands, and searched paths.
+  - Separate confirmed facts from plausible inferences.
+  - Return a concise packet with findings, gaps, and next checks.
+  - Do not mutate files, trackers, remotes, or external systems.

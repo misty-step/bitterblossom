@@ -139,6 +139,35 @@ key for policy-bound agents. `bb keys sync <agent>|--all --check --json`
 refreshes local non-secret usage/cap metadata from the provider and fails when
 the remote `limit` drifts from the agent policy cap.
 
+### Roster-backed agents
+
+An agent file may opt into an external roster declaration instead of repeating
+the bb agent binding by hand:
+
+```toml
+[roster]
+root = "/app/vendor/roster"
+agent = "cerberus"
+# Optional: bin = "/custom/path/roster"; default is `roster` on PATH.
+```
+
+At config load, bb shells out to the roster CLI with
+`materialize <agent> --harness bb`, parses the returned TOML as the agent
+binding, and keeps the roster source as read-only provenance in task views and
+run events. A task may also prepend the roster lane brief to its local task
+commission:
+
+```toml
+[roster_brief]
+root = "/app/vendor/roster"
+agent = "cerberus"
+# Optional: bin = "/custom/path/roster"; default is `roster` on PATH.
+```
+
+This is a declaration-source seam, not a runtime branch: the plane still loads
+tasks, builds harness commands, dispatches, budgets, and records attempts the
+same way. Existing hand-authored agents keep working unchanged.
+
 ### Model & auth policy (enforced at load — `bb check` fails, not dispatch)
 
 Two auth classes, two work classes:
