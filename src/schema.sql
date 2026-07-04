@@ -20,6 +20,22 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency
   ON runs(task, idempotency_key) WHERE idempotency_key IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS external_runs (
+  id TEXT PRIMARY KEY,
+  agent TEXT NOT NULL,
+  role TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  brief_hash TEXT NOT NULL,
+  plane TEXT NOT NULL,
+  status TEXT NOT NULL,
+  status_url TEXT,
+  receipt_path TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ingress_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT,

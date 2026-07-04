@@ -321,6 +321,11 @@ tbody tr:first-child td { border-top: 0; }
 .state.retired::before { content: "!"; color: var(--warn); }
 .state.pending::before,
 .state.running::before { content: ">"; color: var(--accent); }
+.source {
+  white-space: nowrap;
+  color: var(--muted);
+}
+.source.external { color: var(--accent); }
 .empty {
   color: var(--muted);
   padding: 1rem 0;
@@ -522,7 +527,7 @@ tbody tr:first-child td { border-top: 0; }
       <article class="plate" style="margin-top:1rem">
         <h2>Recent Runs</h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>state</th><th>task</th><th>agent / model</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>evidence</th></tr></thead>
+          <thead><tr><th>source</th><th>state</th><th>task</th><th>agent / model</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>evidence</th></tr></thead>
           <tbody id="recentRuns"></tbody>
         </table></div>
       </article>
@@ -532,7 +537,7 @@ tbody tr:first-child td { border-top: 0; }
       <article class="plate">
         <h2>Runs</h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>created</th><th>state</th><th>task</th><th>trigger</th><th>agent</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>trace</th></tr></thead>
+          <thead><tr><th>created</th><th>source</th><th>state</th><th>task</th><th>trigger</th><th>agent</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>trace</th></tr></thead>
           <tbody id="runRows"></tbody>
         </table></div>
       </article>
@@ -601,7 +606,11 @@ const esc = (value) => String(value ?? "-")
   .replaceAll("<", "&lt;")
   .replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;");
-const stateClass = (s) => ["success", "failure", "awaiting_recovery", "blocked_budget", "retired", "pending", "running"].includes(s) ? s : "";
+const stateClass = (s) => {
+  if (s === "done") return "success";
+  if (s === "failed") return "failure";
+  return ["success", "failure", "awaiting_recovery", "blocked_budget", "retired", "pending", "running"].includes(s) ? s : "";
+};
 
 function apiHeaders() {
   return state.token ? { Authorization: `Bearer ${state.token}` } : {};
@@ -715,13 +724,15 @@ function renderProofStrip() {
 
 function renderPlaneSentence() {
   const summary = state.data.status.summary || {};
-  const running = state.data.runs.filter((r) => r.state === "running").length;
+  const externalRunning = summary.external_running || 0;
+  const running = state.data.runs.filter((r) => r.state === "running").length + externalRunning;
   const pending = state.data.runs.filter((r) => r.state === "pending").length;
   const openDlq = summary.open_dlq || 0;
   const activeLeases = summary.active_leases || state.data.leases.length;
   const parts = [
     openDlq ? `${openDlq} open DLQ` : "DLQ clear",
     activeLeases ? `${activeLeases} lease${activeLeases === 1 ? "" : "s"}` : "no leases",
+    summary.external_runs ? `${summary.external_runs} external runs` : null,
     pending ? `${pending} pending` : "queue clear",
     running ? `${running} running` : null,
     `${fmtMoney(summary.cost_today_usd || 0)} today`
@@ -732,7 +743,7 @@ function renderPlaneSentence() {
 function renderSummary() {
   const { status, tasks, runs } = state.data;
   const summary = status.summary || {};
-  const running = runs.filter((r) => r.state === "running").length;
+  const running = runs.filter((r) => r.state === "running").length + (summary.external_running || 0);
   const pending = runs.filter((r) => r.state === "pending").length;
   const oldestPending = runs.filter((r) => r.state === "pending").at(-1);
   const triggerKinds = { manual: 0, cron: 0, webhook: 0 };
@@ -749,7 +760,7 @@ function renderSummary() {
   $("costMeter").style.width = `${pct}%`;
   $("costMeter").className = pct >= 90 ? "err" : pct >= 65 ? "warn" : "ok";
   $("runningCount").textContent = running;
-  $("leaseCount").textContent = `${summary.active_leases || state.data.leases.length} leases`;
+  $("leaseCount").textContent = `${summary.active_leases || state.data.leases.length} leases / ${summary.external_running || 0} external`;
   $("pendingCount").textContent = pending;
   $("pendingAge").textContent = oldestPending ? `oldest ${short(oldestPending.created_at, 19)}` : "oldest -";
   $("dlqCount").textContent = summary.open_dlq || 0;
@@ -767,6 +778,32 @@ function latestAttemptByRun() {
     attempts.set(row.run.id, row.attempts.at(-1));
   }
   return attempts;
+}
+
+function externalRuns() {
+  return (state.data.status.external_runs?.recent || []).map((run) => ({
+    ...run,
+    state: run.status,
+    task: run.repo,
+    trigger_kind: `external:${run.plane}`,
+    agent_name: run.agent,
+    agent_version: null,
+    cost_usd: null,
+    duration_ms: externalDuration(run),
+    trace_id: run.brief_hash,
+    created_at: run.started_at || run.created_at,
+  }));
+}
+
+function allRuns() {
+  return [...state.data.runs, ...externalRuns()].sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+}
+
+function externalDuration(run) {
+  const start = Date.parse(run.started_at);
+  const end = Date.parse(run.completed_at || run.updated_at);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return end - start;
 }
 
 function renderFleet() {
@@ -799,29 +836,35 @@ function renderActions() {
 
 function renderRuns() {
   const totals = tokenTotals();
-  const rowHtml = state.data.runs.map((run) => runRow(run, totals)).join("");
-  $("recentRuns").innerHTML = state.data.runs.slice(0, 10).map((run) => runRow(run, totals, true)).join("") || `<tr><td colspan="7" class="empty">no runs recorded</td></tr>`;
-  $("runRows").innerHTML = rowHtml || `<tr><td colspan="9" class="empty">no runs recorded</td></tr>`;
+  const rows = allRuns();
+  const rowHtml = rows.map((run) => runRow(run, totals)).join("");
+  $("recentRuns").innerHTML = rows.slice(0, 10).map((run) => runRow(run, totals, true)).join("") || `<tr><td colspan="8" class="empty">no runs recorded</td></tr>`;
+  $("runRows").innerHTML = rowHtml || `<tr><td colspan="10" class="empty">no runs recorded</td></tr>`;
 }
 
 function runRow(run, totals, compact = false) {
   const token = totals.get(run.id) || {};
   const tokens = token.input == null && token.output == null ? "-" : `${token.input || 0}/${token.output || 0}`;
   const agent = `${run.agent_name || "-"}${run.agent_version ? `@v${run.agent_version}` : ""}`;
+  const source = sourceLabel(run);
+  const state = run.state || run.status;
+  const evidence = evidenceCell(run);
   if (compact) {
     return `<tr>
-      <td><span class="state ${stateClass(run.state)}">${esc(run.state)}</span></td>
+      <td><span class="source ${esc(run.source || "native")}">${esc(source)}</span></td>
+      <td><span class="state ${stateClass(state)}">${esc(state)}</span></td>
       <td class="item">${esc(run.task)}</td>
       <td>${esc(agent)}</td>
       <td>${fmtDuration(run.duration_ms)}</td>
       <td class="right">${fmtSmallMoney(run.cost_usd)}</td>
       <td class="right">${esc(tokens)}</td>
-      <td><a href="/api/runs/${encodeURIComponent(run.id)}">${esc(short(run.id))}</a></td>
+      <td>${evidence}</td>
     </tr>`;
   }
   return `<tr>
     <td>${esc(short(run.created_at, 19))}</td>
-    <td><span class="state ${stateClass(run.state)}">${esc(run.state)}</span></td>
+    <td><span class="source ${esc(run.source || "native")}">${esc(source)}</span></td>
+    <td><span class="state ${stateClass(state)}">${esc(state)}</span></td>
     <td class="item">${esc(run.task)}</td>
     <td>${esc(run.trigger_kind)}</td>
     <td>${esc(agent)}</td>
@@ -830,6 +873,19 @@ function runRow(run, totals, compact = false) {
     <td class="right">${esc(tokens)}</td>
     <td>${esc(short(run.trace_id))}</td>
   </tr>`;
+}
+
+function sourceLabel(run) {
+  return run.source === "external" ? "external" : "native";
+}
+
+function evidenceCell(run) {
+  if (run.source === "external") {
+    if (run.status_url) return `<a href="${esc(run.status_url)}">${esc(short(run.id))}</a>`;
+    if (run.receipt_path) return `<code>${esc(short(run.receipt_path, 28))}</code>`;
+    return esc(short(run.id));
+  }
+  return `<a href="/api/runs/${encodeURIComponent(run.id)}">${esc(short(run.id))}</a>`;
 }
 
 function renderTasks() {

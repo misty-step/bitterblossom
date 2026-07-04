@@ -1,7 +1,7 @@
 use std::fs;
 
 use bitterblossom::health;
-use bitterblossom::ledger::{IngressRequest, Ledger};
+use bitterblossom::ledger::{ExternalRunCreate, IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
 use rusqlite::params;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -123,6 +123,21 @@ fn status_view_covers_operator_truth_fixtures() {
     ledger
         .mark_notification_failed(notification, "webhook down")
         .unwrap();
+    let external = ledger
+        .create_external_run(ExternalRunCreate {
+            agent: "codex-bb-909".into(),
+            role: "implementer".into(),
+            repo: "misty-step/bitterblossom".into(),
+            brief_hash: "sha256:test".into(),
+            plane: "local".into(),
+            status_url: Some("https://example.test/status".into()),
+            receipt_path: Some("/tmp/bb-909.md".into()),
+            started_at: "2026-07-04T12:00:00Z".into(),
+        })
+        .unwrap();
+    ledger
+        .update_external_run(&external.id, "done", Some("2026-07-04T12:05:00Z"))
+        .unwrap();
 
     let doc = health::status_view(&plane, &ledger).unwrap();
     assert_eq!(
@@ -174,6 +189,11 @@ fn status_view_covers_operator_truth_fixtures() {
     assert_eq!(doc["guards"]["attention_debt"]["parked_tasks"], 1);
     assert_eq!(doc["guards"]["attention_debt"]["awaiting_recovery"], 2);
     assert_eq!(doc["guards"]["attention_debt"]["notification_failed"], 1);
+    assert_eq!(doc["summary"]["external_runs"], 1);
+    assert_eq!(doc["summary"]["external_running"], 0);
+    assert_eq!(doc["external_runs"]["by_status"]["done"], 1);
+    assert_eq!(doc["external_runs"]["recent"][0]["source"], "external");
+    assert_eq!(doc["external_runs"]["recent"][0]["agent"], "codex-bb-909");
     let contracts = doc["freshness_contracts"].as_array().unwrap();
     let recovery_contract = contracts
         .iter()

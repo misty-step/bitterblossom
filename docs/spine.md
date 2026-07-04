@@ -372,6 +372,39 @@ The ledger is the system of record; everything reads from it:
   `Authorization: Bearer <token>`. Query-string tokens are rejected so
   credentials do not leak through URLs, logs, or browser history. Unset =
   open, acceptable only on the loopback default bind.
+
+### Register-through for external dispatches
+
+Design A is register-through: local Codex exec lanes, Claude Code subagents,
+Herdr panes, cron jobs, and other non-`bb` dispatches keep executing where they
+already execute, but they fire a lightweight receipt into the plane so the
+ledger and dashboard are still the operator's single pane.
+
+- Create: `POST /api/external-runs` with bearer auth and
+  `{agent, role, repo, brief_hash, plane:"local", status_url?, receipt_path?,
+  started_at}`. The plane returns an `id` and records the row with
+  `source:"external"` and `status:"running"`.
+- Transition: `PATCH /api/external-runs/<id>` with
+  `{status:"running"|"done"|"failed", completed_at?}`. Terminal statuses require
+  `completed_at`.
+- Read: `GET /api/status` exposes `external_runs.recent`,
+  `external_runs.by_status`, `summary.external_runs`, and
+  `summary.external_running`; the dashboard renders these rows beside native
+  runs with source `external`. Native dispatch, budget, recovery, DLQ, leases,
+  and `bb runs list` continue to read the native `runs` table only.
+- Shim: wrappers should call `scripts/bb-register.sh start` before work and
+  `scripts/bb-register.sh done <id>` or `scripts/bb-register.sh failed <id>`
+  after work. The shim reads `BB_URL`, `BB_API_TOKEN`,
+  `BB_REGISTER_AGENT`, `BB_REGISTER_ROLE`, `BB_REGISTER_REPO`,
+  `BB_REGISTER_BRIEF_HASH`, and optional status/receipt timestamps from the
+  environment, sends the bearer header through `curl --config -`, and exits 0
+  without output when the plane URL/token is unset or unreachable. Registration
+  must never block the dispatch itself.
+
+Route-through is a later design: the plane will eventually own dispatch
+admission and execution for more local roles, but that authority waits for the
+role/substrate contracts named on the ratified card. Until then, external rows
+are observability receipts, not dispatch leases.
 - Canary self-report: `src/canary.rs` posts a `bb-plane` check-in every 60s
   and ad hoc error reports to canary-obs, gated on two Fly secrets —
   `CANARY_ENDPOINT` (e.g. `https://canary-obs.fly.dev`) and

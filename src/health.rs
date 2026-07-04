@@ -12,6 +12,7 @@ use crate::spec::Plane;
 
 pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let runs = ledger.list_runs(None, None)?;
+    let external_runs = ledger.list_external_runs(200)?;
     let dead_letters = ledger.list_dead_letters()?;
     let leases = ledger.list_host_leases()?;
     let lease_runs = leases
@@ -26,6 +27,11 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
     let ingress_events = ledger.latest_ingress_events(200)?;
     let generated_at = OffsetDateTime::now_utc();
     let open_dlq = dead_letters.iter().filter(|d| d.status == "open").count();
+    let external_by_status = external_status_counts(&external_runs);
+    let external_running = external_runs
+        .iter()
+        .filter(|r| r.status == "running")
+        .count();
     let mut parked_tasks = 0usize;
     let mut tasks = Vec::new();
 
@@ -189,6 +195,8 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "open_dlq": open_dlq,
             "active_leases": leases.len(),
             "recent_ingress_events": ingress_events.len(),
+            "external_runs": external_runs.len(),
+            "external_running": external_running,
             "cost_today_usd": ledger.cost_today()?,
             "max_cost_per_day_usd": plane.spec.budget.max_cost_per_day_usd,
             "plane_paused": paused.is_some(),
@@ -232,6 +240,11 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
         "leases": leases,
         "ingress": {
             "recent": ingress_events,
+        },
+        "external_runs": {
+            "recent": external_runs,
+            "by_status": external_by_status,
+            "running": external_running,
         },
         "freshness_contracts": progress::freshness_contracts(),
         "tasks": tasks,
@@ -305,6 +318,15 @@ fn state_counts(runs: &[&RunRow]) -> BTreeMap<String, usize> {
     }
     out
 }
+
+fn external_status_counts(runs: &[crate::ledger::ExternalRunRow]) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for r in runs {
+        *out.entry(r.status.clone()).or_default() += 1;
+    }
+    out
+}
+
 fn guard_total(counts: &[crate::ledger::GuardEventCount], kind: &str) -> i64 {
     counts
         .iter()
