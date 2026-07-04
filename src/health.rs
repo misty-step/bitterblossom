@@ -96,6 +96,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "model": task.agent.model,
             "substrate": task.spec.substrate,
             "verdict": task.spec.verdict,
+            "rollout": serde_json::to_value(&task.spec.rollout)?,
             "parked": parked,
             "budget": {
                 "runs_today": ledger.runs_today(&task.name)?,

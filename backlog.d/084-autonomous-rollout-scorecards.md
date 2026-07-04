@@ -9,7 +9,7 @@ Make every lesser-authority shipment — read-only, report-only, dry-run, or PR-
 ## Oracle
 
 - [x] A reusable rollout scorecard template exists for BB task families: current authority, allowed actions, forbidden actions, evidence metrics, promotion trigger, rollback trigger, budget/cost cap, duplicate-suppression key, and required artifact handles. → `docs/rollout-scorecards.md`.
-- [ ] `bb status --json` or a documented artifact/report surface can show the active authority level and scorecard link for autonomous task families. → deferred: the documented surface (card + `docs/rollout-scorecards.md` + report `authority`/`constraints` fields) exists; a structured `bb status --json` authority field needs a spec decision on whether authority is a first-class `task.toml` governance field. Tracked below.
+- [x] `bb status --json` or a documented artifact/report surface can show the active authority level and scorecard link for autonomous task families. → task specs now support `[rollout]` with `authority` + `scorecard`, surfaced by `bb status --json`, `/api/status`, `bb task list --json`, `/api/tasks`, `bb check --json`, and MCP status/task tools.
 - [x] Backlog 078, 079, 080, 081, 082, and 083 reference concrete promotion metrics rather than vague “later add autonomy” language. → 080/081/082 already carry metrics and now point at the canonical doc; 078/079/083 are done.
 - [x] A promotion issue cannot be marked ready unless it cites evidence packets from the lower-authority mode. → codified as doctrine in `docs/rollout-scorecards.md` and the skill.
 - [x] The Bitterblossom skill/operator recipe tells agents to refuse autonomy expansion without a green scorecard and explicit operator approval. → `skills/bitterblossom/SKILL.md` "Rollout Scorecards" + `references/operator-recipes.md` "Autonomy Promotion".
@@ -63,9 +63,19 @@ Dogfood source: 077+narrow053 and 079 showed the pattern repeatedly. Read/report
 - Proof: `./scripts/verify.sh` (fmt, clippy, tests, `bb check` on all planes,
   LOC budget) green.
 
-Deferred (oracle item 2): a structured authority field in `bb status --json`.
-The documented surface exists today (task card + this doc + the report
-`authority`/`constraints` fields), but making authority a first-class,
-status-visible field is a spine change that needs an operator/spec decision on
-whether authority belongs in `task.toml` alongside budget. Left as the remaining
-open item on this ticket rather than guessed at overnight.
+### 2026-07-04 status-visible rollout metadata slice
+
+- Added optional task-level `[rollout]` metadata with validated authority ladder
+  values and a required scorecard link.
+- Projected the metadata through `bb status --json`, `/api/status`,
+  `bb task list --json`, `/api/tasks`, `bb check --json`, and the MCP status/task
+  surfaces that reuse those views.
+- Declared rollout metadata for the public-plane task families already indexed
+  in `docs/rollout-scorecards.md`: canary-triage, backlog-chewer-dry-run, and
+  fix-prompt-generator.
+- Updated `docs/spine.md`, `docs/rollout-scorecards.md`, and the exportable
+  skill so agents treat `[rollout]` as visibility metadata, not as an authority
+  grant.
+- Proof: `cargo test --test status_view
+  status_view_surfaces_rollout_authority_and_scorecard -- --nocapture`, `cargo
+  test --test policy rollout_authority -- --nocapture`, and `./scripts/verify.sh`.

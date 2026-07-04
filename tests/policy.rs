@@ -278,6 +278,62 @@ fn policy_absent_defaults_to_empty_and_still_projects() {
 }
 
 #[test]
+fn rollout_authority_loads_validates_and_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "version = 2\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
+        "agent = \"a\"\n[rollout]\nauthority = \"report-only\"\nscorecard = \"docs/rollout-scorecards.md#canary-triage-report-only-backlog-080\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+
+    let rollout = &plane.tasks["t"].spec.rollout;
+    assert_eq!(rollout.authority.as_deref(), Some("report-only"));
+    assert_eq!(
+        rollout.scorecard.as_deref(),
+        Some("docs/rollout-scorecards.md#canary-triage-report-only-backlog-080")
+    );
+
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    assert_eq!(rows[0]["rollout"]["authority"], "report-only");
+    assert_eq!(
+        rows[0]["rollout"]["scorecard"],
+        "docs/rollout-scorecards.md#canary-triage-report-only-backlog-080"
+    );
+
+    let status = bitterblossom::health::status_view(&plane, &ledger).unwrap();
+    assert_eq!(status["tasks"][0]["rollout"]["authority"], "report-only");
+    assert_eq!(
+        status["tasks"][0]["rollout"]["scorecard"],
+        "docs/rollout-scorecards.md#canary-triage-report-only-backlog-080"
+    );
+}
+
+#[test]
+fn rollout_authority_requires_known_level_and_scorecard() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "version = 2\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
+        "agent = \"a\"\n[rollout]\nauthority = \"full-send\"\nscorecard = \"docs/rollout-scorecards.md\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("rollout.authority"), "{msg}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "version = 2\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
+        "agent = \"a\"\n[rollout]\nauthority = \"report-only\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("rollout.scorecard"), "{msg}");
+}
+
+#[test]
 fn policy_rejects_model_allowlist_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     // Replace only the `model = "..."` line (first occurrence), leaving the

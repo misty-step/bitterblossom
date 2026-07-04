@@ -71,6 +71,10 @@ Autonomous task families ship at less than full authority (read-only,
 report-only, dry-run, PR-only) and climb an authority ladder only on evidence.
 The single reusable scorecard template and promotion doctrine live in
 [`docs/rollout-scorecards.md`](../../docs/rollout-scorecards.md).
+When a task declares `[rollout]` in `task.toml`, inspect `bb --config <plane>
+status --json` or `bb --config <plane> task list --json` for
+`rollout.authority` and `rollout.scorecard`; this field is visibility metadata,
+not permission to promote.
 
 Refuse autonomy expansion from vibes. Do not recommend or take a higher
 authority action (open a branch/PR, merge, deploy, resolve, unpark) for a task

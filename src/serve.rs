@@ -850,6 +850,7 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
             "source": task.source,
             "roster": task.roster,
             "admission": serde_json::to_value(&task.spec.admission)?,
+            "rollout": serde_json::to_value(&task.spec.rollout)?,
             "parked": ledger.parked_reason(&task.name)?,
             "runs_today": ledger.runs_today(&task.name)?,
             "max_runs_per_day": task.spec.budget.max_runs_per_day,

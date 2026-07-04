@@ -288,6 +288,8 @@ pub struct TaskSpec {
     #[serde(default)]
     pub admission: AdmissionSpec,
     #[serde(default)]
+    pub rollout: RolloutSpec,
+    #[serde(default)]
     pub budget: TaskBudget,
     #[serde(default, rename = "trigger")]
     pub triggers: Vec<TriggerSpec>,
@@ -335,6 +337,45 @@ pub struct TaskBudget {
     pub turn_cap: Option<u32>,
     pub tool_action_cap: Option<u32>,
     pub output_bytes_cap: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RolloutSpec {
+    pub authority: Option<String>,
+    pub scorecard: Option<String>,
+}
+
+impl RolloutSpec {
+    fn validate(&self, task: &str) -> Result<()> {
+        if let Some(authority) = &self.authority {
+            if !matches!(
+                authority.as_str(),
+                "read-only"
+                    | "report-only"
+                    | "dry-run"
+                    | "PR-only"
+                    | "guarded-land"
+                    | "rollback-own-change"
+            ) {
+                bail!(
+                    "task '{task}': rollout.authority '{authority}' is unknown \
+                     (read-only/report-only/dry-run/PR-only/guarded-land/rollback-own-change)"
+                );
+            }
+        }
+        if let Some(scorecard) = &self.scorecard {
+            if scorecard.trim().is_empty() {
+                bail!("task '{task}': rollout.scorecard must not be empty");
+            }
+        }
+        match (self.authority.is_some(), self.scorecard.is_some()) {
+            (true, true) | (false, false) => Ok(()),
+            _ => bail!(
+                "task '{task}': rollout.authority and rollout.scorecard must be declared together"
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -643,6 +684,10 @@ impl Plane {
                     task.name
                 );
             }
+            task.spec
+                .rollout
+                .validate(&task.name)
+                .with_context(|| format!("task '{}'", task.name))?;
             let auth = task
                 .agent
                 .auth_class()
@@ -757,6 +802,8 @@ struct RepoOwnedTaskSpec {
     pub workspace: WorkspaceSpec,
     #[serde(default)]
     pub admission: AdmissionSpec,
+    #[serde(default)]
+    pub rollout: RolloutSpec,
     #[serde(default)]
     pub budget: TaskBudget,
     #[serde(default, rename = "trigger")]
@@ -923,6 +970,7 @@ fn repo_task_spec(
             checkpoint: repo.workspace.checkpoint.clone(),
         },
         admission: raw.admission,
+        rollout: raw.rollout,
         budget: bounded_budget(&repo.name, task_name, &raw.budget, &repo.budget_caps)?,
         triggers: raw.triggers,
         pre_command: raw.pre_command,

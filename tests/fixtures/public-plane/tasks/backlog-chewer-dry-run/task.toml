@@ -2,6 +2,10 @@ agent = "backlog-chewer"
 substrate = "sprites"
 required_artifacts = ["REPORT.json"]
 
+[rollout]
+authority = "dry-run"
+scorecard = "docs/rollout-scorecards.md#backlog-chewer-dry-run-dry-run-backlog-082"
+
 [workspace]
 host = "example-org/lane-1"
 

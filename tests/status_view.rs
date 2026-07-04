@@ -45,6 +45,53 @@ fn write_plane(root: &std::path::Path) {
     }
 }
 
+#[test]
+fn status_view_surfaces_rollout_authority_and_scorecard() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("agents")).unwrap();
+    fs::create_dir_all(dir.path().join("tasks/backlog-chewer-dry-run")).unwrap();
+    fs::write(dir.path().join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        dir.path().join("agents/a.toml"),
+        "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("tasks/backlog-chewer-dry-run/card.md"),
+        "card\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("tasks/backlog-chewer-dry-run/task.toml"),
+        r##"agent = "a"
+substrate = "local"
+
+[rollout]
+authority = "dry-run"
+scorecard = "docs/rollout-scorecards.md#backlog-chewer-dry-run-dry-run-backlog-082"
+
+[[trigger]]
+kind = "manual"
+"##,
+    )
+    .unwrap();
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let doc = health::status_view(&plane, &ledger).unwrap();
+    let task = doc["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["task"] == "backlog-chewer-dry-run")
+        .unwrap();
+    assert_eq!(task["rollout"]["authority"], "dry-run");
+    assert_eq!(
+        task["rollout"]["scorecard"],
+        "docs/rollout-scorecards.md#backlog-chewer-dry-run-dry-run-backlog-082"
+    );
+}
+
 fn ingest(ledger: &mut Ledger, task: &str) -> String {
     ledger
         .ingest(IngressRequest {
