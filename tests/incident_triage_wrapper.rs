@@ -395,6 +395,160 @@ exit 9
 }
 
 #[test]
+fn incident_triage_wrapper_preserves_existing_report_when_stdout_cap_trips_late() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+cat >/dev/null
+cat > REPORT.json <<'JSON'
+{
+  "schema": "bb.incident_triage_response.v1",
+  "status": "no_fix_needed",
+  "bb_run_id": "run-test",
+  "delivery_id": "DLV-test",
+  "incident": {"id": "INC-test123", "service": "canary", "severity": "low", "fingerprint": "fp-test"},
+  "repo": "misty-step/canary",
+  "progress_writebacks": [
+    {"action": "investigation-started", "ref": "ANN-start"},
+    {"action": "no-fix-needed", "ref": "ANN-terminal"}
+  ],
+  "hypotheses": [],
+  "experiments": [],
+  "fix_attempts": [],
+  "iteration_guard": {"max_fix_attempts": 3, "attempts_used": 0, "stopped": false, "reason": null},
+  "scope_honesty": {"auto_deploy_on_merge": true, "v1_stop": "canary_terminal_writeback"},
+  "artifact_paths": ["REPORT.json"],
+  "residual_risk": []
+}
+JSON
+python3 - <<'PY'
+import sys
+sys.stdout.write("x" * 6000)
+sys.stdout.flush()
+PY
+exit 9
+"#,
+    );
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES", "4096")
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "no_fix_needed");
+    assert_eq!(report["progress_writebacks"][1]["ref"], "ANN-terminal");
+    assert_eq!(
+        report["scope_honesty"]["v1_stop"],
+        "canary_terminal_writeback"
+    );
+    assert_eq!(report["residual_risk"], serde_json::json!([]));
+
+    let stdout_len = fs::metadata(dir.path().join("incident-triage/stdout.jsonl"))
+        .unwrap()
+        .len();
+    assert_eq!(stdout_len, 4096);
+    let stderr = fs::read_to_string(dir.path().join("incident-triage/stderr.txt")).unwrap();
+    assert!(
+        stderr.contains("agent stdout exceeded INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES=4096"),
+        "stderr={stderr}"
+    );
+
+    let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(
+        parsed.result,
+        "incident triage no_fix_needed for misty-step/canary INC-test123"
+    );
+}
+
+#[test]
+fn incident_triage_wrapper_synthesizes_report_from_terminal_writeback_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+cat >/dev/null
+mkdir -p incident-triage/writebacks
+cat > incident-triage/writebacks/001-started.json <<'JSON'
+{"action":"investigation-started","ref":"ANN-start"}
+JSON
+cat > incident-triage/writebacks/002-no-fix-needed.json <<'JSON'
+{"action":"no-fix-needed","ref":"ANN-terminal","terminal":true}
+JSON
+echo "late model failure after writebacks" >&2
+exit 153
+"#,
+    );
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "canary_writebacks_preserved");
+    assert_eq!(report["progress_writebacks"].as_array().unwrap().len(), 2);
+    assert_eq!(report["progress_writebacks"][1]["ref"], "ANN-terminal");
+    assert_eq!(
+        report["scope_honesty"]["v1_stop"],
+        "agent_failed_after_canary_terminal_writebacks"
+    );
+    assert_ne!(report["scope_honesty"]["v1_stop"], "blocked_before_agent");
+    assert!(report["residual_risk"][0]
+        .as_str()
+        .unwrap()
+        .contains("agent command exited 153 before REPORT.json"));
+
+    let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(
+        parsed.result,
+        "incident triage canary_writebacks_preserved for misty-step/canary INC-test123"
+    );
+}
+
+#[test]
+fn incident_triage_wrapper_uses_byte_counted_stdout_cap_not_ulimit() {
+    let script =
+        fs::read_to_string(repo_root().join("scripts/incident-triage-wrapper.sh")).unwrap();
+    assert!(
+        !script.contains("ulimit -f"),
+        "stdout cap must be enforced by byte-counting the subprocess stream"
+    );
+}
+
+#[test]
 fn incident_triage_wrapper_blocks_unlisted_service_before_model_run() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path(), "elsewhere");

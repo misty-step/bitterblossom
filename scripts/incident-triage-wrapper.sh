@@ -186,6 +186,106 @@ print(json.dumps({
 PY
 }
 
+write_report_from_terminal_writebacks() {
+  reason="$1"
+  python3 - "$reason" "$max_fix_attempts" "$agent_out_dir" <<'PY'
+import glob
+import json
+import os
+import sys
+
+reason, max_fix_attempts_raw, out_dir = sys.argv[1:4]
+max_fix_attempts = int(max_fix_attempts_raw)
+receipt_paths = []
+for pattern in [
+    os.path.join(out_dir, "writebacks", "*.json"),
+    os.path.join(out_dir, "*writeback*.json"),
+]:
+    receipt_paths.extend(glob.glob(pattern))
+receipt_paths = sorted(set(receipt_paths))
+
+progress = []
+terminal_seen = False
+terminal_actions = {
+    "closed",
+    "dismissed",
+    "no-defect",
+    "no-fix-needed",
+    "resolved",
+    "terminal",
+}
+for path in receipt_paths:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            receipt = json.load(f)
+    except (OSError, ValueError):
+        continue
+    if not isinstance(receipt, dict):
+        continue
+    action = (
+        receipt.get("action")
+        or receipt.get("kind")
+        or receipt.get("event")
+        or "canary-writeback"
+    )
+    ref = (
+        receipt.get("ref")
+        or receipt.get("annotation_id")
+        or receipt.get("id")
+        or receipt.get("url")
+        or os.path.relpath(path)
+    )
+    normalized_action = str(action).lower().replace("_", "-")
+    terminal = bool(receipt.get("terminal")) or normalized_action in terminal_actions
+    terminal_seen = terminal_seen or terminal
+    progress.append({
+        "action": action,
+        "ref": ref,
+        "receipt_path": os.path.relpath(path),
+        "terminal": terminal,
+    })
+
+if not progress or not terminal_seen:
+    raise SystemExit(2)
+
+report = {
+    "schema": "bb.incident_triage_response.v1",
+    "status": "canary_writebacks_preserved",
+    "bb_run_id": os.environ.get("BB_TRIAGE_RUN_ID", ""),
+    "delivery_id": os.environ.get("BB_TRIAGE_DELIVERY_ID", ""),
+    "incident": {
+        "id": os.environ.get("BB_TRIAGE_INCIDENT_ID", ""),
+        "service": os.environ.get("BB_TRIAGE_SERVICE", ""),
+        "severity": os.environ.get("BB_TRIAGE_SEVERITY", ""),
+        "fingerprint": os.environ.get("BB_TRIAGE_FINGERPRINT", ""),
+    },
+    "repo": os.environ.get("BB_TRIAGE_REPO", ""),
+    "progress_writebacks": progress,
+    "hypotheses": [],
+    "experiments": [],
+    "fix_attempts": [],
+    "iteration_guard": {
+        "max_fix_attempts": max_fix_attempts,
+        "attempts_used": 0,
+        "stopped": True,
+        "reason": reason,
+    },
+    "scope_honesty": {
+        "auto_deploy_on_merge": os.environ.get("BB_TRIAGE_AUTO_DEPLOY_ON_MERGE") == "true",
+        "v1_stop": "agent_failed_after_canary_terminal_writebacks",
+    },
+    "writeback_receipts": [os.path.relpath(path) for path in receipt_paths],
+    "artifact_paths": ["REPORT.json"],
+    "residual_risk": [
+        f"{reason}; synthesized REPORT.json from Canary terminal writeback receipts"
+    ],
+}
+with open("REPORT.json", "w", encoding="utf-8") as f:
+    json.dump(report, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+}
+
 write_skipped_report() {
   reason="$1"
   python3 - "$reason" "$max_fix_attempts" <<'PY'
@@ -354,18 +454,54 @@ run_agent() {
   fi
 }
 
-stdout_blocks=$(( (agent_stdout_max_bytes + 511) / 512 ))
+stdout_pipe="$agent_out_dir/stdout.pipe"
+stdout_cap_marker="$agent_out_dir/stdout.cap"
+rm -f "$stdout_pipe" "$stdout_cap_marker" "$agent_out_dir/stdout.jsonl"
+mkfifo "$stdout_pipe"
+python3 - "$agent_stdout_max_bytes" "$stdout_pipe" "$agent_out_dir/stdout.jsonl" "$stdout_cap_marker" <<'PY' &
+import sys
+
+limit_raw, pipe_path, stdout_path, marker_path = sys.argv[1:5]
+limit = int(limit_raw)
+written = 0
+with open(pipe_path, "rb", buffering=0) as src, open(stdout_path, "wb") as dst:
+    while True:
+        chunk = src.read(8192)
+        if not chunk:
+            break
+        remaining = limit - written
+        if remaining > 0:
+            piece = chunk[:remaining]
+            dst.write(piece)
+            written += len(piece)
+        if len(chunk) > remaining:
+            with open(marker_path, "w", encoding="utf-8") as f:
+                f.write(str(written))
+            raise SystemExit(153)
+PY
+cap_pid=$!
 set +e
-(
-  ulimit -f "$stdout_blocks" 2>/dev/null || true
-  run_agent < "$prompt_file" > "$agent_out_dir/stdout.jsonl" 2> "$agent_out_dir/stderr.txt"
-)
+run_agent < "$prompt_file" > "$stdout_pipe" 2> "$agent_out_dir/stderr.txt"
 agent_status=$?
+wait "$cap_pid"
+cap_status=$?
 set -e
+rm -f "$stdout_pipe"
+if [ -f "$stdout_cap_marker" ]; then
+  printf 'agent stdout exceeded INCIDENT_TRIAGE_AGENT_STDOUT_MAX_BYTES=%s\n' "$agent_stdout_max_bytes" >> "$agent_out_dir/stderr.txt"
+  agent_status=153
+  rm -f "$stdout_cap_marker"
+elif [ "$cap_status" -ne 0 ] && [ "$agent_status" -eq 0 ]; then
+  agent_status="$cap_status"
+fi
 
 if [ "$agent_status" -ne 0 ] && [ ! -f REPORT.json ]; then
-  write_blocked_report "agent command exited $agent_status before REPORT.json"
-  exit 0
+  if write_report_from_terminal_writebacks "agent command exited $agent_status before REPORT.json"; then
+    printf 'agent command exited %s before REPORT.json; synthesized REPORT.json from Canary writeback receipts\n' "$agent_status" >> "$agent_out_dir/stderr.txt"
+  else
+    write_blocked_report "agent command exited $agent_status before REPORT.json"
+    exit 0
+  fi
 fi
 if [ "$agent_status" -ne 0 ]; then
   printf 'agent command exited %s after REPORT.json\n' "$agent_status" >> "$agent_out_dir/stderr.txt"
