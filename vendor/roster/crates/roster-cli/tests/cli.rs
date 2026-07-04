@@ -52,6 +52,7 @@ fn materialize_bb_prints_agent_binding() {
             "model = \"moonshotai/kimi-k2.7-code\"",
         ))
         .stdout(predicate::str::contains("role = \"cerberus\""))
+        .stdout(predicate::str::contains("output_bytes_cap = 120000"))
         .stdout(predicate::str::contains("side_effect_policy = \"kill\""));
 }
 
