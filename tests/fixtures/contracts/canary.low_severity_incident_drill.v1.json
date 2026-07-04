@@ -1,0 +1,96 @@
+{
+  "schema_version": "bb.canary_low_severity_incident_drill.v1",
+  "producer": {
+    "repo": "misty-step/canary",
+    "ref": "4611e66b57158f727bd30bcc57a11c007e7837a8",
+    "contract": "docs/schemas/canary.incident_event.v1.schema.json"
+  },
+  "normalization": {
+    "rule": "Incident severity is derived from active correlated signal count: three or more active severity-counting signals produce high, otherwise medium. The originating signal severity is preserved on the signal and error timeline event, but it is not copied to the incident row.",
+    "derivation": "active_correlated_signal_count",
+    "high_threshold": 3,
+    "fallback_incident_severity": "medium",
+    "propagates_originating_signal_severity_to_incident": false,
+    "originating_signal_severity": "low",
+    "expected_incident_severity": "medium"
+  },
+  "timeline": [
+    {
+      "id": "EVT-knom6q0limw8",
+      "event": "error.new_class",
+      "service": "canary",
+      "severity": "low",
+      "summary": "BitterblossomIncidentTriageDrill_20260702T201143Z first observed",
+      "created_at": "2026-07-02T20:11:43Z"
+    },
+    {
+      "id": "EVT-nmbg4bf9h6xq",
+      "event": "incident.opened",
+      "service": "canary",
+      "severity": "medium",
+      "summary": "Incident INC-ay76lctwao3z opened for canary",
+      "created_at": "2026-07-02T20:11:43Z"
+    }
+  ],
+  "incident_detail": {
+    "incident": {
+      "id": "INC-ay76lctwao3z",
+      "service": "canary",
+      "state": "investigating",
+      "severity": "medium",
+      "title": "canary incident",
+      "opened_at": "2026-07-02T20:11:43Z",
+      "resolved_at": null,
+      "signal_count": 1
+    },
+    "signals": [
+      {
+        "signal_type": "error_group",
+        "signal_ref": "ERR-y4y82bm9zq61",
+        "attached_at": "2026-07-02T20:11:43Z",
+        "resolved_at": null
+      }
+    ]
+  },
+  "webhook": {
+    "schema_version": "canary.incident_event.v1",
+    "event": "incident.opened",
+    "tenant_id": "default",
+    "project_id": "misty-step",
+    "subject": {
+      "type": "incident",
+      "id": "INC-ay76lctwao3z",
+      "service": "canary",
+      "environment": "production"
+    },
+    "signal": {
+      "kind": "error_group",
+      "fingerprint": "ERR-y4y82bm9zq61",
+      "severity": "low",
+      "observed_at": "2026-07-02T20:11:43Z"
+    },
+    "replay": {
+      "timeline_url": "/api/v1/timeline?service=canary&window=1h",
+      "report_url": "/api/v1/report?window=1h",
+      "incident_url": "/api/v1/incidents/INC-ay76lctwao3z"
+    },
+    "incident": {
+      "id": "INC-ay76lctwao3z",
+      "service": "canary",
+      "state": "investigating",
+      "severity": "medium",
+      "title": "canary incident",
+      "opened_at": "2026-07-02T20:11:43Z",
+      "resolved_at": null,
+      "signals": [
+        {
+          "signal_type": "error_group",
+          "signal_ref": "ERR-y4y82bm9zq61",
+          "attached_at": "2026-07-02T20:11:43Z",
+          "resolved_at": null
+        }
+      ]
+    },
+    "timestamp": "2026-07-02T20:11:43Z"
+  }
+}

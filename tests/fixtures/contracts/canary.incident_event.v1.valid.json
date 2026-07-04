@@ -5,37 +5,37 @@
   "project_id": "misty-step",
   "subject": {
     "type": "incident",
-    "id": "INC-example123",
+    "id": "INC-ay76lctwao3z",
     "service": "canary",
     "environment": "production"
   },
   "signal": {
     "kind": "error_group",
-    "fingerprint": "group-incident-a",
-    "severity": "medium",
-    "observed_at": "2026-07-01T00:00:00Z"
+    "fingerprint": "ERR-y4y82bm9zq61",
+    "severity": "low",
+    "observed_at": "2026-07-02T20:11:43Z"
   },
   "replay": {
     "timeline_url": "/api/v1/timeline?service=canary&window=1h",
     "report_url": "/api/v1/report?window=1h",
-    "incident_url": "/api/v1/incidents/INC-example123"
+    "incident_url": "/api/v1/incidents/INC-ay76lctwao3z"
   },
   "incident": {
-    "id": "INC-example123",
+    "id": "INC-ay76lctwao3z",
     "service": "canary",
     "state": "investigating",
     "severity": "medium",
-    "title": "canary incident",
-    "opened_at": "2026-07-01T00:00:00Z",
+    "title": "canary low severity drill incident",
+    "opened_at": "2026-07-02T20:11:43Z",
     "resolved_at": null,
     "signals": [
       {
         "signal_type": "error_group",
-        "signal_ref": "group-incident-a",
-        "attached_at": "2026-07-01T00:00:00Z",
+        "signal_ref": "ERR-y4y82bm9zq61",
+        "attached_at": "2026-07-02T20:11:43Z",
         "resolved_at": null
       }
     ]
   },
-  "timestamp": "2026-07-01T00:00:00Z"
+  "timestamp": "2026-07-02T20:11:43Z"
 }

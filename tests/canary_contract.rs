@@ -55,6 +55,54 @@ fn canary_incident_event_contract_rejects_unknown_major_version() {
 }
 
 #[test]
+fn low_severity_canary_incident_drill_pins_normalization_contract() {
+    let drill: Value = serde_json::from_str(include_str!(
+        "fixtures/contracts/canary.low_severity_incident_drill.v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        drill["schema_version"],
+        "bb.canary_low_severity_incident_drill.v1"
+    );
+    assert_eq!(
+        drill["normalization"]["expected_incident_severity"],
+        "medium"
+    );
+    assert_eq!(
+        drill["normalization"]["derivation"],
+        "active_correlated_signal_count"
+    );
+    assert_eq!(drill["normalization"]["high_threshold"], 3);
+    assert_eq!(
+        drill["normalization"]["fallback_incident_severity"],
+        "medium"
+    );
+    assert_eq!(
+        drill["normalization"]["propagates_originating_signal_severity_to_incident"],
+        false
+    );
+
+    let timeline = drill["timeline"].as_array().unwrap();
+    let error_event = timeline
+        .iter()
+        .find(|event| event["event"] == "error.new_class")
+        .expect("error.new_class event");
+    assert_eq!(error_event["severity"], "low");
+    let opened_event = timeline
+        .iter()
+        .find(|event| event["event"] == "incident.opened")
+        .expect("incident.opened event");
+    assert_eq!(opened_event["severity"], "medium");
+
+    assert_eq!(drill["incident_detail"]["incident"]["severity"], "medium");
+
+    let webhook = &drill["webhook"];
+    assert_canary_incident_event(webhook).unwrap();
+    assert_eq!(webhook["signal"]["severity"], "low");
+    assert_eq!(webhook["incident"]["severity"], "medium");
+}
+
+#[test]
 fn canary_triage_report_fixture_is_report_only_and_actionable() {
     let report: Value = serde_json::from_str(include_str!(
         "fixtures/contracts/bb.canary_triage_report.v1.valid.json"

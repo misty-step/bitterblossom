@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/misty-step/canary/blob/master/docs/schemas/canary.incident_event.v1.schema.json",
   "title": "Canary Incident Event v1",
-  "description": "Pinned consumer copy of the Canary-owned incident wake-up schema. Refresh from misty-step/canary docs/schemas/canary.incident_event.v1.schema.json when BB intentionally accepts a new producer contract.",
+  "description": "Signed Canary webhook body for incident wake-up hints consumed by Bitterblossom triage workloads. The webhook is a hint; consumers must replay Canary state before acting.",
   "type": "object",
   "required": [
     "schema_version",
@@ -22,6 +22,14 @@
         "incident.updated",
         "incident.resolved"
       ]
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
     },
     "subject": {
       "type": "object",
