@@ -102,7 +102,8 @@ enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    /// Submission-loop merge gate: list/open changes, reject findings, abandon.
+    /// Submission-loop merge gate: list/open changes, reject findings, waive
+    /// required members, abandon.
     Submit {
         #[command(subcommand)]
         command: SubmitCommand,
@@ -358,6 +359,21 @@ enum SubmitCommand {
         change: String,
         #[arg(long)]
         fingerprint: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Waive a required gate member (backlog 088) so the storm does not need
+    /// to run it for this specific rev. `reason` must be `risk-tier:<tier>`
+    /// naming an explicit skip rule (e.g. `risk-tier:docs-only`), not a free
+    /// excuse. Scoped to `--rev`: a later rev of the same change needs its
+    /// own waiver, and a waiver never overrides a verdict already recorded.
+    Waive {
+        #[arg(long)]
+        change: String,
+        #[arg(long)]
+        rev: String,
+        #[arg(long)]
+        kind: String,
         #[arg(long)]
         reason: String,
     },
@@ -998,6 +1014,15 @@ fn run() -> Result<()> {
                 ledger.reject_finding(&change, &fingerprint, &reason)?;
                 println!("rejected {fingerprint} on {change} (blocking findings stay blocking until an arbiter sustains)");
             }
+            SubmitCommand::Waive {
+                change,
+                rev,
+                kind,
+                reason,
+            } => {
+                ledger.waive_member(&change, &rev, &kind, &reason)?;
+                println!("waived {kind} on {change}@{rev}: {reason}");
+            }
             SubmitCommand::Abandon { change } => {
                 let sub = ledger
                     .latest_submission(&change)?
@@ -1032,6 +1057,9 @@ fn run() -> Result<()> {
                             .map(|c| format!("${c:.4}"))
                             .unwrap_or_else(|| "-".into()),
                     );
+                    if let Some(reason) = &m.waiver_reason {
+                        println!("    waived: {reason}");
+                    }
                 }
                 for f in &report.blocking {
                     println!(

@@ -1112,6 +1112,203 @@ echo '{"type":"result","result":"{\"verdict\":\"pass\",\"findings\":[]}"}'
     );
 }
 
+// ---- backlog 088: required-member waiver (Thermo-Nuclear maintainability
+// lens skip-by-risk-tier) ----------------------------------------------------
+
+#[test]
+fn waive_member_rejects_reasons_without_an_explicit_risk_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let err = ledger
+        .waive_member("feat/x", "sha1", "security", "looked fine to me")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("risk-tier"),
+        "{err}: must name the missing risk-tier prefix"
+    );
+    assert!(ledger
+        .waive_member("feat/x", "sha1", "security", "risk-tier:not-a-real-tier")
+        .is_err());
+    assert!(ledger
+        .member_waiver("feat/x", "sha1", "security")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn waived_required_member_resolves_the_gate_without_blocking_or_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+
+    ledger
+        .waive_member("feat/x", "sha1", "security", "risk-tier:docs-only")
+        .unwrap();
+    let run = canonical_run(&mut ledger, &sub.id, "correctness");
+    ledger
+        .record_verdict(&sub.id, &run, "correctness", &pass())
+        .unwrap();
+
+    let report = submit::evaluate(&plane, &ledger, &sub.id).unwrap();
+    assert_eq!(report.decision, "clear");
+    let security = report
+        .members
+        .iter()
+        .find(|m| m.kind == "security")
+        .unwrap();
+    assert_eq!(security.status, "waived");
+    assert_eq!(
+        security.waiver_reason.as_deref(),
+        Some("risk-tier:docs-only")
+    );
+    assert_eq!(ledger.submission(&sub.id).unwrap().state, "clear");
+}
+
+#[test]
+fn waiver_never_overrides_a_verdict_already_recorded_this_round() {
+    // A docs-only waiver granted, then the member actually runs anyway (e.g.
+    // a driver mistake) and reports a real blocking structural finding: the
+    // recorded verdict must win — the gate must still block, not silently
+    // clear because a waiver exists.
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let sub = ledger.open_submission("feat/x", "sha1", None).unwrap();
+
+    ledger
+        .waive_member("feat/x", "sha1", "security", "risk-tier:docs-only")
+        .unwrap();
+    let run = canonical_run(&mut ledger, &sub.id, "correctness");
+    ledger
+        .record_verdict(&sub.id, &run, "correctness", &pass())
+        .unwrap();
+    let security_run = canonical_run(&mut ledger, &sub.id, "security");
+    ledger
+        .record_verdict(
+            &sub.id,
+            &security_run,
+            "security",
+            &with_findings("blocking", vec![finding("blocking", "real vuln, not docs")]),
+        )
+        .unwrap();
+
+    let report = submit::evaluate(&plane, &ledger, &sub.id).unwrap();
+    assert_eq!(report.decision, "blocked");
+    let security = report
+        .members
+        .iter()
+        .find(|m| m.kind == "security")
+        .unwrap();
+    assert_eq!(security.status, "verdict:blocking");
+    assert_eq!(security.waiver_reason, None);
+}
+
+#[test]
+fn waiver_is_scoped_to_the_rev_it_was_granted_against() {
+    // A waiver for rev1 (genuinely docs-only) must not silently carry over
+    // to rev2 of the same change once rev2 turns into a real rewrite —
+    // rev2 needs its own explicit waiver, or the member stays pending until
+    // it actually runs.
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_gate_plane(dir.path(), 3, false);
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
+    ledger
+        .waive_member("feat/x", "sha1", "security", "risk-tier:docs-only")
+        .unwrap();
+    let run = canonical_run(&mut ledger, &r1.id, "correctness");
+    ledger
+        .record_verdict(&r1.id, &run, "correctness", &pass())
+        .unwrap();
+    assert_eq!(
+        submit::evaluate(&plane, &ledger, &r1.id).unwrap().decision,
+        "clear"
+    );
+
+    // rev2: no waiver was ever granted for this rev, and no run has
+    // reported on "security" yet — it must NOT inherit rev1's waiver.
+    let r2 = ledger.open_submission("feat/x", "sha2", None).unwrap();
+    let run2 = canonical_run(&mut ledger, &r2.id, "correctness");
+    ledger
+        .record_verdict(&r2.id, &run2, "correctness", &pass())
+        .unwrap();
+    let report = submit::evaluate(&plane, &ledger, &r2.id).unwrap();
+    assert_eq!(report.decision, "pending");
+    let security = report
+        .members
+        .iter()
+        .find(|m| m.kind == "security")
+        .unwrap();
+    assert_eq!(security.status, "not_started");
+    assert_eq!(security.waiver_reason, None);
+}
+
+#[test]
+fn maintainability_gate_member_blocks_a_structural_finding_and_clears_when_fixed() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("agents")).unwrap();
+    let stub = dir.path().join("stub.sh");
+    write_executable(&stub, "#!/bin/sh\ncat > /dev/null\necho unused\n");
+    fs::write(
+        dir.path().join("agents/stub.toml"),
+        format!(
+            "harness = \"claude\"\nmodel = \"m\"\nbin = \"{}\"\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("plane.toml"),
+        "dev = true\n[gate]\nrequired = [\"maintainability\"]\n",
+    )
+    .unwrap();
+    let dir_task = dir.path().join("tasks/maintainability");
+    fs::create_dir_all(&dir_task).unwrap();
+    fs::write(dir_task.join("card.md"), "verdict card\n").unwrap();
+    fs::write(
+        dir_task.join("task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\nverdict = \"maintainability\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(dir.path()).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    // Round 1: the Thermo-Nuclear lens flags a structural regression per its
+    // own non-negotiable standard (file pushed past the 1k-line threshold).
+    let r1 = ledger.open_submission("feat/x", "sha1", None).unwrap();
+    let run1 = canonical_run(&mut ledger, &r1.id, "maintainability");
+    ledger
+        .record_verdict(
+            &r1.id,
+            &run1,
+            "maintainability",
+            &with_findings(
+                "blocking",
+                vec![finding(
+                    "blocking",
+                    "src/dispatch.rs crossed 1000 lines with no decomposition",
+                )],
+            ),
+        )
+        .unwrap();
+    let report = submit::evaluate(&plane, &ledger, &r1.id).unwrap();
+    assert_eq!(report.decision, "blocked");
+    assert_eq!(report.blocking.len(), 1);
+
+    // Round 2: decomposed, lens passes.
+    let r2 = ledger.open_submission("feat/x", "sha2", None).unwrap();
+    let run2 = canonical_run(&mut ledger, &r2.id, "maintainability");
+    ledger
+        .record_verdict(&r2.id, &run2, "maintainability", &pass())
+        .unwrap();
+    let report = submit::evaluate(&plane, &ledger, &r2.id).unwrap();
+    assert_eq!(report.decision, "clear");
+}
+
 #[test]
 fn parse_verdict_skips_braces_in_preamble_prose() {
     // Live failure 2026-06-11: deepseek quoted `{env:?}` in prose before

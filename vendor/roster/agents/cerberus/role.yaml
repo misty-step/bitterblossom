@@ -23,6 +23,14 @@ skills:
   - name: diagnose
     path: /Users/phaedrus/Development/harness-kit/skills/diagnose/SKILL.md
     reason: root-cause-oriented investigation of suspicious behavior
+  - name: thermo-nuclear-maintainability
+    path: vendor/skills/thermo-nuclear-code-quality-review/SKILL.md
+    reason: >-
+      required for meaningful implementation diffs (backlog 088) — catches
+      structural maintainability regressions (file-size sprawl, spaghetti
+      branching, thin wrappers) that correctness/security review alone
+      misses; path resolves inside a workspace that syncs the bitterblossom
+      repo itself, not the operator's local Harness Kit checkout
 mcps: []
 subagent_rights:
   may_dispatch: true

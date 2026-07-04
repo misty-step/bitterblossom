@@ -11,6 +11,13 @@ The review cites files, diff hunks, commands, logs, or URLs that were actually
 inspected. A clean review says no blocking issues were found and names residual
 risk.
 
+The Cerberus role brief above (`[roster_brief]`) already names the
+Thermo-Nuclear maintainability lens as a required skill for meaningful
+implementation diffs (backlog 088) — this task card does not need to repeat
+its content. Structural findings from that lens are severity `blocking`;
+stylistic nits are advisory. A docs-only or tiny-config-only diff may skip
+it if the receipt names the risk tier explicitly.
+
 ## Boundaries
 
 Read-only. Do not push, merge, approve, request changes, edit source, post
