@@ -176,6 +176,16 @@ fn notify_list_exposes_status_code_and_response_snippet_while_retrying() {
     assert_eq!(rows[0]["status"], "failed");
     assert_eq!(rows[0]["last_status_code"], 429);
     assert_eq!(rows[0]["last_response"], "{\"error\":\"rate limited\"}");
+
+    // The plain-text (non-`--json`) operator view must expose the same
+    // status/response detail, not only the machine-readable path.
+    let human_list = bb(dir.path(), &["notify", "list"]).output().unwrap();
+    let text = String::from_utf8_lossy(&human_list.stdout);
+    assert!(text.contains("last_status_code: 429"), "{text}");
+    assert!(
+        text.contains("last_response: {\"error\":\"rate limited\"}"),
+        "{text}"
+    );
 }
 
 #[test]
