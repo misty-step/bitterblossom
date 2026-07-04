@@ -344,7 +344,7 @@ fn filtered_jsonl_command(inner: Vec<String>) -> Vec<String> {
         format!(
             "{{ {cmd}; echo $? > .bb-harness-exit; }} \
              | while IFS= read -r line; do \
-                 case \"$line\" in *'\"type\":\"message_update\"'*) ;; \
+                 case \"$line\" in *'\"type\":\"message_update\"'*|*'\"type\":\"message_start\"'*|*'\"role\":\"user\"'*|*'\"role\":\"toolResult\"'*|*'\"type\":\"tool_execution_update\"'*|*'\"type\":\"tool_execution_end\"'*|*'\"toolResults\":'*) ;; \
                    *) printf '%s\n' \"$line\" ;; \
                  esac; \
                done; \
