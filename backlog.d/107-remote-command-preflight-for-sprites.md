@@ -24,16 +24,27 @@ generic preflight gap remains for future command workloads.
 
 ## Oracle
 
-- [ ] For `harness = "command"` on `substrate = "sprites"`, preflight checks
+- [x] For `harness = "command"` on `substrate = "sprites"`, preflight checks
       the command on the declared sprite host with the same workspace/path
       semantics used at dispatch time.
-- [ ] The finding names the missing binary, the host, and the exact task.
-- [ ] The check stays read-only and does not create a run row.
-- [ ] A fake-sprite test covers missing remote command and successful remote
+- [x] The finding names the missing binary, the host, and the exact task.
+- [x] The check stays read-only and does not create a run row.
+- [x] A fake-sprite test covers missing remote command and successful remote
       command.
-- [ ] `./scripts/verify.sh` passes.
+- [x] `./scripts/verify.sh` passes.
 
 ## Non-goals
 
 Do not make preflight install dependencies or mutate sprite state. It should
 report readiness; wrappers or task specs decide how to remediate.
+
+## 2026-07-04 Slice
+
+Added a sprite-host command-harness probe for `bb preflight <task> --json`.
+For `substrate = "sprites"` and `harness = "command"`, preflight now runs a
+read-only `sprite exec ... -- sh -c` check against the task's declared host.
+Bare command names resolve through the remote PATH; path-like bins are checked
+from `/home/sprite/bb/<task>` if that workspace already exists. The
+`unspawnable_binary` finding now carries the missing binary, sprite host,
+substrate, harness, model, and exact task, and the fake-sprite tests prove both
+missing and present remote commands without creating a ledger row.

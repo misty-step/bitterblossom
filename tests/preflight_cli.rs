@@ -33,6 +33,27 @@ printf '{"status":"ok","artifact_paths":["REPORT.json"]}\n' > REPORT.json
 echo '{"type":"result","subtype":"success","result":"commission complete","total_cost_usd":0.0123,"num_turns":3,"usage":{"input_tokens":120,"output_tokens":45}}'
 "#;
 
+const SPRITE_PREFLIGHT_STUB: &str = r#"#!/bin/sh
+log="$SPRITE_STUB_LOG"
+cmd="$1"; shift
+echo "$cmd $*" >> "$log"
+case "$cmd" in
+  exec)
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -s|-o|--dir|--env) shift 2;;
+        --) shift; break;;
+        *) shift;;
+      esac
+    done
+    export PATH="$SPRITE_REMOTE_PATH"
+    exec "$@";;
+  *)
+    echo "unexpected sprite command $cmd" >&2
+    exit 64;;
+esac
+"#;
+
 fn ingest_manual(ledger: &mut Ledger, task: &str) -> String {
     ledger
         .ingest(IngressRequest {
@@ -223,6 +244,127 @@ fn preflight_ok_when_secrets_and_binary_present() {
         .as_array()
         .unwrap()
         .contains(&serde_json::json!("demo")));
+}
+
+#[test]
+fn preflight_reports_unspawnable_sprite_command_binary_without_creating_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_path = dir.path();
+    mkdirs(root_path, &["demo"]);
+    fs::write(root_path.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root_path.join("agents/stub.toml"),
+        "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"missing-remote-bb-bin\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root_path.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"sprites\"\n[workspace]\nhost = \"misty-step/lane-1\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let sprite = root_path.join("sprite-stub.sh");
+    write_executable(&sprite, SPRITE_PREFLIGHT_STUB);
+    let log = root_path.join("sprite.log");
+    let remote_bin = root_path.join("remote-bin");
+    fs::create_dir_all(&remote_bin).unwrap();
+    let remote_path = format!("{}:/bin:/usr/bin", remote_bin.display());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "--config",
+            root_path.to_str().unwrap(),
+            "preflight",
+            "demo",
+            "--json",
+        ])
+        .env("BB_SPRITE_BIN", &sprite)
+        .env("SPRITE_STUB_LOG", &log)
+        .env("SPRITE_REMOTE_PATH", remote_path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let finding = doc["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "unspawnable_binary")
+        .expect("unspawnable_binary finding");
+    assert_eq!(finding["task"], "demo");
+    assert_eq!(finding["host"], "misty-step/lane-1");
+    assert_eq!(finding["substrate"], "sprites");
+    assert_eq!(finding["harness"], "command");
+    assert_eq!(finding["bin"], "missing-remote-bb-bin");
+    assert!(finding["detail"]
+        .as_str()
+        .unwrap()
+        .contains("missing-remote-bb-bin"));
+    assert!(finding["detail"]
+        .as_str()
+        .unwrap()
+        .contains("misty-step/lane-1"));
+    let log_text = fs::read_to_string(log).unwrap();
+    assert!(
+        log_text.contains("exec -o misty-step -s lane-1 -- sh -c"),
+        "{log_text}"
+    );
+
+    let plane = Plane::load(root_path).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    assert!(ledger.list_runs(None, None).unwrap().is_empty());
+}
+
+#[test]
+fn preflight_accepts_sprite_command_binary_present_on_remote_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_path = dir.path();
+    mkdirs(root_path, &["demo"]);
+    fs::write(root_path.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root_path.join("agents/stub.toml"),
+        "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"remote-ok\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root_path.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"sprites\"\n[workspace]\nhost = \"misty-step/lane-2\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let sprite = root_path.join("sprite-stub.sh");
+    write_executable(&sprite, SPRITE_PREFLIGHT_STUB);
+    let log = root_path.join("sprite.log");
+    let remote_bin = root_path.join("remote-bin");
+    fs::create_dir_all(&remote_bin).unwrap();
+    write_executable(&remote_bin.join("remote-ok"), "#!/bin/sh\nexit 0\n");
+    let remote_path = format!("{}:/bin:/usr/bin", remote_bin.display());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "--config",
+            root_path.to_str().unwrap(),
+            "preflight",
+            "demo",
+            "--json",
+        ])
+        .env("BB_SPRITE_BIN", &sprite)
+        .env("SPRITE_STUB_LOG", &log)
+        .env("SPRITE_REMOTE_PATH", remote_path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(doc["findings"].as_array().unwrap().is_empty());
+    let log_text = fs::read_to_string(log).unwrap();
+    assert!(
+        log_text.contains("exec -o misty-step -s lane-2 -- sh -c"),
+        "{log_text}"
+    );
 }
 
 #[test]

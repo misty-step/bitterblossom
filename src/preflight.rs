@@ -107,6 +107,16 @@ fn check_tasks<'a>(plane: &Plane, tasks: impl IntoIterator<Item = &'a Task>) -> 
                 }
             }
         }
+        if t.agent.harness == "command" && t.spec.substrate == "sprites" {
+            if let Some(bin) = &t.agent.bin {
+                let host = t.host();
+                if let Some(detail) = crate::substrate::sprites::remote_command_unspawnable_detail(
+                    &host, &t.name, bin,
+                ) {
+                    findings.push(command_binary_finding(t, &host, bin, detail));
+                }
+            }
+        }
         if let Some(finding) = subscription_auth_readiness(t) {
             findings.push(finding);
         }
@@ -216,6 +226,22 @@ fn readiness_finding(
         model: Some(t.agent.model.clone()),
         remediation: Some(remediation),
         ..simple_finding(&t.name, kind, detail)
+    }
+}
+
+fn command_binary_finding(t: &Task, host: &str, bin: &str, detail: String) -> Finding {
+    Finding {
+        classification: Some("readiness"),
+        host: Some(host.to_string()),
+        substrate: Some(t.spec.substrate.clone()),
+        harness: Some(t.agent.harness.clone()),
+        bin: Some(bin.to_string()),
+        model: Some(t.agent.model.clone()),
+        remediation: Some(format!(
+            "install command harness bin '{bin}' on substrate host '{host}' or update task '{}' to a command available there, then rerun `bb preflight {} --json`",
+            t.name, t.name
+        )),
+        ..simple_finding(&t.name, "unspawnable_binary", detail)
     }
 }
 

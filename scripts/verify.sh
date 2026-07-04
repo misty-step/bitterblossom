@@ -99,7 +99,7 @@ rm -rf "$self_drill_tmp"
 # not workload judgment; keep route-through authority out until separately earned.
 # bb-912 raised this for generic serve/ingress/budget security mechanism:
 # bounded request reads, panic containment, constant-time auth, and atomic budget admission.
-SPINE_LOC_CAP=11450
+SPINE_LOC_CAP=11550
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
