@@ -2,6 +2,10 @@ agent = "canary-triager"
 substrate = "sprites"
 required_artifacts = ["REPORT.json"]
 
+[rollout]
+authority = "report-only"
+scorecard = "docs/rollout-scorecards.md#canary-triage-report-only-backlog-080"
+
 [workspace]
 host = "example-org/lane-1"
 repos = [
@@ -31,4 +35,3 @@ any_of = ["incident.opened", "incident.updated"]
 [[trigger.filter]]
 pointer = "/incident/service"
 any_of = ["canary"]
-

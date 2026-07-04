@@ -30,7 +30,7 @@ fn write_local_plane(root: &std::path::Path) {
     fs::write(root.join("tasks/hello/card.md"), "card\n").unwrap();
     fs::write(
         root.join("tasks/hello/task.toml"),
-        "agent = \"local-command\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+        "agent = \"local-command\"\nsubstrate = \"local\"\n[rollout]\nauthority = \"report-only\"\nscorecard = \"docs/rollout-scorecards.md#hello\"\n[[trigger]]\nkind = \"manual\"\n",
     )
     .unwrap();
 }
@@ -365,6 +365,11 @@ fn check_json_shape() {
     as_str(task, "substrate");
     as_num(task, "triggers");
     assert!(task["runs_today"].is_number());
+    assert_eq!(task["rollout"]["authority"], "report-only");
+    assert_eq!(
+        task["rollout"]["scorecard"],
+        "docs/rollout-scorecards.md#hello"
+    );
 }
 
 #[test]
@@ -388,6 +393,11 @@ fn status_json_shape() {
     as_str(task, "task");
     as_str(task, "agent");
     as_str(task, "harness");
+    assert_eq!(task["rollout"]["authority"], "report-only");
+    assert_eq!(
+        task["rollout"]["scorecard"],
+        "docs/rollout-scorecards.md#hello"
+    );
     assert!(task["parked"].is_null());
     assert!(task["runs"]["by_state"].is_object());
     assert!(task["safe_next_actions"].is_array());
@@ -408,6 +418,11 @@ fn task_list_json_shape() {
     assert!(row["verdict"].is_null() || row["verdict"].is_string());
     assert!(row["parked"].is_null() || row["parked"].is_string());
     assert!(row["max_runs_per_day"].is_null() || row["max_runs_per_day"].is_number());
+    assert_eq!(row["rollout"]["authority"], "report-only");
+    assert_eq!(
+        row["rollout"]["scorecard"],
+        "docs/rollout-scorecards.md#hello"
+    );
 }
 
 #[test]

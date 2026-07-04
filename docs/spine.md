@@ -16,7 +16,7 @@ The product is the config surface. A workload is files, not Rust:
 plane.toml                  # db path, ingress bind/token, notify webhook, global budget
 agents/<name>.toml          # versioned launch contract: role, skills, harness, model, flags
 tasks/<name>/card.md        # lane card — the agent's entire context
-tasks/<name>/task.toml      # agent binding, substrate, workspace, budgets, triggers
+tasks/<name>/task.toml      # agent binding, substrate, workspace, budgets, rollout, triggers
 ```
 
 Target repos may also own task definitions under `.bb/`, while the plane
@@ -199,6 +199,11 @@ checkpoint = "v3"                 # optional snapshot; ignored by adapters witho
 attention_debt = "global"         # default; "task" scopes reflex admission to
                                   # this task's own debt and budget caps
 
+[rollout]                         # optional authority-ladder visibility
+authority = "report-only"         # read-only | report-only | dry-run |
+                                  # PR-only | guarded-land | rollback-own-change
+scorecard = "docs/rollout-scorecards.md#task-family"
+
 [budget]
 timeout_minutes = 30              # enforced: wall-clock cancel
 max_runs_per_day = 10             # enforced pre-dispatch
@@ -244,6 +249,13 @@ equals = false
 pre_command = ""                  # optional adapter commands run in the
 post_command = ""                 # workspace before/after the agent
 ```
+
+`rollout` is declarative status metadata. It does not grant capabilities or
+promote a task; it exposes the active authority level and scorecard link in
+`bb status --json`, `GET /api/status`, `bb task list --json`, `/api/tasks`,
+`bb check --json`, and MCP `bb_status`/`bb_tasks` so operators can see the
+current autonomy posture before dispatch. The run artifact still records what
+happened on a specific attempt.
 
 `required_artifacts` is a completion contract, not a prompt hint. Entries are
 non-empty paths relative to the attempt artifact directory; absolute paths,

@@ -90,25 +90,23 @@ These rules are non-negotiable and apply to every task family:
 
 ## Where Authority Is Visible Today
 
-Authority currently lives in two places, both product-generic:
+Authority currently lives in three places, all product-generic:
 
-- **The task card** (`tasks/<name>/card.md`) states the allowed/forbidden
+- **The task config** (`tasks/<name>/task.toml`) may declare `[rollout]`
+  `authority` plus `scorecard`. This is read-only visibility metadata, not an
+  authority grant or promotion switch. `bb status --json`, `GET /api/status`,
+  `bb task list --json`, `/api/tasks`, `bb check --json`, and MCP
+  `bb_status`/`bb_tasks` expose it.
+- **The task card** (`tasks/<name>/card.md`) states the allowed and forbidden
   actions in prose the agent reads.
-- **The run artifact** records the enforced posture. Dry-run and report-only
-  reports carry it structurally — e.g. the backlog-chewer dry-run report's
-  `authority` object (`current`, `no_side_effects`, `forbidden_actions`) and the
-  canary triage report's `constraints.mutations_performed`.
+- **The run artifact** records the enforced posture for the attempt. Dry-run
+  and report-only reports carry it structurally, e.g. the backlog-chewer
+  dry-run report's `authority` object (`current`, `no_side_effects`,
+  `forbidden_actions`) and canary triage's non-mutation constraints.
 
-There is no single structured authority field surfaced by `bb status --json`
-yet. Surfacing the active authority level and a scorecard link from
-`bb status --json` (084 oracle item 2) is a deliberate follow-up: it needs a
-spec decision on whether authority belongs in `task.toml` as a first-class
-governance field (alongside budget) or stays derived from card + report. Until
-that lands, the scorecard link is the card + this doc, and the enforced posture
-is read from the run artifact. Report shapes carrying authority differently
-(`authority` object vs `constraints`) are also left unmentioned here for a later
-unification slice; this doc governs the promotion contract, not the report
-schema.
+`[rollout]` closes the status visibility gap. It intentionally does not decide
+whether metrics are green; that remains grooming/operator judgment backed by
+the scorecard evidence packet.
 
 ## Current Task Family Scorecards
 
@@ -187,6 +185,7 @@ Operator approval needed for next level: yes
 2. Fill the scorecard template in the task family's backlog ticket and add a row
    to the fleet index above.
 3. Ship the task/card/agent so the card's forbidden-actions prose matches the
-   scorecard, and the report artifact carries the enforced posture.
+   scorecard, `[rollout]` points to that scorecard, and the report artifact
+   carries the enforced posture.
 4. Do not write a promotion ticket until the current level's evidence metrics
    are green and cited.

@@ -2,6 +2,10 @@ agent = "fix-prompt-generator"
 substrate = "sprites"
 required_artifacts = ["REPORT.json"]
 
+[rollout]
+authority = "report-only"
+scorecard = "docs/rollout-scorecards.md#fix-prompt-generator-report-only-backlog-062"
+
 [workspace]
 host = "example-org/lane-1"
 
