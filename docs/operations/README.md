@@ -420,3 +420,17 @@ run rows:
 Clear the named debt first: replay or acknowledge DLQs, unpark tasks only after
 the reason is fixed, inspect/resolve `awaiting_recovery`, run `bb recover --json`
 for stale executing work, and retry or acknowledge notification outbox rows.
+
+Before unparking a task that has been parked for a while, inspect the held
+backlog:
+
+```bash
+bb runs list --task <task> --state blocked_budget --json
+```
+
+Retire runs targeting closed, merged, superseded, or otherwise stale externals
+with `bb runs retire <id> --reason "<why>"`. Prefer `bb runs release <id>` for
+one live run or `bb task unpark <task> --since <timestamp> --yes` for a bounded
+recent slice. A blind multi-run `bb task unpark <task>` requires `--yes` after
+printing the blocked count and age range; treat that preview as the final
+operator check before re-queueing historical work.

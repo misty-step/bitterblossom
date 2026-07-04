@@ -652,7 +652,9 @@ A `blocked_budget` run is recovered run-by-run: `bb runs release <id>` re-queues
 one run and unparks its task (refused when releasing would just re-block it — a
 ceiling with no park, or a daily run/cost limit still over), `bb runs retire
 <id> --reason …` closes one as `retired` (terminal, row kept), and `bb task
-unpark <task>` still releases the whole parked queue at once. Each dispatch
+unpark <task>` reports the blocked-budget backlog and age range before release,
+requires `--yes` for multi-run release, and can scope release with `--since`
+or repeated `--run-id`. Each dispatch
 attempt checkpoints its phase —
 `acquired → prepared → executing → collecting → finalizing → released` —
 because agent runs have external side effects and "re-run it" is not a
@@ -731,7 +733,8 @@ bb keys list [--remote] [--include-disabled] [--json] # local metadata or OpenRo
 bb keys sync <agent> | --all [--check] [--json]   # refresh provider usage/cap metadata; fail on drift with --check
 bb preflight <task> | --storm [--json]            # missing secrets, local command bins, subscription auth readiness; pre-dispatch
 bb task list [--json]                               # agent-facing task inventory
-bb task park|unpark <task>
+bb task park <task> [--reason TEXT]
+bb task unpark <task> [--since RFC3339] [--run-id ID ...] [--yes]
 scripts/bb-dispatch-build --config <plane> --payload-file build.json [--bb "target/debug/bb"] [--json] # checked-in operator recipe: validate groomed builder packet, refuse duplicate active work unless --force, preflight, run with --payload-file, return receipt
 bb submit open --change K --rev SHA [--context TEXT]
 scripts/bb-submit-storm --config <plane> --payload-file storm.json [--bb "target/debug/bb"] [--json] # checked-in operator recipe: validate payload, storm preflight, open, run members via --payload-file, return receipt
