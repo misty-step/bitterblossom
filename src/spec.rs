@@ -286,6 +286,8 @@ pub struct TaskSpec {
     #[serde(default)]
     pub workspace: WorkspaceSpec,
     #[serde(default)]
+    pub admission: AdmissionSpec,
+    #[serde(default)]
     pub budget: TaskBudget,
     #[serde(default, rename = "trigger")]
     pub triggers: Vec<TriggerSpec>,
@@ -333,6 +335,23 @@ pub struct TaskBudget {
     pub turn_cap: Option<u32>,
     pub tool_action_cap: Option<u32>,
     pub output_bytes_cap: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionSpec {
+    /// `global` is the default broad-reflex brake. `task` lets critical tasks
+    /// admit reflex events unless their own task debt or budget blocks them.
+    #[serde(default)]
+    pub attention_debt: AttentionDebtPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionDebtPolicy {
+    #[default]
+    Global,
+    Task,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -737,6 +756,8 @@ struct RepoOwnedTaskSpec {
     #[serde(default)]
     pub workspace: WorkspaceSpec,
     #[serde(default)]
+    pub admission: AdmissionSpec,
+    #[serde(default)]
     pub budget: TaskBudget,
     #[serde(default, rename = "trigger")]
     pub triggers: Vec<TriggerSpec>,
@@ -901,6 +922,7 @@ fn repo_task_spec(
             }],
             checkpoint: repo.workspace.checkpoint.clone(),
         },
+        admission: raw.admission,
         budget: bounded_budget(&repo.name, task_name, &raw.budget, &repo.budget_caps)?,
         triggers: raw.triggers,
         pre_command: raw.pre_command,

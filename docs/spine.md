@@ -195,6 +195,10 @@ host = "bb-demo"                  # substrate resource identity / host lease key
 repos = [{ url = "https://github.com/o/r.git", ref = "master" }]
 checkpoint = "v3"                 # optional snapshot; ignored by adapters without snapshots
 
+[admission]
+attention_debt = "global"         # default; "task" scopes reflex admission to
+                                  # this task's own debt and budget caps
+
 [budget]
 timeout_minutes = 30              # enforced: wall-clock cancel
 max_runs_per_day = 10             # enforced pre-dispatch

@@ -67,6 +67,41 @@ fn make_canary_triage_plane(root: &Path) -> Plane {
     Plane::load(root).unwrap()
 }
 
+fn make_incident_admission_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/review")).unwrap();
+    fs::create_dir_all(root.join("tasks/incident-triage")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\nauth = \"api\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/review/card.md"), "review card\n").unwrap();
+    fs::write(
+        root.join("tasks/review/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [budget]\nmax_runs_per_day = 1\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"review\"\nsecret_env = \"BB_TEST_REVIEW_SECRET\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/incident-triage/card.md"),
+        "incident card\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/incident-triage/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [admission]\nattention_debt = \"task\"\n\n\
+         [budget]\nmax_runs_per_day = 1\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"incident-triage\"\nsecret_env = \"BB_TEST_INCIDENT_SECRET\"\n\
+         dedupe_key = \"header:X-Delivery-Id\"\n",
+    )
+    .unwrap();
+    Plane::load(root).unwrap()
+}
+
 fn canary_headers(
     secret: &str,
     timestamp: &str,
@@ -213,6 +248,122 @@ fn webhook_attention_debt_brake_refuses_without_ingesting() {
     assert_eq!(events[0].kind, "attention_debt_brake");
     assert_eq!(events[0].task.as_deref(), Some("demo"));
     assert!(events[0].detail.as_deref().unwrap().contains("open_dlq=1"));
+}
+
+#[test]
+fn task_scoped_admission_accepts_incident_webhook_with_unrelated_parked_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_incident_admission_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .park_task("review", "32 runs today >= max_runs_per_day 20")
+        .unwrap();
+    std::env::set_var("BB_TEST_INCIDENT_SECRET", "s3cret");
+
+    let body = r#"{"event":"incident.opened","incident":{"service":"powder"}}"#;
+    let delivery = "DLV-incident-1";
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "incident-triage",
+        &[
+            ("X-Hub-Signature-256".into(), sig),
+            ("X-Delivery-Id".into(), delivery.into()),
+        ],
+        body,
+    )
+    .unwrap();
+
+    assert_eq!(resp.status, 202, "{}", resp.body);
+    assert_eq!(
+        ledger
+            .list_runs(Some("incident-triage"), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(ledger.ingress_event_count("incident-triage").unwrap(), 1);
+    assert_eq!(ledger.ingress_event_count("review").unwrap(), 0);
+}
+
+#[test]
+fn task_scoped_admission_refuses_incident_webhook_when_incident_task_is_parked() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_incident_admission_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    ledger
+        .park_task("incident-triage", "incident task budget breach")
+        .unwrap();
+    std::env::set_var("BB_TEST_INCIDENT_SECRET", "s3cret");
+
+    let body = r#"{"event":"incident.opened","incident":{"service":"powder"}}"#;
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "incident-triage",
+        &[
+            ("X-Hub-Signature-256".into(), sig),
+            ("X-Delivery-Id".into(), "DLV-incident-parked".into()),
+        ],
+        body,
+    )
+    .unwrap();
+
+    assert_eq!(resp.status, 429, "{}", resp.body);
+    assert!(resp.body.contains("task_parked"), "{}", resp.body);
+    assert!(ledger
+        .list_runs(Some("incident-triage"), None)
+        .unwrap()
+        .is_empty());
+    assert_eq!(ledger.ingress_event_count("incident-triage").unwrap(), 0);
+}
+
+#[test]
+fn task_scoped_admission_refuses_incident_webhook_when_incident_daily_cap_is_spent() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_incident_admission_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let spent = ledger
+        .ingest(bitterblossom::ledger::IngressRequest {
+            task: "incident-triage",
+            trigger_kind: "manual",
+            idempotency_key: None,
+            source_event_id: None,
+            payload: None,
+            parent_run_id: None,
+        })
+        .unwrap();
+    ledger.transition(&spent.run_id, "running", None).unwrap();
+    ledger.transition(&spent.run_id, "success", None).unwrap();
+    std::env::set_var("BB_TEST_INCIDENT_SECRET", "s3cret");
+
+    let body = r#"{"event":"incident.opened","incident":{"service":"powder"}}"#;
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let resp = handle_webhook(
+        &plane,
+        &mut ledger,
+        "incident-triage",
+        &[
+            ("X-Hub-Signature-256".into(), sig),
+            ("X-Delivery-Id".into(), "DLV-incident-cap".into()),
+        ],
+        body,
+    )
+    .unwrap();
+
+    assert_eq!(resp.status, 429, "{}", resp.body);
+    assert!(resp.body.contains("max_runs_per_day"), "{}", resp.body);
+    assert_eq!(
+        ledger
+            .list_runs(Some("incident-triage"), None)
+            .unwrap()
+            .len(),
+        1,
+        "the refused webhook must not create another run"
+    );
+    assert_eq!(ledger.ingress_event_count("incident-triage").unwrap(), 1);
 }
 
 #[test]
