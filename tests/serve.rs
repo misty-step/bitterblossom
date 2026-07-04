@@ -130,12 +130,32 @@ fn wait_for_http(port: u16) {
 }
 
 fn http_get(port: u16, path: &str, bearer: Option<&str>) -> (u16, String) {
+    http_request(port, "GET", path, bearer, None)
+}
+
+fn http_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<&str>,
+) -> (u16, String) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let auth = bearer
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Connection: close\r\n\r\n");
+    let body = body.unwrap_or("");
+    let content_headers = if body.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        )
+    };
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}{content_headers}Connection: close\r\n\r\n{body}"
+    );
     let mut last_error = None;
     while Instant::now() < deadline {
         match TcpStream::connect(("127.0.0.1", port)).and_then(|mut stream| {
@@ -162,7 +182,7 @@ fn http_get(port: u16, path: &str, bearer: Option<&str>) -> (u16, String) {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!(
-        "GET {path} on port {port} did not return HTTP response: {}",
+        "{method} {path} on port {port} did not return HTTP response: {}",
         last_error.unwrap_or_else(|| "timed out".to_string())
     );
 }
@@ -324,6 +344,16 @@ fn operator_html_stores_token_locally_and_reprompts_on_unauthorized_api() {
 }
 
 #[test]
+fn operator_html_distinguishes_external_runs_from_native_rows() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains("status.external_runs?.recent"));
+    assert!(html.contains("sourceLabel(run)"));
+    assert!(html.contains("run.source === \"external\""));
+    assert!(html.contains("external runs"));
+}
+
+#[test]
 fn read_api_exposes_dashboard_observability_routes() {
     let dir = tempfile::tempdir().unwrap();
     write_dispatch_plane(dir.path());
@@ -376,6 +406,80 @@ fn read_api_exposes_dashboard_observability_routes() {
     let first_line = response_body(&body).lines().next().unwrap();
     let exported: serde_json::Value = serde_json::from_str(first_line).unwrap();
     assert_eq!(exported["schema"], "bb.run_telemetry.v1");
+}
+
+#[test]
+fn external_runs_api_registers_patches_and_status_surfaces_source() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let port = free_loopback_port();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    let body = serde_json::json!({
+        "agent": "codex-bb-909",
+        "role": "implementer",
+        "repo": "misty-step/bitterblossom",
+        "brief_hash": "sha256:test",
+        "plane": "local",
+        "status_url": "https://example.test/status",
+        "receipt_path": "/tmp/bb-909.md",
+        "started_at": "2026-07-04T12:00:00Z"
+    })
+    .to_string();
+    assert_eq!(
+        http_request(port, "POST", "/api/external-runs", None, Some(&body)).0,
+        401
+    );
+    let (status, response) = http_request(
+        port,
+        "POST",
+        "/api/external-runs",
+        Some("test-token"),
+        Some(&body),
+    );
+    assert_eq!(status, 201, "{response}");
+    let created: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["source"], "external");
+    assert_eq!(created["status"], "running");
+
+    let patch = serde_json::json!({
+        "status": "done",
+        "completed_at": "2026-07-04T12:05:00Z"
+    })
+    .to_string();
+    let (status, response) = http_request(
+        port,
+        "PATCH",
+        &format!("/api/external-runs/{id}"),
+        Some("test-token"),
+        Some(&patch),
+    );
+    assert_eq!(status, 200, "{response}");
+    let patched: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    assert_eq!(patched["status"], "done");
+    assert_eq!(patched["completed_at"], "2026-07-04T12:05:00Z");
+
+    let (status, response) = http_get(port, "/api/status", Some("test-token"));
+    assert_eq!(status, 200, "{response}");
+    let status_doc: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    let rows = status_doc["external_runs"]["recent"].as_array().unwrap();
+    let row = rows.iter().find(|row| row["id"] == id).unwrap();
+    assert_eq!(row["source"], "external");
+    assert_eq!(row["agent"], "codex-bb-909");
+    assert_eq!(row["status"], "done");
+    assert_eq!(status_doc["summary"]["external_runs"], 1);
+    assert_eq!(status_doc["summary"]["external_running"], 0);
 }
 
 #[test]

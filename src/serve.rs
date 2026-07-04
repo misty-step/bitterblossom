@@ -9,7 +9,7 @@ use cron::Schedule;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ingress;
-use crate::ledger::{Ledger, LEDGER_SCHEMA_VERSION};
+use crate::ledger::{ExternalRunCreate, Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
 use crate::spec::{Plane, TriggerSpec};
 use crate::{canary, dispatch, notify, progress};
@@ -515,6 +515,16 @@ fn query_param(url: &str, name: &str) -> Option<String> {
     })
 }
 
+fn json_error(message: String) -> String {
+    serde_json::json!({ "error": message }).to_string()
+}
+
+#[derive(serde::Deserialize)]
+struct ExternalRunPatch {
+    status: String,
+    completed_at: Option<String>,
+}
+
 fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16, String)> {
     let method = request.method().to_string();
     let url = request.url().to_string();
@@ -547,6 +557,15 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 200,
                 serde_json::to_string(&crate::health::status_view(&plane, &ledger)?)?,
             )),
+            "/api/external-runs" => {
+                let limit = query_param(&url, "limit")
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(50);
+                Ok((
+                    200,
+                    serde_json::to_string(&ledger.list_external_runs(limit)?)?,
+                ))
+            }
             "/api/dlq" => Ok((200, serde_json::to_string(&ledger.list_dead_letters()?)?)),
             "/api/notify" => {
                 let limit = query_param(&url, "limit")
@@ -605,9 +624,63 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             _ => {
                 if let Some(id) = path.strip_prefix("/api/runs/") {
                     Ok((200, run_view(&ledger, id)?.to_string()))
+                } else if let Some(id) = path.strip_prefix("/api/external-runs/") {
+                    Ok((200, serde_json::to_string(&ledger.external_run(id)?)?))
                 } else {
                     Ok((404, "{\"error\":\"not found\"}".into()))
                 }
+            }
+        };
+    }
+
+    if (method == "POST" && url.split('?').next() == Some("/api/external-runs"))
+        || (method == "PATCH"
+            && url
+                .split('?')
+                .next()
+                .unwrap_or("")
+                .starts_with("/api/external-runs/"))
+    {
+        if !read_authorized(request) {
+            return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
+        }
+        let plane = Plane::load(root)?;
+        let ledger = Ledger::open(&plane.db_path())?;
+        let path = url.split('?').next().unwrap_or(&url);
+        let mut body = String::new();
+        request
+            .as_reader()
+            .read_to_string(&mut body)
+            .context("read body")?;
+        if method == "POST" {
+            let input: ExternalRunCreate = match serde_json::from_str(&body) {
+                Ok(input) => input,
+                Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
+            };
+            return match ledger.create_external_run(input) {
+                Ok(row) => Ok((201, serde_json::to_string(&row)?)),
+                Err(err) => Ok((400, json_error(err.to_string()))),
+            };
+        }
+        let Some(id) = path
+            .strip_prefix("/api/external-runs/")
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok((404, "{\"error\":\"not found\"}".into()));
+        };
+        let patch: ExternalRunPatch = match serde_json::from_str(&body) {
+            Ok(patch) => patch,
+            Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
+        };
+        return match ledger.update_external_run(id, &patch.status, patch.completed_at.as_deref()) {
+            Ok(row) => Ok((200, serde_json::to_string(&row)?)),
+            Err(err) => {
+                let status = if err.to_string().contains("not found") {
+                    404
+                } else {
+                    400
+                };
+                Ok((status, json_error(err.to_string())))
             }
         };
     }

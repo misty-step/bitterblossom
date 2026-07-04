@@ -20,6 +20,7 @@ pub const RUN_STATES: &[&str] = &[
     "blocked_budget",
     "retired",
 ];
+pub const EXTERNAL_RUN_STATUSES: &[&str] = &["running", "done", "failed"];
 
 fn transition_allowed(from: &str, to: &str) -> bool {
     matches!(
@@ -178,6 +179,36 @@ pub struct RetryableNotificationRow {
     pub id: i64,
     pub event: String,
     pub payload: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExternalRunCreate {
+    pub agent: String,
+    pub role: String,
+    pub repo: String,
+    pub brief_hash: String,
+    pub plane: String,
+    pub status_url: Option<String>,
+    pub receipt_path: Option<String>,
+    pub started_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExternalRunRow {
+    pub id: String,
+    pub source: String,
+    pub agent: String,
+    pub role: String,
+    pub repo: String,
+    pub brief_hash: String,
+    pub plane: String,
+    pub status: String,
+    pub status_url: Option<String>,
+    pub receipt_path: Option<String>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// Resolution state of a dead letter, derived from its replay/acknowledgement
@@ -795,6 +826,88 @@ impl Ledger {
         Ok(rows)
     }
 
+    pub fn create_external_run(&self, input: ExternalRunCreate) -> Result<ExternalRunRow> {
+        validate_external_create(&input)?;
+        let id = new_id();
+        let ts = now();
+        self.conn.execute(
+            "INSERT INTO external_runs (id, agent, role, repo, brief_hash, plane, status,
+               status_url, receipt_path, started_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8, ?9, ?10, ?10)",
+            params![
+                id,
+                input.agent.trim(),
+                input.role.trim(),
+                input.repo.trim(),
+                input.brief_hash.trim(),
+                input.plane.trim(),
+                option_trimmed(input.status_url.as_deref()),
+                option_trimmed(input.receipt_path.as_deref()),
+                input.started_at.trim(),
+                ts
+            ],
+        )?;
+        self.external_run(&id)
+    }
+
+    pub fn update_external_run(
+        &self,
+        id: &str,
+        status: &str,
+        completed_at: Option<&str>,
+    ) -> Result<ExternalRunRow> {
+        validate_external_status(status)?;
+        let current = self.external_run(id)?;
+        if !external_transition_allowed(&current.status, status) {
+            bail!(
+                "illegal external run transition {} -> {} for {id}",
+                current.status,
+                status
+            );
+        }
+        let completed_at = match status {
+            "done" | "failed" => {
+                let at = completed_at
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("completed_at is required for external status {status}")
+                    })?;
+                validate_rfc3339("completed_at", at)?;
+                Some(at.to_string())
+            }
+            "running" => None,
+            _ => unreachable!("validated external status"),
+        };
+        self.conn.execute(
+            "UPDATE external_runs SET status = ?2, completed_at = ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![id, status, completed_at, now()],
+        )?;
+        self.external_run(id)
+    }
+
+    pub fn external_run(&self, id: &str) -> Result<ExternalRunRow> {
+        self.conn
+            .query_row(
+                &format!("{EXTERNAL_RUN_SELECT} WHERE id = ?1"),
+                params![id],
+                row_to_external_run,
+            )
+            .with_context(|| format!("external run {id} not found"))
+    }
+
+    pub fn list_external_runs(&self, limit: i64) -> Result<Vec<ExternalRunRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self.conn.prepare(&format!(
+            "{EXTERNAL_RUN_SELECT} ORDER BY created_at DESC LIMIT ?1"
+        ))?;
+        let rows = stmt
+            .query_map(params![limit], row_to_external_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn runs_in_state(&self, state: &str) -> Result<Vec<RunRow>> {
         self.list_runs(None, Some(state))
     }
@@ -1118,6 +1231,9 @@ const RUN_SELECT: &str = "SELECT id, task, trigger_kind, idempotency_key, state,
   cost_usd, duration_ms,
   created_at, updated_at FROM runs";
 
+const EXTERNAL_RUN_SELECT: &str = "SELECT id, agent, role, repo, brief_hash, plane, status,
+  status_url, receipt_path, started_at, completed_at, created_at, updated_at FROM external_runs";
+
 const DLQ_SELECT: &str = "SELECT id, run_id, task, payload, error, created_at,
   replayed_run_id, acknowledged_reason, acknowledged_at FROM dead_letters";
 
@@ -1159,6 +1275,25 @@ fn row_to_dlq(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeadLetterRow> {
     })
 }
 
+fn row_to_external_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<ExternalRunRow> {
+    Ok(ExternalRunRow {
+        id: r.get(0)?,
+        source: "external".to_string(),
+        agent: r.get(1)?,
+        role: r.get(2)?,
+        repo: r.get(3)?,
+        brief_hash: r.get(4)?,
+        plane: r.get(5)?,
+        status: r.get(6)?,
+        status_url: r.get(7)?,
+        receipt_path: r.get(8)?,
+        started_at: r.get(9)?,
+        completed_at: r.get(10)?,
+        created_at: r.get(11)?,
+        updated_at: r.get(12)?,
+    })
+}
+
 fn row_to_notification_outbox(r: &rusqlite::Row<'_>) -> rusqlite::Result<NotificationOutboxRow> {
     Ok(NotificationOutboxRow {
         id: r.get(0)?,
@@ -1186,6 +1321,56 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Resu
 
 fn ledger_schema_version(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+fn validate_external_create(input: &ExternalRunCreate) -> Result<()> {
+    required_external_field("agent", &input.agent)?;
+    required_external_field("role", &input.role)?;
+    required_external_field("repo", &input.repo)?;
+    required_external_field("brief_hash", &input.brief_hash)?;
+    required_external_field("plane", &input.plane)?;
+    if input.plane.trim() != "local" {
+        bail!("external run plane must be 'local' in register-through mode");
+    }
+    validate_rfc3339("started_at", input.started_at.trim())?;
+    Ok(())
+}
+
+fn required_external_field(name: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("external run field '{name}' is required");
+    }
+    Ok(())
+}
+
+fn validate_external_status(status: &str) -> Result<()> {
+    if !EXTERNAL_RUN_STATUSES.contains(&status) {
+        bail!("unknown external run status {status}");
+    }
+    Ok(())
+}
+
+fn external_transition_allowed(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("running", "running")
+            | ("running", "done")
+            | ("running", "failed")
+            | ("done", "done")
+            | ("failed", "failed")
+    )
+}
+
+fn validate_rfc3339(field: &str, value: &str) -> Result<()> {
+    OffsetDateTime::parse(value, &Rfc3339).with_context(|| format!("{field} must be RFC3339"))?;
+    Ok(())
+}
+
+fn option_trimmed(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
 }
 
 pub struct IngressRequest<'a> {
