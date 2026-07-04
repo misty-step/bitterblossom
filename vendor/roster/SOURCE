@@ -1,0 +1,6 @@
+Repository: misty-step/roster
+Commit: d688c853170fa82f026b9fba952eb0d10bafb517
+Ref: origin/codex/roster-002
+Archive command: git -C ../roster archive --format=tar d688c853170fa82f026b9fba952eb0d10bafb517 Cargo.toml Cargo.lock crates agents primitives README.md VISION.md AGENTS.md | tar -x -C vendor/roster
+Local scrub: .git metadata, target output, and workflow noise omitted. Build and declaration source is unchanged.
+Purpose: P1 roster integration proof. Bitterblossom shells out to the pinned roster CLI to materialize the cerberus role and render roster briefs without copying role prompts into bb config.

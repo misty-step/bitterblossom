@@ -1,0 +1,26 @@
+schema_version: roster.skills_index.v1
+phase: P0-reference-only
+note: Physical skill migration is P3. These entries intentionally point at the live harness-kit predecessor.
+skills:
+  - name: deliver
+    path: /Users/phaedrus/Development/harness-kit/skills/deliver/SKILL.md
+  - name: powder
+    path: /Users/phaedrus/Development/harness-kit/skills/.external/misty-powder/SKILL.md
+  - name: sprites
+    path: /Users/phaedrus/Development/harness-kit/skills/sprites/SKILL.md
+  - name: code-review
+    path: /Users/phaedrus/Development/harness-kit/skills/code-review/SKILL.md
+  - name: qa
+    path: /Users/phaedrus/Development/harness-kit/skills/qa/SKILL.md
+  - name: ci
+    path: /Users/phaedrus/Development/harness-kit/skills/ci/SKILL.md
+  - name: shape
+    path: /Users/phaedrus/Development/harness-kit/skills/shape/SKILL.md
+  - name: harness-engineering
+    path: /Users/phaedrus/Development/harness-kit/skills/harness-engineering/SKILL.md
+  - name: research
+    path: /Users/phaedrus/Development/harness-kit/skills/research/SKILL.md
+  - name: orient
+    path: /Users/phaedrus/Development/harness-kit/skills/orient/SKILL.md
+  - name: diagnose
+    path: /Users/phaedrus/Development/harness-kit/skills/diagnose/SKILL.md

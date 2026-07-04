@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -148,6 +149,7 @@ pub struct GlobalBudget {
 pub struct AgentSpec {
     #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default)]
     pub harness: String,
     #[serde(default)]
     pub model: String,
@@ -165,6 +167,16 @@ pub struct AgentSpec {
     /// load, projected read-only via check/task-list/api-tasks JSON.
     #[serde(default)]
     pub policy: PolicySpec,
+    #[serde(default)]
+    pub roster: Option<RosterSource>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterSource {
+    pub root: String,
+    pub agent: String,
+    pub bin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +292,8 @@ pub struct TaskSpec {
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     pub verdict: Option<String>,
+    #[serde(default)]
+    pub roster_brief: Option<RosterSource>,
     /// Artifact paths, relative to the attempt artifact dir, that must exist
     /// after a zero-exit harness run for the run to count as success. Current
     /// substrates release `REPORT.json`; other paths are rejected until the
@@ -414,6 +428,15 @@ pub struct Task {
     pub agent_name: String,
     pub agent: AgentSpec,
     pub source: Option<TaskSource>,
+    pub roster: TaskRosterProvenance,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TaskRosterProvenance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<RosterSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brief: Option<RosterSource>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -466,8 +489,18 @@ impl Plane {
                     .and_then(|s| s.to_str())
                     .context("agent file name")?
                     .to_string();
-                let agent: AgentSpec = toml::from_str(&std::fs::read_to_string(&path)?)
+                let mut agent: AgentSpec = toml::from_str(&std::fs::read_to_string(&path)?)
                     .with_context(|| format!("parse {}", path.display()))?;
+                if let Some(source) = agent.roster.clone() {
+                    let text = roster_cli_output(
+                        root,
+                        &source,
+                        &["materialize", source.agent.as_str(), "--harness", "bb"],
+                    )?;
+                    agent = toml::from_str(&text)
+                        .with_context(|| format!("agent '{name}': parse roster materialization"))?;
+                    agent.roster = Some(source);
+                }
                 agents.insert(name, agent);
             }
         }
@@ -492,14 +525,24 @@ impl Plane {
                 let task_spec: TaskSpec = toml::from_str(&std::fs::read_to_string(&spec_path)?)
                     .with_context(|| format!("parse {}", spec_path.display()))?;
                 let card_path = dir.join("card.md");
-                let card = std::fs::read_to_string(&card_path)
+                let mut card = std::fs::read_to_string(&card_path)
                     .with_context(|| format!("read {}", card_path.display()))?;
+                let roster_brief = task_spec.roster_brief.clone();
+                if let Some(source) = &roster_brief {
+                    let brief = roster_cli_output(root, source, &["brief", source.agent.as_str()])?;
+                    card = format!(
+                        "{}\n\n## Bitterblossom Task Commission\n\n{}\n",
+                        brief.trim_end(),
+                        card.trim()
+                    );
+                }
                 let agent = agents
                     .get(&task_spec.agent)
                     .with_context(|| {
                         format!("task '{name}' binds unknown agent '{}'", task_spec.agent)
                     })?
                     .clone();
+                let agent_roster = agent.roster.clone();
                 tasks.insert(
                     name.clone(),
                     Task {
@@ -509,12 +552,19 @@ impl Plane {
                         spec: task_spec,
                         card,
                         source: None,
+                        roster: TaskRosterProvenance {
+                            agent: agent_roster,
+                            brief: roster_brief,
+                        },
                     },
                 );
             }
         }
         load_workload_repo_tasks(root, &spec, &agents, &mut tasks)?;
         for (name, agent) in &agents {
+            if agent.harness.trim().is_empty() {
+                bail!("agent '{name}': harness is required");
+            }
             let auth = agent
                 .auth_class()
                 .with_context(|| format!("agent '{name}'"))?;
@@ -773,6 +823,7 @@ fn load_workload_repo_tasks(
                 .get(&spec.agent)
                 .with_context(|| format!("workload repo '{}': agent '{}'", repo.name, spec.agent))?
                 .clone();
+            let agent_roster = agent.roster.clone();
             if tasks.contains_key(&name) {
                 bail!("task '{name}' declared by more than one source");
             }
@@ -788,6 +839,10 @@ fn load_workload_repo_tasks(
                         repo: source_repo.clone(),
                         r#ref: repo.r#ref.clone(),
                     }),
+                    roster: TaskRosterProvenance {
+                        agent: agent_roster,
+                        brief: None,
+                    },
                 },
             );
         }
@@ -851,8 +906,41 @@ fn repo_task_spec(
         pre_command: raw.pre_command,
         post_command: raw.post_command,
         verdict: raw.verdict,
+        roster_brief: None,
         required_artifacts: raw.required_artifacts,
     })
+}
+
+fn roster_cli_output(plane_root: &Path, source: &RosterSource, args: &[&str]) -> Result<String> {
+    if source.agent.trim().is_empty() {
+        bail!("roster source agent is required");
+    }
+    if source.root.trim().is_empty() {
+        bail!("roster source root is required");
+    }
+    let output = Command::new(source.bin.as_deref().unwrap_or("roster"))
+        .arg("--root")
+        .arg(&source.root)
+        .args(args)
+        .current_dir(plane_root)
+        .output()
+        .with_context(|| format!("spawn roster CLI for agent '{}'", source.agent))?;
+    if !output.status.success() {
+        bail!(
+            "roster CLI failed for agent '{}' with status {}: {}",
+            source.agent,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("roster CLI stdout was not UTF-8")?;
+    if stdout.trim().is_empty() {
+        bail!(
+            "roster CLI returned empty output for agent '{}'",
+            source.agent
+        );
+    }
+    Ok(stdout)
 }
 
 fn validate_backup_spec(backup: &BackupSpec) -> Result<()> {

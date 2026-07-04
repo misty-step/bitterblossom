@@ -80,6 +80,13 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
         return ledger.run(run_id);
     }
     ledger.set_run_agent(run_id, &task.agent_name, task.agent.version)?;
+    if task.roster.agent.is_some() || task.roster.brief.is_some() {
+        ledger.record_event(
+            run_id,
+            "roster_provenance",
+            Some(&serde_json::to_string(&task.roster)?),
+        )?;
+    }
     let started = Instant::now();
 
     let mut attempt_n = ledger.attempt_count(run_id)?;
@@ -359,7 +366,7 @@ fn attempt_on_host(
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
-        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "trigger": {"kind": trigger.trigger_kind, "idempotency_key": trigger.idempotency_key}, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate}).to_string(),
+        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "trigger": {"kind": trigger.trigger_kind, "idempotency_key": trigger.idempotency_key}, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate, "roster": &task.roster}).to_string(),
         payload: match (&submission, ledger.run_payload(run_id)?) {
             (Some(sub), Some(raw)) => {
                 let mut v: serde_json::Value = serde_json::from_str(&raw)?;

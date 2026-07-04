@@ -17,6 +17,12 @@ cargo test
 echo "==> OpenRouter model catalog fixture"
 scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json --json >/dev/null
 
+echo "==> vendored roster CLI"
+roster_target="$PWD/target/vendor-roster"
+CARGO_TARGET_DIR="$roster_target" cargo build --quiet --manifest-path vendor/roster/Cargo.toml --bin roster
+PATH="$roster_target/debug:$PATH"
+export PATH
+
 echo "==> product/instance split guard"
 if grep -Eq '^[[:space:]]*COPY[[:space:]]+plane([[:space:]]|$)' Dockerfile; then
   echo "Dockerfile must not COPY production plane/ into the product image"
@@ -41,6 +47,7 @@ cargo run --quiet -- --config examples/demo-plane check
 cargo run --quiet -- --config examples/local-plane check
 cargo run --quiet -- --config examples/canary-responder-plane check
 cargo run --quiet -- --config examples/review-factory-plane check
+cargo run --quiet -- --config examples/roster-cerberus-plane check
 cargo run --quiet -- --config examples/docs-sync-plane check
 cargo run --quiet -- --config examples/hygiene-plane check
 cargo run --quiet -- --config tests/fixtures/public-plane check
