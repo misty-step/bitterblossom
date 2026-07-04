@@ -275,3 +275,107 @@ fn list_missing_run_bails() {
     let err = artifacts::list(&ledger, "no-such-run").unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
+
+#[test]
+fn bundle_writes_deterministic_manifest_without_following_unsafe_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let mut ledger = Ledger::open(&db).unwrap();
+    let run = run_id(&mut ledger);
+
+    let a1 = dir.path().join("a1");
+    let a2 = dir.path().join("a2");
+    fs::create_dir_all(a1.join("nested")).unwrap();
+    fs::create_dir_all(a1.join("workspace")).unwrap();
+    fs::create_dir_all(&a2).unwrap();
+    fs::write(a1.join("REPORT.json"), r#"{"attempt":1}"#).unwrap();
+    fs::write(a1.join("nested/log.txt"), "nested log\n").unwrap();
+    fs::write(a1.join("blob.bin"), [0, 1, 2, 3]).unwrap();
+    fs::write(
+        a1.join("huge.log"),
+        vec![b'a'; artifacts::READ_LIMIT as usize + 1],
+    )
+    .unwrap();
+    fs::write(a1.join("workspace/ignored.txt"), "scratch").unwrap();
+    fs::write(a1.join("harness.pid"), "123").unwrap();
+    fs::write(a2.join("REPORT.json"), r#"{"attempt":2}"#).unwrap();
+    fs::write(dir.path().join("outside"), "outside").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path().join("outside"), a1.join("escape")).unwrap();
+    add_attempt(&mut ledger, &run, 1, &a1);
+    add_attempt(&mut ledger, &run, 2, &a2);
+
+    let out = dir.path().join("bundle");
+    let manifest = artifacts::bundle(&ledger, &run, &out).unwrap();
+    assert_eq!(manifest.schema, "bb.artifact_bundle.v1");
+    assert_eq!(manifest.run_id, run);
+    assert!(out.join("manifest.json").is_file());
+    assert_eq!(
+        fs::read_to_string(out.join("attempt-1/REPORT.json")).unwrap(),
+        r#"{"attempt":1}"#
+    );
+    assert_eq!(
+        fs::read_to_string(out.join("attempt-1/nested/log.txt")).unwrap(),
+        "nested log\n"
+    );
+    assert_eq!(
+        fs::read_to_string(out.join("attempt-2/REPORT.json")).unwrap(),
+        r#"{"attempt":2}"#
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(doc["schema"], "bb.artifact_bundle.v1");
+    let entries = doc["entries"].as_array().unwrap();
+    let paths: Vec<(i64, String)> = entries
+        .iter()
+        .map(|e| {
+            (
+                e["attempt"].as_i64().unwrap(),
+                e["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let mut expected_paths = vec![
+        (1, "REPORT.json".into()),
+        (1, "blob.bin".into()),
+        (1, "huge.log".into()),
+        (1, "nested/log.txt".into()),
+        (2, "REPORT.json".into()),
+    ];
+    #[cfg(unix)]
+    expected_paths.insert(2, (1, "escape".into()));
+    assert_eq!(paths, expected_paths);
+    assert!(!entries
+        .iter()
+        .any(|e| e["path"] == "workspace/ignored.txt" || e["path"] == "harness.pid"));
+    assert!(entries.iter().all(|e| {
+        !e["path"]
+            .as_str()
+            .unwrap()
+            .contains(dir.path().to_str().unwrap())
+            && !e["bundle_path"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(dir.path().to_str().unwrap())
+    }));
+
+    let binary = entries.iter().find(|e| e["path"] == "blob.bin").unwrap();
+    assert_eq!(binary["included"], false);
+    assert_eq!(binary["policy"]["kind"], "manifest_only_binary");
+    assert!(!out.join("attempt-1/blob.bin").exists());
+
+    let oversized = entries.iter().find(|e| e["path"] == "huge.log").unwrap();
+    assert_eq!(oversized["included"], false);
+    assert_eq!(oversized["policy"]["kind"], "manifest_only_oversized");
+    assert_eq!(oversized["policy"]["limit"], artifacts::READ_LIMIT);
+    assert!(!out.join("attempt-1/huge.log").exists());
+
+    #[cfg(unix)]
+    {
+        let symlink = entries.iter().find(|e| e["path"] == "escape").unwrap();
+        assert_eq!(symlink["included"], false);
+        assert_eq!(symlink["policy"]["kind"], "manifest_only_symlink");
+        assert!(!out.join("attempt-1/escape").exists());
+    }
+}

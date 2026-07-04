@@ -93,6 +93,12 @@ fn live_help_exposes_current_agent_cli_contract() {
     assert!(unpark.contains("--run-id <RUN_IDS>"));
     assert!(unpark.contains("--yes"));
 
+    let artifacts = help(&["artifacts", "--help"]);
+    assert!(artifacts.contains("bundle"));
+    let bundle = help(&["artifacts", "bundle", "--help"]);
+    assert!(bundle.contains("Usage: bb artifacts bundle [OPTIONS] --out <OUT> <RUN_ID>"));
+    assert!(bundle.contains("--out <OUT>"));
+
     let gate = help(&["gate", "--help"]);
     assert!(gate.contains("--submission <SUBMISSION>"));
     assert!(gate.contains("--change <CHANGE>"));

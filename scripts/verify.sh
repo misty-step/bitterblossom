@@ -121,7 +121,12 @@ rm -rf "$self_drill_tmp"
 # debuggable (last_status_code/last_response in `bb notify list`/`/api/notify`)
 # without ever persisting an unbounded or secret-bearing response body.
 # Ledger/delivery mechanism, not workload judgment.
-SPINE_LOC_CAP=11900
+# Raised 2026-07-04 for bitterblossom-101: `bb artifacts bundle` exports a
+# portable manifest directory from already-recorded attempt artifacts. It is
+# artifact transport/containment mechanism (attempt identity, relative paths,
+# binary/oversized/symlink policy), not workload judgment about artifact
+# meaning.
+SPINE_LOC_CAP=12210
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

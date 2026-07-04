@@ -720,6 +720,7 @@ bb runs retire <id> --reason TEXT                 # blocked_budget -> retired (t
 bb runs export                                    # bb.run_telemetry.v1 JSONL
 bb artifacts list <run-id> [--json]                # top-level artifact files across a run's attempts
 bb artifacts read <run-id> <path> [--json]         # safe text/JSON read, including known nested relative paths; binary/oversized/unsafe paths refused
+bb artifacts bundle <run-id> --out <path>          # portable manifest directory; small text copied, binary/oversized/symlinks manifest-only
 bb dlq list [--json]
 bb dlq replay <id> [--json]
 bb dlq ack <id> --reason TEXT [--json]            # close a superseded pre-execute DLQ

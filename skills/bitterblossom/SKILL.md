@@ -99,7 +99,7 @@ decision says otherwise.
 | Compare candidate model configs | Run at least three candidate tasks, then `bb --config <plane> run model-eval --payload '<json>' --json` |
 | Inspect ledger | `bb --config <plane> runs list --json`; `bb --config <plane> runs show <id> --json` |
 | Export run telemetry | `bb --config <plane> runs export` (`bb.run_telemetry.v1` JSONL) |
-| Inspect run artifacts | `bb --config <plane> artifacts list <run-id> --json` (top-level artifact files); `bb --config <plane> artifacts read <run-id> REPORT.json` (safe text/JSON read, including known nested relative paths; binary, oversized, and traversal paths refused) |
+| Inspect or export run artifacts | `bb --config <plane> artifacts list <run-id> --json` (top-level artifact files); `bb --config <plane> artifacts read <run-id> REPORT.json` (safe text/JSON read, including known nested relative paths; binary, oversized, and traversal paths refused); `bb --config <plane> artifacts bundle <run-id> --out <dir>` (portable `manifest.json` directory; small text copied, binary/oversized/symlink artifacts manifest-only) |
 | Handle pre-execute failures | `bb --config <plane> dlq list --json`; `bb --config <plane> dlq replay <id> --json`; `bb --config <plane> dlq ack <id> --reason <text> --json` to close a superseded DLQ |
 | Handle notification failures | `bb --config <plane> notify list --json`; `bb --config <plane> notify retry --json`; `bb --config <plane> notify ack <id> --reason <text> --json` |
 | Provision scoped OpenRouter child keys | `bb --config <plane> keys mint <agent> --json`; `bb --config <plane> keys rotate <agent> --json`; `bb --config <plane> keys revoke <agent> --json`; `bb --config <plane> keys list --remote --json`; `bb --config <plane> keys sync --all --check --json` |
@@ -226,7 +226,7 @@ Routing:
 | Decision-ready plane health | MCP `bb_status` | `bb status --json` |
 | Config/task inventory | MCP `bb_check`, MCP `bb_tasks` | `bb check --json`; `bb task list --json` |
 | Runs | MCP `bb_runs_list`, MCP `bb_runs_show` | `bb runs list --json`; `bb runs show <id> --json` |
-| Run artifacts | MCP `bb_artifacts_list`, MCP `bb_artifact_read` | `bb artifacts list <id> --json`; `bb artifacts read <id> <path> --json` |
+| Run artifacts | MCP `bb_artifacts_list`, MCP `bb_artifact_read` | `bb artifacts list <id> --json`; `bb artifacts read <id> <path> --json`; `bb artifacts bundle <id> --out <dir>` |
 | Dead letters | MCP `bb_dlq_list` | `bb dlq list --json` |
 | Pre-dispatch readiness | MCP `bb_preflight` | `bb preflight <task> --json` |
 | Submission gate evaluation | MCP `bb_gate` | `bb gate --change <key> --json` |
