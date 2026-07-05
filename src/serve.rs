@@ -22,6 +22,13 @@ const NOTIFY_RETRY_POLL: Duration = Duration::from_secs(60);
 const WATCHDOG_POLL: Duration = Duration::from_secs(60);
 const INGRESS_BIND_ENV: &str = "BB_INGRESS_BIND";
 const API_TOKEN_ENV: &str = "BB_API_TOKEN";
+/// Backlog bitterblossom-926: test-only escape hatch that reports the real
+/// bound port after `tiny_http` binds it, so a test caller can request an
+/// OS-assigned port (`BB_INGRESS_BIND=127.0.0.1:0`) and read back which one
+/// it actually got, instead of pre-choosing a port on a throwaway listener
+/// and hoping nothing else claims it before this process rebinds it -- the
+/// exact TOCTOU window that caused the port-binding race flake.
+const REPORT_PORT_FILE_ENV: &str = "BB_INGRESS_REPORT_PORT_FILE";
 
 pub fn serve(root: &Path) -> Result<()> {
     let plane = Plane::load(root)?;
@@ -446,6 +453,7 @@ fn report_runtime_error(scope: &str, class: &str, error: &anyhow::Error) {
 fn http_loop(root: &Path, bind: &str) -> Result<()> {
     let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
     eprintln!("bb serve listening on {bind}");
+    report_bound_port(&server);
 
     for mut request in server.incoming_requests() {
         let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -488,6 +496,24 @@ fn http_loop(root: &Path, bind: &str) -> Result<()> {
 
 fn ingress_bind(configured: &str) -> String {
     std::env::var(INGRESS_BIND_ENV).unwrap_or_else(|_| configured.to_string())
+}
+
+/// Write the real bound port to `BB_INGRESS_REPORT_PORT_FILE` when set (test
+/// callers only). Written to a sibling `.tmp` path then renamed into place so
+/// a concurrent reader polling for the file never observes a partial write.
+/// Silently a no-op for a non-IP listener (unix socket) or when the env var
+/// is unset -- production binds a fixed configured address and never sets it.
+fn report_bound_port(server: &tiny_http::Server) {
+    let Ok(path) = std::env::var(REPORT_PORT_FILE_ENV) else {
+        return;
+    };
+    let tiny_http::ListenAddr::IP(addr) = server.server_addr() else {
+        return;
+    };
+    let tmp_path = format!("{path}.tmp");
+    if std::fs::write(&tmp_path, addr.port().to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp_path, &path);
+    }
 }
 
 fn enforce_public_bind_token(bind: &str) -> Result<()> {

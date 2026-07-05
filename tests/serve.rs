@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -112,12 +112,27 @@ fn wait_for_exit(mut child: Child, timeout: Duration) -> Output {
     }
 }
 
-fn free_loopback_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// Backlog bitterblossom-926: the old `free_loopback_port` bound an ephemeral
+/// port, immediately read it back, then dropped the listener before `bb
+/// serve` bound the same port number -- a real TOCTOU window under the test
+/// suite's default concurrency (every test here spawns its own `bb serve`).
+/// The fix removes the window entirely: `bb serve` binds `127.0.0.1:0` itself
+/// (already the tests' own `plane.toml` default) and reports the port it
+/// actually got via `BB_INGRESS_REPORT_PORT_FILE`, so there is never a gap
+/// between "a port is free" and "this process holds it".
+fn wait_for_port_file(path: &std::path::Path) -> u16 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(text) = fs::read_to_string(path) {
+            if let Ok(port) = text.trim().parse::<u16>() {
+                return port;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!("bb serve never reported its bound port at {path:?} within 5s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn wait_for_http(port: u16) {
@@ -255,17 +270,18 @@ fn http_oversized_stream_probe(
 fn malformed_webhook_signature_returns_401_and_keeps_server_alive() {
     let dir = tempfile::tempdir().unwrap();
     write_trigger_plane(dir.path());
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_TEST_DEMO", "hunter2")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     let (status, response) = http_request_with_headers(
@@ -290,17 +306,18 @@ fn webhook_body_cap_answers_before_buffering_full_stream() {
     let dir = tempfile::tempdir().unwrap();
     write_trigger_plane(dir.path());
     set_max_body_bytes(dir.path(), 8);
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_TEST_DEMO", "hunter2")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     let (status, response) = http_oversized_stream_probe(port, "POST", "/hooks/demo", None, 9);
@@ -312,17 +329,18 @@ fn external_runs_body_cap_answers_before_buffering_full_stream() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
     set_max_body_bytes(dir.path(), 8);
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_API_TOKEN", "test-token")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     let (status, response) =
@@ -345,17 +363,18 @@ fn dispatch_worker_panic_does_not_strand_task_in_flight() {
     write_dispatch_plane(dir.path());
     let first = enqueue(dir.path(), "demo");
     let second = enqueue(dir.path(), "demo");
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_TEST_PANIC_AFTER_RUN_ID", &first)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     wait_for_run_state(dir.path(), &first, "success", Duration::from_secs(8));
@@ -408,17 +427,18 @@ fn public_bind_with_api_token_starts() {
 fn read_api_requires_bearer_and_rejects_query_token() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_API_TOKEN", "test-token")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     assert_eq!(http_get(port, "/api/runs", None).0, 401);
@@ -613,17 +633,18 @@ fn read_api_exposes_dashboard_observability_routes() {
         .unwrap();
     drop(ledger);
     drop(plane);
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_API_TOKEN", "test-token")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     for route in [
@@ -662,17 +683,18 @@ fn read_api_exposes_dashboard_observability_routes() {
 fn external_runs_api_registers_patches_and_status_surfaces_source() {
     let dir = tempfile::tempdir().unwrap();
     write_plane(dir.path());
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_API_TOKEN", "test-token")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     let body = serde_json::json!({
@@ -747,17 +769,18 @@ fn submissions_read_api_exposes_top_level_identity_summary() {
         .unwrap();
     drop(ledger);
     drop(plane);
-    let port = free_loopback_port();
+    let port_file = dir.path().join("bb-serve-port");
 
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", dir.path().to_str().unwrap(), "serve"])
-        .env("BB_INGRESS_BIND", format!("127.0.0.1:{port}"))
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_API_TOKEN", "test-token")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
     wait_for_http(port);
 
     let (status, body) = http_get(port, "/api/submissions?limit=1", Some("test-token"));
