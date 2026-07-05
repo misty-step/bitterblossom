@@ -73,6 +73,15 @@ impl LocalSession {
             "LOGNAME",
             "SHELL",
             "TZ",
+            // bitterblossom-915: execute() always clear_env=true, so any
+            // workload shelling out to `op` (bash/sh scripts, MCP-server
+            // bootstraps spawned with a minimal env) had no service-account
+            // token and fell back to the 1Password desktop-app integration,
+            // popping an interactive authorize modal on the operator's
+            // screen. Pass it through like PATH so local workloads inherit
+            // the agent-fleet token the same way an interactive zsh shell
+            // does via ~/.zshenv.
+            "OP_SERVICE_ACCOUNT_TOKEN",
         ];
         let mut env: Vec<(String, String)> = PASS
             .iter()
@@ -317,4 +326,38 @@ pub(crate) fn run_with_timeout(
         timed_out,
         termination_reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Guards OP_SERVICE_ACCOUNT_TOKEN, a process-global env var, against
+    // concurrent cargo test threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn workload_env_passes_through_op_service_account_token() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("OP_SERVICE_ACCOUNT_TOKEN", "test-op-token-value");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = LocalSubstrate.acquire("local", tmp.path()).unwrap();
+        let result = session
+            .execute(
+                &[
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "printf '%s' \"$OP_SERVICE_ACCOUNT_TOKEN\"".to_string(),
+                ],
+                None,
+                Duration::from_secs(5),
+                None,
+            )
+            .unwrap();
+
+        std::env::remove_var("OP_SERVICE_ACCOUNT_TOKEN");
+        assert_eq!(result.stdout, "test-op-token-value");
+    }
 }

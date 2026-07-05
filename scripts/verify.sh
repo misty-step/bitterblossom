@@ -133,7 +133,12 @@ rm -rf "$self_drill_tmp"
 # mechanism (a name is never in both lists; forbidden ANTHROPIC_API_KEY/
 # OPENAI_API_KEY checks now cover both), not workload judgment about which
 # secrets a given task actually needs.
-SPINE_LOC_CAP=12280
+# Raised 2026-07-05 for bitterblossom-915: workload_env() now passes
+# OP_SERVICE_ACCOUNT_TOKEN through the local-substrate PASS allowlist like
+# PATH, plus a regression test spawning a real child process to prove the
+# token reaches it. Env-passthrough plumbing and its own proof, not workload
+# judgment about which task needs 1Password.
+SPINE_LOC_CAP=12350
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
