@@ -12,6 +12,7 @@ pub mod notify;
 pub mod preflight;
 pub mod progress;
 pub mod provider_keys;
+pub mod reap;
 pub mod recovery;
 pub mod serve;
 pub mod spec;

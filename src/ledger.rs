@@ -68,6 +68,7 @@ pub struct RunRow {
     pub agent_version: Option<i64>,
     pub config_source_repo: Option<String>,
     pub config_source_ref: Option<String>,
+    pub checkout_path: Option<String>,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<i64>,
     pub created_at: String,
@@ -257,6 +258,11 @@ impl Ledger {
         ensure_column(&conn, "submissions", "head_version", "TEXT")?;
         ensure_column(&conn, "notification_outbox", "last_status_code", "INTEGER")?;
         ensure_column(&conn, "notification_outbox", "last_response", "TEXT")?;
+        // bitterblossom-921: the lane checkout/worktree a run's agent created
+        // for isolation, if it reported one back. Registered separately from
+        // config_source_repo (the stable task-config source) because a lane's
+        // own worktree is disposable plane state, not config.
+        ensure_column(&conn, "runs", "checkout_path", "TEXT")?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
@@ -413,6 +419,31 @@ impl Ledger {
             params![run_id, repo, ref_, now()],
         )?;
         Ok(())
+    }
+
+    /// Record the lane checkout/worktree path a run's agent created for
+    /// isolation, so a later janitor sweep (bitterblossom-921) can find it
+    /// once the run reaches a terminal state. Idempotent: last write wins.
+    pub fn set_run_checkout_path(&self, run_id: &str, path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET checkout_path = ?2, updated_at = ?3 WHERE id = ?1",
+            params![run_id, path, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Terminal runs (success/failure/retired) that registered a checkout
+    /// path -- candidates for the janitor sweep, before any git-level
+    /// safety check (clean tree, fully pushed, age) is applied.
+    pub fn runs_with_reapable_checkout(&self) -> Result<Vec<RunRow>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{RUN_SELECT} WHERE checkout_path IS NOT NULL
+               AND state IN ('success', 'failure', 'retired')"
+        ))?;
+        let rows = stmt
+            .query_map([], row_to_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn record_event(&self, run_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
@@ -1272,7 +1303,7 @@ impl Ledger {
 
 const RUN_SELECT: &str = "SELECT id, task, trigger_kind, idempotency_key, state, state_reason,
   trace_id, parent_run_id, agent_name, agent_version, config_source_repo, config_source_ref,
-  cost_usd, duration_ms,
+  checkout_path, cost_usd, duration_ms,
   created_at, updated_at FROM runs";
 
 const EXTERNAL_RUN_SELECT: &str = "SELECT id, agent, role, repo, brief_hash, plane, status,
@@ -1295,10 +1326,11 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         agent_version: r.get(9)?,
         config_source_repo: r.get(10)?,
         config_source_ref: r.get(11)?,
-        cost_usd: r.get(12)?,
-        duration_ms: r.get(13)?,
-        created_at: r.get(14)?,
-        updated_at: r.get(15)?,
+        checkout_path: r.get(12)?,
+        cost_usd: r.get(13)?,
+        duration_ms: r.get(14)?,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
     })
 }
 

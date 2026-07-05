@@ -147,7 +147,15 @@ rm -rf "$self_drill_tmp"
 # Ingress/dispatch mechanism gated by BB_MCP_ENABLE_DISPATCH -- the read-only
 # tool table stays unconditional -- not workload judgment about what an ad
 # hoc dispatch job should contain.
-SPINE_LOC_CAP=12650
+#
+# Raised again 2026-07-05 for bitterblossom-921: reap.rs (lane-checkout
+# lifecycle janitor) plus the runs.checkout_path column, `bb runs
+# set-checkout-path`, and `bb janitor sweep`. Mechanism, not judgment: a
+# deterministic clean-tree + fully-pushed + idle-grace check, mirroring the
+# existing recovery.rs boot-classification pattern -- it decides nothing
+# about whether the work was good, only whether the checkout can vanish
+# with nothing lost.
+SPINE_LOC_CAP=13000
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

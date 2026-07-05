@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use bitterblossom::{
-    artifacts, budget, canary, dispatch, ledger, mcp, provider_keys, recovery, serve, spec,
+    artifacts, budget, canary, dispatch, ledger, mcp, provider_keys, reap, recovery, serve, spec,
 };
 use clap::{Parser, Subcommand};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -179,6 +179,32 @@ enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
+    /// Lane-checkout lifecycle (bitterblossom-921): sweep finished-lane
+    /// worktrees/clones that leave full repo checkouts with no reaper.
+    Janitor {
+        #[command(subcommand)]
+        command: JanitorCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum JanitorCommand {
+    /// Evaluate (and, with `--apply`, remove) reap-eligible checkouts: every
+    /// non-primary worktree of each `--root` repo, plus every terminal bb
+    /// run with a registered `checkout_path`. Eligible means clean tree, HEAD
+    /// reachable from a remote branch, and idle at least `--grace-hours`.
+    /// Dry-run (report only, no deletion) unless `--apply` is passed.
+    Sweep {
+        /// Primary repo checkout to scan via `git worktree list`. Repeatable.
+        #[arg(long = "root")]
+        roots: Vec<PathBuf>,
+        #[arg(long, default_value_t = 6.0)]
+        grace_hours: f64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -228,6 +254,11 @@ enum RunsCommand {
         #[arg(long)]
         reason: String,
     },
+    /// Record the lane checkout/worktree path a run's own agent created for
+    /// isolation (bitterblossom-921), so `bb janitor sweep` can find it once
+    /// the run reaches a terminal state. The dispatched agent calls this
+    /// itself; the plane never creates worktrees on its behalf.
+    SetCheckoutPath { run_id: String, path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -708,6 +739,19 @@ fn run() -> Result<()> {
                 RunsCommand::Retire { run_id, reason } => {
                     ledger.retire_blocked_run(&run_id, &reason)?;
                     println!("retired {run_id}; kept in ledger history");
+                }
+                RunsCommand::SetCheckoutPath { run_id, path } => {
+                    let canonical = path
+                        .canonicalize()
+                        .with_context(|| format!("checkout path {}", path.display()))?;
+                    if !canonical.is_dir() {
+                        bail!("checkout path {} is not a directory", canonical.display());
+                    }
+                    ledger.set_run_checkout_path(&run_id, &canonical.to_string_lossy())?;
+                    println!(
+                        "recorded checkout path for {run_id}: {}",
+                        canonical.display()
+                    );
                 }
                 RunsCommand::Export => {
                     for line in bitterblossom::telemetry::export_all(&plane, &ledger)? {
@@ -1293,6 +1337,43 @@ fn run() -> Result<()> {
             McpCommand::Serve => {
                 drop(ledger);
                 mcp::serve_stdio(&plane)?;
+            }
+        },
+        Command::Janitor { command } => match command {
+            JanitorCommand::Sweep {
+                roots,
+                grace_hours,
+                apply,
+                json,
+            } => {
+                let candidates = reap::sweep(&ledger, &roots, grace_hours, apply)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&candidates)?);
+                } else {
+                    let removed = candidates.iter().filter(|c| c.removed).count();
+                    let eligible = candidates.iter().filter(|c| c.eligible).count();
+                    for c in &candidates {
+                        let mark = if c.removed {
+                            "removed"
+                        } else if c.eligible {
+                            "eligible"
+                        } else {
+                            "refused"
+                        };
+                        println!("{mark:8} [{}] {} -- {}", c.source, c.path, c.reason);
+                    }
+                    println!(
+                        "{} candidate(s), {} eligible, {} removed{}",
+                        candidates.len(),
+                        eligible,
+                        removed,
+                        if apply {
+                            ""
+                        } else {
+                            " (dry run, pass --apply to remove)"
+                        }
+                    );
+                }
             }
         },
     }
