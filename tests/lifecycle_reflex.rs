@@ -215,6 +215,70 @@ fn canary_triage_task_is_report_only_sprite_reflex_contract() {
 }
 
 #[test]
+fn canary_remediate_is_a_separate_pr_only_authority_step_from_canary_triage() {
+    let plane = Plane::load(&public_plane_root()).unwrap();
+    let triage = plane.task("canary-triage").unwrap();
+    let remediate = plane.task("canary-remediate").unwrap();
+
+    // Authority separation: distinct task, distinct agent, distinct rollout
+    // authority -- canary-triage's report-only contract is untouched by
+    // canary-remediate's existence (same assertions as the report-only test
+    // above still hold for `triage` in this same process).
+    assert_ne!(remediate.agent_name, triage.agent_name);
+    assert_eq!(
+        triage.spec.rollout.authority.as_deref(),
+        Some("report-only")
+    );
+    assert_eq!(remediate.spec.rollout.authority.as_deref(), Some("PR-only"));
+    assert_eq!(
+        remediate.spec.rollout.scorecard.as_deref(),
+        Some("docs/rollout-scorecards.md#canary-remediate-pr-only-backlog-115")
+    );
+
+    assert_eq!(remediate.agent_name, "canary-remediator");
+    assert_eq!(remediate.agent.harness, "pi");
+    assert_eq!(remediate.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(remediate.agent.role.as_deref(), Some("builder"));
+    assert!(remediate.agent.secrets.contains(&"GH_TOKEN".to_string()));
+
+    // Allowlist enforcement: exactly one repo in scope, and it is not the
+    // same repo set canary-triage gets (canary-triage also has bitterblossom
+    // itself checked out for repo-context reading; canary-remediate must not
+    // -- narrower authority, narrower blast radius).
+    assert_eq!(remediate.spec.workspace.repos.len(), 1);
+    assert!(remediate.spec.workspace.repos[0]
+        .url
+        .contains("canary-example"));
+    assert!(triage.spec.workspace.repos.len() > remediate.spec.workspace.repos.len());
+
+    // Manual-dispatch only at this authority level: no webhook trigger, and
+    // the agent's own policy would refuse binding one even if a task tried.
+    assert_eq!(remediate.spec.triggers.len(), 1);
+    assert!(matches!(remediate.spec.triggers[0], TriggerSpec::Manual));
+
+    // PR-only artifact/report contract and Red Lines, verbatim in the card
+    // the harness actually receives.
+    for required in [
+        "PR-only",
+        "already-investigated",
+        "never investigate an incident from scratch",
+        "exactly one new branch",
+        "exactly one pull request",
+        "No merges, no deploys",
+        "resolving, acknowledging, annotating",
+        "second active pull request",
+        "this task's declared allowlist",
+        "bb.canary_remediation.report.v1",
+        "\"pr_opened|blocked|duplicate|no_action\"",
+        "\"merged\": false",
+        "\"deployed\": false",
+        "\"incident_annotated\": false",
+    ] {
+        assert!(remediate.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
 fn incident_triage_task_is_glm_command_responder_contract() {
     let plane = Plane::load(&public_plane_root()).unwrap();
     let task = plane.task("incident-triage").unwrap();

@@ -130,6 +130,46 @@ Required artifacts:     REPORT.json
 Operator approval needed for next level: yes
 ```
 
+### canary-remediate (PR-only) — backlog 115
+
+The next authority step after `canary-triage` proves report-only investigation
+is trustworthy. A separate task and agent from `canary-triage` (never the
+same authority level doing both jobs) that consumes an existing, `actionable`
+`canary-triage` report and opens one bounded fix PR — it never investigates
+an incident from scratch. Manual-dispatch only at this level: no webhook
+trigger is wired in `task.toml`, and `canary-remediator`'s own
+`policy.trigger_bindings` only declares `manual`. Neither is a mechanical
+guarantee the plane enforces cross-field today — `bb check` does not verify
+a task's declared triggers against its agent's `trigger_bindings`, so this is
+a config convention this task family follows, not a load-time gate (matching
+`canary-triage`'s own precedent: card-level authority is prose the agent
+follows, same as "never mutate Canary" there). Scoped to an explicit repo
+allowlist declared in the task's `workspace.repos` (currently one repo) —
+BB itself only provisions/checks out that one repo into the workspace at
+dispatch time, but the sprite harness still runs in an unrestricted remote
+shell with `GH_TOKEN` exported as an env var; the real boundary on what the
+agent can *reach* is whatever repos that token has access to. Keeping
+`GH_TOKEN` narrowly scoped to the allowlisted repo(s) is exactly why
+bitterblossom-925's bot-identity provisioning is a hard prerequisite before
+this task's first live dispatch, not an optional hardening step.
+
+```text
+Task family:            canary-remediate
+Current authority:      PR-only
+Allowed actions:        read prior canary-triage REPORT.json, clone/checkout only the allowlisted repo(s), create one branch, make a minimal targeted fix, open exactly one pull request, write REPORT.json describing the PR
+Forbidden actions:      merges, deploys, incident annotation/ack/resolution, park/unpark, run resolution, a second active PR for the same incident fingerprint, touching any repo outside the allowlist, investigating from scratch
+Evidence metrics:       every PR traces to a prior actionable canary-triage report; 0 merges; 0 deploys; 0 incident mutations; 0 repos touched outside the allowlist; at most one active PR per incident fingerprint
+Promotion trigger:      scorecard green + operator approval makes guarded-land (merge behind CI/gate/review/allowlist) eligible for this repo family
+Rollback / hold trigger: any merge/deploy/incident-mutation attempt, any PR against a non-allowlisted repo, or a duplicate-PR storm
+Budget / cost cap:      per-run and daily caps from the task's budget block (3 runs/day, $1.25/run at this authority level)
+Duplicate-suppression key: agent-verified only, not plane-enforced -- the card instructs checking for an existing open PR against the allowlisted repo before branching; unlike canary-triage's ledger-level idempotency key (dedupe by delivery id at ingress), there is no BB-mechanism backing this today because no webhook trigger exists at this authority level to key off
+Required artifacts:     REPORT.json
+Bot identity / token provisioning: canary-remediator declares GH_TOKEN like canary-triager; per bitterblossom-925, provisioning a dedicated bot/app identity scoped to the allowlisted repo(s) (not the operator's personal token, and not a token with broader reach than the allowlist) is an operator-gated prerequisite before this task's first live dispatch, same as canary-triage's
+Token rotation:         follows whatever rotation policy bitterblossom-925 establishes for the shared bot identity across canary-triager/canary-remediator
+Rollback / stop conditions: any single forbidden action (merge, deploy, incident mutation, out-of-allowlist repo touch) is an immediate hold — revert this task to report-only-equivalent (no dispatch) until root-caused
+Operator approval needed for next level: yes
+```
+
 ### backlog-chewer-dry-run (dry-run) — backlog 082
 
 ```text
