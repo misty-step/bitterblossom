@@ -1,0 +1,32 @@
+{
+  "schema": "bb.docs_sync_pr.report.v1",
+  "repo": "example-org/product-api",
+  "source_report": "run:a1b2c3d4e5f6",
+  "duplicate_check": {
+    "existing_open_pr": false,
+    "checked_via": "gh pr list --repo example-org/product-api --state open --search \"docs-sync\""
+  },
+  "pr": {
+    "opened": true,
+    "number": 123,
+    "url": "https://github.com/example-org/product-api/pull/123",
+    "branch": "bb/docs-sync/2026-07-05-api-response-field"
+  },
+  "changed_files": [
+    "docs/api.md"
+  ],
+  "forbidden_actions_confirmed": [
+    "no merge attempted",
+    "no deploy attempted",
+    "no files touched outside recommended_changes",
+    "no second PR opened for this source report"
+  ],
+  "artifacts": [
+    "REPORT.json"
+  ],
+  "cost_usd": 0.31,
+  "residual_risk": [
+    "The sample did not open a live pull request.",
+    "A human reviewer must approve and merge the PR; this task has no merge authority."
+  ]
+}

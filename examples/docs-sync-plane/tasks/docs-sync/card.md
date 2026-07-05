@@ -20,9 +20,14 @@ patch guidance, but mutations stay outside this template.
 
 ## Output
 
-Write `REPORT.json` using the shape in `samples/REPORT.json`: schema, repo,
-source_ref, source_sha, docs_targets, drift_findings, recommended_changes,
-skipped_mutations, and residual_risk.
+Write `REPORT.json` using the shape in `samples/REPORT.json` (schema
+`bb.docs_sync.report.v2`): `schema`, `repo`, `trigger` (kind plus the
+manual/cron/webhook reference that caused this run: `source_ref`,
+`source_sha`, and `delivery_id` when triggered by a webhook), `changed_files`
+(the source files that motivated this check), `docs_targets`,
+`drift_findings`, `recommended_changes`, `skipped_mutations`, `artifacts`
+(released artifact paths, always includes `REPORT.json`), `cost_usd`, and
+`residual_risk`.
 
 ## Receipt
 

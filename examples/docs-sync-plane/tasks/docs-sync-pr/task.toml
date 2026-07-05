@@ -1,0 +1,21 @@
+agent = "docs-sync-writer"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[rollout]
+authority = "PR-only"
+scorecard = "docs/rollout-scorecards.md (docs-sync-pr, PR-only, backlog 120)"
+
+[workspace]
+host = "example-org/docs-lane-1"
+repos = [
+  { url = "https://github.com/example-org/product-api.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 20
+max_runs_per_day = 3
+max_cost_per_run_usd = 0.75
+
+[[trigger]]
+kind = "manual"

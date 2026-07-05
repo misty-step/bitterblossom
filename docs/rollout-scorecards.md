@@ -186,6 +186,62 @@ Required artifacts:     REPORT.json (plan artifact)
 Operator approval needed for next level: yes
 ```
 
+### docs-sync (report-only) — backlog 120
+
+Extends the `examples/docs-sync-plane` starter into a production-shaped
+workload for the `document` skill: watches an explicitly allowlisted repo
+(`workspace.repos`) on PR-merge (webhook, filtered to the allowlisted repo
+and `refs/heads/main`, bot-sender exclusions, delivery-id dedupe) or a weekly
+cron, and writes a structured drift report. This level never edits a file;
+`docs-sync-pr` below is the separate PR-only task that acts on its reports.
+
+```text
+Task family:            docs-sync
+Current authority:      report-only
+Allowed actions:        inspect the changed repo/ref named in EVENT.json or the manual payload, identify docs/runbook/operator-contract drift, write REPORT.json naming source repo, trigger, changed files, stale docs targets, recommended patch, artifacts, cost, and residual risk
+Forbidden actions:      edit files, push branches, open PRs, create issues, change labels, post comments
+Evidence metrics:       useful, reviewer-actionable reports across the allowlisted repo(s); 0 mutations attempted; dedupe holds; spend within cap
+Promotion trigger:      scorecard green makes docs-sync-pr (PR-only) eligible for operator approval on that repo family
+Rollback / hold trigger: any report that claims a mutation happened, or a dedupe storm
+Budget / cost cap:      12 runs/day, $0.50/run (examples/docs-sync-plane/tasks/docs-sync/task.toml budget block)
+Duplicate-suppression key: webhook delivery id (header:X-GitHub-Delivery), ledger-enforced at ingress -- same mechanism class as canary-triage's incident-fingerprint dedupe
+Required artifacts:     REPORT.json (schema bb.docs_sync.report.v2)
+Operator approval needed for next level: yes
+```
+
+### docs-sync-pr (PR-only) — backlog 120
+
+The PR-only companion to `docs-sync`, following `canary-remediate`'s
+(backlog 115) exact precedent: a separate task and agent (never the same
+authority level doing both jobs) that consumes an existing, actionable
+`docs-sync` report and opens one bounded docs PR -- it never investigates
+drift from scratch. Manual-dispatch only: no cron or webhook trigger is
+wired in `task.toml`, and `docs-sync-writer`'s own `policy.trigger_bindings`
+declares only `manual`. Scoped to a narrower repo allowlist than the
+report-only watcher (one repo, not two) -- BB itself only provisions that
+one repo into the workspace at dispatch time, but the sprite harness still
+runs in an unrestricted remote shell with `GH_TOKEN` exported as an env var,
+so the real reach boundary is whatever repos that token can access. Per
+canary-remediate's precedent, a dedicated bot/app identity scoped to the
+allowlisted repo (bitterblossom-925) is a hard prerequisite before this
+task's first live dispatch, not an optional hardening step.
+
+```text
+Task family:            docs-sync-pr
+Current authority:      PR-only
+Allowed actions:        read a prior docs-sync REPORT.json, clone/checkout only the allowlisted repo, create one branch, edit only the files that report's recommended_changes named, open exactly one pull request, write REPORT.json describing the PR
+Forbidden actions:      merges, deploys, a second active PR for the same source report, editing any file outside the source report's recommended_changes, touching any repo outside the allowlist, investigating drift from scratch
+Evidence metrics:       every PR traces to a prior actionable docs-sync report; 0 merges; 0 deploys; 0 files touched outside recommended_changes; 0 repos touched outside the allowlist; at most one active PR per source report
+Promotion trigger:      scorecard green + operator approval makes guarded-land (merge behind CI/gate/review/allowlist) eligible for this repo family
+Rollback / hold trigger: any merge/deploy attempt, any PR against a non-allowlisted repo, any file edited outside recommended_changes, or a duplicate-PR storm
+Budget / cost cap:      3 runs/day, $0.75/run (examples/docs-sync-plane/tasks/docs-sync-pr/task.toml budget block)
+Duplicate-suppression key: agent-verified only, not plane-enforced -- the card instructs checking for an existing open PR against the allowlisted repo before branching (gh pr list --repo <repo> --state open --search "docs-sync"); same as canary-remediate, because no webhook trigger exists at this authority level to key a ledger-level dedupe off
+Required artifacts:     REPORT.json (schema bb.docs_sync_pr.report.v1)
+Bot identity / token provisioning: docs-sync-writer declares GH_TOKEN like docs-watcher; per bitterblossom-925, provisioning a dedicated bot/app identity scoped to the allowlisted repo (not the operator's personal token, and not a token with broader reach than the allowlist) is an operator-gated prerequisite before this task's first live dispatch, same as canary-remediate's
+Rollback / stop conditions: any single forbidden action (merge, deploy, out-of-scope file edit, out-of-allowlist repo touch) is an immediate hold -- revert this task to report-only-equivalent (no dispatch) until root-caused
+Operator approval needed for next level: yes
+```
+
 ### fix-prompt-generator (report-only) — backlog 062
 
 ```text

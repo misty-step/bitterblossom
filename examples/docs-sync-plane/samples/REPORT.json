@@ -1,8 +1,15 @@
 {
-  "schema": "bb.docs_sync.report.v1",
+  "schema": "bb.docs_sync.report.v2",
   "repo": "example-org/product-api",
-  "source_ref": "refs/heads/main",
-  "source_sha": "2222222222222222222222222222222222222222",
+  "trigger": {
+    "kind": "webhook",
+    "source_ref": "refs/heads/main",
+    "source_sha": "2222222222222222222222222222222222222222",
+    "delivery_id": "11111111-2222-3333-4444-555555555555"
+  },
+  "changed_files": [
+    "src/api/routes.rs"
+  ],
   "docs_targets": [
     "README.md",
     "docs/operations.md",
@@ -23,6 +30,10 @@
   "skipped_mutations": [
     "No files were edited because this template is report-only."
   ],
+  "artifacts": [
+    "REPORT.json"
+  ],
+  "cost_usd": 0.014,
   "residual_risk": [
     "The sample did not inspect a live repository checkout.",
     "A human should confirm whether the API change is user-facing."

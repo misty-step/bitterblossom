@@ -2,6 +2,10 @@ agent = "docs-watcher"
 substrate = "sprites"
 required_artifacts = ["REPORT.json"]
 
+[rollout]
+authority = "report-only"
+scorecard = "docs/rollout-scorecards.md (docs-sync, report-only, backlog 120)"
+
 [workspace]
 host = "example-org/docs-lane-1"
 repos = [
