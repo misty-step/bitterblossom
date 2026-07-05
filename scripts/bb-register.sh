@@ -40,7 +40,38 @@ curl_config() {
     printf 'url = "%s"\n' "$url"
     printf 'header = "Authorization: Bearer %s"\n' "$BB_API_TOKEN"
     printf '%s\n' 'header = "Content-Type: application/json"'
+    printf '%s\n' 'write-out = "%{http_code}"'
   }
+}
+
+# Surface a non-2xx registration response on stderr without ever touching
+# BB_API_TOKEN -- fire-and-forget stays fire-and-forget (never changes the
+# script's exit code), but a lane or human tailing stderr can now see that
+# registration actually failed instead of silently getting no run id.
+# "000"/empty http_status means curl never got an HTTP response at all
+# (unreachable plane, DNS failure, timeout) -- that failure mode is
+# intentionally silent, as it always has been.
+warn_registration_failed() {
+  op=$1
+  http_status=$2
+  body_file=$3
+  detail=$(python3 - "$body_file" <<'PY' 2>/dev/null
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        value = json.load(handle)
+    message = value.get("error") or value.get("message") or ""
+except Exception:
+    message = ""
+print(str(message)[:200])
+PY
+)
+  if [ -n "$detail" ]; then
+    printf 'bb-register: %s registration failed (HTTP %s): %s\n' "$op" "$http_status" "$detail" >&2
+  else
+    printf 'bb-register: %s registration failed (HTTP %s)\n' "$op" "$http_status" >&2
+  fi
 }
 
 write_start_payload() {
@@ -94,8 +125,13 @@ PY
 
 post_start() {
   write_start_payload >/dev/null 2>&1 || exit 0
-  curl_config POST "$base_url/api/external-runs" \
-    | curl --config - --data-binary "@$payload" -o "$response" >/dev/null 2>&1 || exit 0
+  http_status=$(curl_config POST "$base_url/api/external-runs" \
+    | curl --config - --data-binary "@$payload" -o "$response" 2>/dev/null) || http_status=""
+  case "$http_status" in
+    2??) ;;
+    ""|000) exit 0 ;;
+    *) warn_registration_failed "start" "$http_status" "$response"; exit 0 ;;
+  esac
   [ "${BB_REGISTER_PRINT_ID:-1}" = "1" ] || exit 0
   python3 - "$response" <<'PY' 2>/dev/null || true
 import json, sys
@@ -112,8 +148,13 @@ patch_status() {
   id=${2:-${BB_REGISTER_ID:-}}
   [ -n "$id" ] || exit 0
   write_patch_payload "$status" >/dev/null 2>&1 || exit 0
-  curl_config PATCH "$base_url/api/external-runs/$id" \
-    | curl --config - --data-binary "@$payload" -o "$response" >/dev/null 2>&1 || exit 0
+  http_status=$(curl_config PATCH "$base_url/api/external-runs/$id" \
+    | curl --config - --data-binary "@$payload" -o "$response" 2>/dev/null) || http_status=""
+  case "$http_status" in
+    2??) ;;
+    ""|000) ;;
+    *) warn_registration_failed "update ($status)" "$http_status" "$response" ;;
+  esac
 }
 
 case "${1:-start}" in
