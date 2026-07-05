@@ -73,6 +73,30 @@ fn check_in_sends_secret_and_body_through_curl_config_stdin() {
 }
 
 #[test]
+fn check_in_fleet_heartbeat_targets_the_fleet_monitor() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let stdin_log = dir.path().join("stdin");
+    let stub = dir.path().join("curl-stub.sh");
+    fs::write(
+        &stub,
+        format!("#!/bin/sh\ncat > '{}'\nexit 0\n", stdin_log.display()),
+    )
+    .unwrap();
+    make_executable(&stub);
+
+    unset_canary_env();
+    std::env::set_var("CANARY_ENDPOINT", "https://canary.example.test/");
+    std::env::set_var("CANARY_INGEST_KEY", "secret-ingest-key");
+    std::env::set_var("BB_NOTIFY_BIN", &stub);
+    bitterblossom::canary::check_in_fleet_heartbeat();
+
+    let stdin = fs::read_to_string(stdin_log).unwrap();
+    assert!(stdin.contains("\\\"monitor\\\":\\\"bitterblossom-plane-fleet-heartbeat\\\""));
+    unset_canary_env();
+}
+
+#[test]
 fn delivery_failure_returns_after_bounded_curl_exit() {
     let _guard = ENV_LOCK.lock().unwrap();
     unset_canary_env();

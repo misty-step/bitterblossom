@@ -6,6 +6,14 @@ use std::time::Duration;
 const CHECKIN_INTERVAL: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT_SECONDS: u64 = 10;
 const MONITOR_NAME: &str = "bb-plane";
+// Proof monitor created by the 2026-07-02 factory-fleet-enrollment sweep
+// (docs/architecture/factory-fleet-enrollment-2026-07-02.md in the canary
+// repo). That sweep sent one manual check-in via an admin key and left the
+// recurring send as an app-lane residual, which is why it went overdue on
+// 2026-07-04 with nobody noticing until canary-908's /readyz probe caught it
+// (bitterblossom-112). Folding it into the same health loop as MONITOR_NAME
+// means it can no longer go silent without bb-plane also going silent.
+const FLEET_HEARTBEAT_MONITOR_NAME: &str = "bitterblossom-plane-fleet-heartbeat";
 
 static DISABLED_WARNING: Once = Once::new();
 
@@ -26,13 +34,21 @@ fn config_or_warn() -> Option<(String, String)> {
 }
 
 pub fn check_in() {
+    send_check_in(MONITOR_NAME, "BB plane heartbeat");
+}
+
+pub fn check_in_fleet_heartbeat() {
+    send_check_in(FLEET_HEARTBEAT_MONITOR_NAME, "BB plane fleet heartbeat");
+}
+
+fn send_check_in(monitor: &str, summary: &str) {
     let Some((ep, key)) = config_or_warn() else {
         return;
     };
     let payload = serde_json::json!({
-        "monitor": MONITOR_NAME,
+        "monitor": monitor,
         "status": "alive",
-        "summary": "BB plane heartbeat",
+        "summary": summary,
         "ttl_ms": 120_000,
     });
     deliver(&ep, &key, "/api/v1/check-ins", &payload.to_string());
@@ -60,6 +76,7 @@ pub fn start_health_loop() {
         .spawn(move || loop {
             std::thread::sleep(CHECKIN_INTERVAL);
             check_in();
+            check_in_fleet_heartbeat();
         })
         .ok();
 }
