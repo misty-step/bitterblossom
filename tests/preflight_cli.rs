@@ -123,6 +123,55 @@ fn preflight_reports_missing_secret() {
 }
 
 #[test]
+fn preflight_reports_missing_optional_secret_distinctly_from_missing_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_path = dir.path();
+    mkdirs(root_path, &["demo"]);
+    fs::write(root_path.join("plane.toml"), "dev = true\n").unwrap();
+    let stub = root_path.join("stub.sh");
+    write_executable(&stub, "#!/bin/sh\ncat > /dev/null\n");
+    fs::write(
+        root_path.join("agents/stub.toml"),
+        format!(
+            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"{}\"\noptional_secrets = [\"BB_PREFLIGHT_TEST_MISSING_OPTIONAL\"]\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root_path.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "--config",
+            root_path.to_str().unwrap(),
+            "preflight",
+            "demo",
+            "--json",
+        ])
+        .env_remove("BB_PREFLIGHT_TEST_MISSING_OPTIONAL")
+        .output()
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let findings = doc["findings"].as_array().unwrap();
+    assert!(
+        !findings.iter().any(|f| f["kind"] == "missing_secret"),
+        "an optional secret gap must never surface as the blocking missing_secret kind: {findings:?}"
+    );
+    let finding = findings
+        .iter()
+        .find(|f| f["kind"] == "missing_optional_secret")
+        .expect("missing_optional_secret finding");
+    assert!(finding["detail"]
+        .as_str()
+        .unwrap()
+        .contains("BB_PREFLIGHT_TEST_MISSING_OPTIONAL"));
+}
+
+#[test]
 fn preflight_reports_blank_secret() {
     let dir = tempfile::tempdir().unwrap();
     let root_path = dir.path();

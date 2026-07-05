@@ -71,35 +71,56 @@ pub fn run(plane: &Plane, task: Option<&str>, storm: bool) -> Result<Report> {
     }
 }
 
+/// `kind` is `"missing_secret"` (blocking: dispatch will dead-letter) or
+/// `"missing_optional_secret"` (informational: backlog 925 -- the run
+/// degrades instead of failing, but an operator should still be able to see
+/// the gap in `bb preflight` without reading the ledger).
+fn check_secrets(
+    plane: &Plane,
+    t: &Task,
+    names: &[String],
+    kind: &'static str,
+    findings: &mut Vec<Finding>,
+) {
+    for name in names {
+        match crate::provider_keys::resolve_secret_for_task(plane, t, name) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(e) => {
+                findings.push(simple_finding(
+                    &t.name,
+                    "missing_provider_key",
+                    format!("{e:#}"),
+                ));
+                continue;
+            }
+        }
+        if std::env::var(name)
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+        {
+            findings.push(simple_finding(
+                &t.name,
+                kind,
+                format!("declared secret '{name}' is not set in the environment"),
+            ));
+        }
+    }
+}
+
 fn check_tasks<'a>(plane: &Plane, tasks: impl IntoIterator<Item = &'a Task>) -> Report {
     let mut tasks_checked = Vec::new();
     let mut findings = Vec::new();
     for t in tasks {
         tasks_checked.push(t.name.clone());
-        for name in &t.agent.secrets {
-            match crate::provider_keys::resolve_secret_for_task(plane, t, name) {
-                Ok(Some(_)) => continue,
-                Ok(None) => {}
-                Err(e) => {
-                    findings.push(simple_finding(
-                        &t.name,
-                        "missing_provider_key",
-                        format!("{e:#}"),
-                    ));
-                    continue;
-                }
-            }
-            if std::env::var(name)
-                .map(|value| value.trim().is_empty())
-                .unwrap_or(true)
-            {
-                findings.push(simple_finding(
-                    &t.name,
-                    "missing_secret",
-                    format!("declared secret '{name}' is not set in the environment"),
-                ));
-            }
-        }
+        check_secrets(plane, t, &t.agent.secrets, "missing_secret", &mut findings);
+        check_secrets(
+            plane,
+            t,
+            &t.agent.optional_secrets,
+            "missing_optional_secret",
+            &mut findings,
+        );
         if t.agent.harness == "command" && t.spec.substrate == "local" {
             if let Some(bin) = &t.agent.bin {
                 if let Some(detail) = unspawnable_detail(bin) {

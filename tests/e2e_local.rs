@@ -332,6 +332,89 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
 }
 
 #[test]
+fn missing_optional_secret_degrades_the_run_instead_of_dead_lettering_it() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("BB_TEST_OPTIONAL");
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub_path = root.join("stub-pi.sh");
+    write_executable(&stub_path, CLAUDE_STUB);
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"claude\"\nmodel = \"m\"\nbin = \"{}\"\noptional_secrets = [\"BB_TEST_OPTIONAL\"]\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+
+    // The whole point: an unset OPTIONAL secret never dead-letters the run.
+    // A REQUIRED secret in this exact shape would fail at "acquired" before
+    // the harness ever spawned (see dispatch.rs's hard-required path).
+    assert_eq!(run.state, "success", "{:?}", run.state_reason);
+}
+
+#[test]
+fn present_optional_secret_still_reaches_the_workload_when_set() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    const PI_ENV_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"type":"turn_end"}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"optional=[%s]"}],"usage":{"input":1,"output":2,"cost":{"total":0.0001}}}}\n' "$BB_TEST_OPTIONAL"
+"#;
+    std::env::set_var("BB_TEST_OPTIONAL", "present-value");
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/demo")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub_path = root.join("stub-pi.sh");
+    write_executable(&stub_path, PI_ENV_STUB);
+    fs::write(
+        root.join("agents/stub.toml"),
+        format!(
+            "harness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\noptional_secrets = [\"BB_TEST_OPTIONAL\"]\n",
+            stub_path.display()
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("tasks/demo/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success", "{:?}", run.state_reason);
+
+    let attempts = ledger.attempts(&run_id).unwrap();
+    let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    let result = fs::read_to_string(artifact_dir.join("result.md")).unwrap();
+    assert!(result.contains("optional=[present-value]"), "{result}");
+    std::env::remove_var("BB_TEST_OPTIONAL");
+}
+
+#[test]
 fn workspace_clone_can_use_declared_gh_token_without_url_credentials() {
     let _guard = ENV_LOCK.lock().unwrap();
     const COMMAND_STUB: &str = r#"#!/bin/sh

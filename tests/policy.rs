@@ -46,6 +46,33 @@ fn anthropic_or_openai_api_keys_are_forbidden_secrets() {
 }
 
 #[test]
+fn anthropic_or_openai_api_keys_are_forbidden_as_optional_secrets_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\noptional_secrets = [\"ANTHROPIC_API_KEY\"]\n",
+        MANUAL,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("forbidden"), "{err}");
+}
+
+#[test]
+fn a_secret_cannot_be_declared_both_required_and_optional() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\nsecrets = [\"GH_TOKEN\"]\noptional_secrets = [\"GH_TOKEN\"]\n",
+        MANUAL,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("both required and optional"),
+        "{err}"
+    );
+}
+
+#[test]
 fn reflex_triggers_require_api_auth_agents() {
     let dir = tempfile::tempdir().unwrap();
     // claude defaults to subscription; a cron (reflex) trigger must fail.

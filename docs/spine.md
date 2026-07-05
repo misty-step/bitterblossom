@@ -97,6 +97,9 @@ auth = "api"                      # api | subscription (defaults by harness)
 bin = "pi"                        # optional: override the harness binary path
 args = []                         # optional: extra CLI args appended verbatim
 secrets = ["OPENROUTER_API_KEY"]  # env names resolved per-exec, never persisted
+optional_secrets = ["GH_TOKEN"]   # backlog 925: unresolvable -> degrades the run
+                                  # (absent from env) instead of dead-lettering it;
+                                  # a name is never in both lists at once
 
 skills = [                         # curated role contract; v1 records/exposes,
   "harness-kit/code-review#coordinator", # but does not project skills at runtime
@@ -761,12 +764,14 @@ output is a `failure` with raw output preserved on the attempt row — never
 a silent zero-cost success.
 
 `bb preflight` is a read-only pre-dispatch check, not a gate: it reports
-missing declared secrets, missing policy-bound provider keys, and unspawnable
-`command`-harness binaries (the `/bin/true`-missing and missing-`GH_TOKEN`
-storm classes) for one task or the submission-storm member set, before dispatch
-creates run rows. Secret and provider-key checks apply on every substrate;
-binary checks run on `substrate = "local"` directly and on sprite tasks through
-a read-only `sprite exec` probe against the declared host.
+missing declared secrets, missing optional secrets (backlog 925 —
+`missing_optional_secret`, informational: dispatch will still run degraded,
+not dead-letter), missing policy-bound provider keys, and unspawnable
+`command`-harness binaries for one task or the submission-storm member set,
+before dispatch creates run rows. Secret and provider-key checks apply on
+every substrate; binary checks run on `substrate = "local"` directly and on
+sprite tasks through a read-only `sprite exec` probe against the declared
+host.
 For sprite tasks, bare command names resolve on the remote PATH; path-like
 command bins are checked from the task workspace path when that workspace
 already exists, without preparing, cloning, or installing anything.

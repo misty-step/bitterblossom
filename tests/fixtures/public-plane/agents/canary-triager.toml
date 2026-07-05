@@ -3,7 +3,11 @@ role = "diagnoser"
 harness = "pi"
 model = "deepseek/deepseek-v4-flash"
 auth = "api"
-secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "CANARY_ENDPOINT", "CANARY_API_KEY"]
+secrets = ["OPENROUTER_API_KEY", "CANARY_ENDPOINT", "CANARY_API_KEY"]
+# Backlog 925: GH_TOKEN is read-only repo context, not load-bearing for the
+# report-only contract -- the card already writes a degraded/blocked report
+# when it's absent instead of needing BB to refuse dispatch outright.
+optional_secrets = ["GH_TOKEN"]
 skills = [
   "harness-kit/diagnose#incident-triage",
   "harness-kit/canary#report-only-responder",
