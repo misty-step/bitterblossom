@@ -1,0 +1,21 @@
+version = 1
+role = "builder"
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "CANARY_ENDPOINT", "CANARY_API_KEY"]
+skills = [
+  "harness-kit/diagnose#incident-triage",
+  "harness-kit/deliver#bounded-fix-pr",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "edit"
+provider_key_name = "canary-remediator"
+provider_spend_cap_usd = 1.25
+trigger_bindings = ["manual"]
+tool_action_cap = 100
+output_bytes_cap = 50000
+wall_clock_minutes = 30
+side_effect_policy = "kill"
