@@ -13,9 +13,8 @@ use clap::{Parser, Subcommand};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use ledger::{IngressRequest, Ledger};
-use spec::{Plane, TriggerSpec};
+use spec::Plane;
 
-const DISPATCH_BRIEF_MAX_BYTES: u64 = 1_048_576;
 const TASK_UNPARK_CONFIRMATION_LIMIT: usize = 1;
 
 #[derive(Parser)]
@@ -545,7 +544,7 @@ fn run() -> Result<()> {
             model,
             label,
         } => {
-            let task = default_dispatch_task(&plane)?;
+            let task = dispatch::default_dispatch_task(&plane)?;
             let payload = dispatch_payload(&repo, &brief, model, label)?;
             let outcome = ledger.ingest(IngressRequest {
                 task: &task,
@@ -1322,73 +1321,30 @@ fn start_run_progress(db_path: PathBuf, run_id: String) {
     });
 }
 
-fn default_dispatch_task(plane: &Plane) -> Result<String> {
-    if let Ok(task) = std::env::var("BB_DISPATCH_TASK") {
-        let task_ref = plane
-            .tasks
-            .get(&task)
-            .with_context(|| format!("BB_DISPATCH_TASK names unknown task '{task}'"))?;
-        if !task_accepts_manual(task_ref) {
-            bail!("BB_DISPATCH_TASK task '{task}' has no manual trigger");
-        }
-        return Ok(task);
-    }
-
-    for candidate in ["dispatch", "build"] {
-        if let Some(task) = plane.tasks.get(candidate) {
-            if task_accepts_manual(task) {
-                return Ok(candidate.to_string());
-            }
-        }
-    }
-
-    let manual = plane
-        .tasks
-        .values()
-        .filter(|task| task_accepts_manual(task))
-        .map(|task| task.name.clone())
-        .collect::<Vec<_>>();
-    match manual.as_slice() {
-        [task] => Ok(task.clone()),
-        [] => bail!("no manual dispatch task found; add a `dispatch` or `build` task"),
-        _ => bail!(
-            "multiple manual tasks found ({}); set BB_DISPATCH_TASK",
-            manual.join(", ")
-        ),
-    }
-}
-
-fn task_accepts_manual(task: &spec::Task) -> bool {
-    task.spec
-        .triggers
-        .iter()
-        .any(|trigger| matches!(trigger, TriggerSpec::Manual))
-}
-
+/// CLI-specific wrapper over `dispatch::build_dispatch_job_payload`: reads
+/// the brief file (rejecting an oversized one before ever reading it into
+/// memory) and defaults `label` from the brief's file stem. The shared
+/// builder in the `dispatch` module is what actually assembles the
+/// `bb.dispatch_job.v1` JSON, so the MCP `bb_dispatch` tool produces the
+/// exact same payload shape from its own inline `prompt` argument.
 fn dispatch_payload(
     repo: &Path,
     brief: &Path,
     model: Option<String>,
     label: Option<String>,
 ) -> Result<String> {
-    let repo = repo
-        .canonicalize()
-        .with_context(|| format!("repo path {}", repo.display()))?;
-    if !repo.is_dir() {
-        bail!("repo path {} is not a directory", repo.display());
-    }
     let brief_path = brief
         .canonicalize()
         .with_context(|| format!("brief file {}", brief.display()))?;
     let brief_size = std::fs::metadata(&brief_path)
         .with_context(|| format!("stat brief {}", brief_path.display()))?
         .len();
-    if brief_size > DISPATCH_BRIEF_MAX_BYTES {
+    if brief_size > dispatch::DISPATCH_BRIEF_MAX_BYTES {
         bail!(
             "brief {} is {} bytes; max is {}",
             brief_path.display(),
             brief_size,
-            DISPATCH_BRIEF_MAX_BYTES
+            dispatch::DISPATCH_BRIEF_MAX_BYTES
         );
     }
     let brief_text = std::fs::read_to_string(&brief_path)
@@ -1401,33 +1357,8 @@ fn dispatch_payload(
             .unwrap_or("dispatch")
             .to_string()
     });
-    let branch_slug = slugify_label(&label);
-    Ok(serde_json::json!({
-        "schema_version": "bb.dispatch_job.v1",
-        "repo": repo.to_string_lossy(),
-        "prompt": brief_text,
-        "model": model,
-        "label": label,
-        "branch_slug": branch_slug,
-    })
-    .to_string())
-}
-
-fn slugify_label(label: &str) -> String {
-    let mut out = String::new();
-    for ch in label.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        "dispatch".to_string()
-    } else {
-        out
-    }
+    let branch_slug = dispatch::slugify_label(&label);
+    dispatch::build_dispatch_job_payload(repo, &brief_text, model, label, branch_slug, None)
 }
 
 fn follow_logs(ledger: &Ledger, run_id: &str, follow: bool) -> Result<()> {

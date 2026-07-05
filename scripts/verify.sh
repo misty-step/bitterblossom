@@ -138,7 +138,14 @@ rm -rf "$self_drill_tmp"
 # PATH, plus a regression test spawning a real child process to prove the
 # token reaches it. Env-passthrough plumbing and its own proof, not workload
 # judgment about which task needs 1Password.
-SPINE_LOC_CAP=12350
+# Raised 2026-07-05 for bitterblossom-116: the opt-in mutating MCP bb_dispatch
+# tool plus the dispatch::build_dispatch_job_payload/default_dispatch_task/
+# dispatch_idempotency_key helpers it shares with the CLI `bb dispatch`
+# command (moved out of main.rs so the two entry points cannot drift).
+# Ingress/dispatch mechanism gated by BB_MCP_ENABLE_DISPATCH -- the read-only
+# tool table stays unconditional -- not workload judgment about what an ad
+# hoc dispatch job should contain.
+SPINE_LOC_CAP=12650
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

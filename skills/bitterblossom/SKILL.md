@@ -202,22 +202,32 @@ Useful API mirrors:
 - `GET /api/notify`
 - `GET /api/submissions`
 
-## MCP (read-only)
+## MCP (read-only by default, one opt-in mutating tool)
 
-`bb --config <plane> mcp serve` runs a read-only MCP stdio server: JSON-RPC
-2.0 over stdin/stdout, no network listener, no external credentials for
-local-plane inspection. Consume it MCP-first where a host agent supports it;
-fall back to `bb ... --json` for anything the MCP tool table does not yet
-cover. The registered read tools (`bb_status`, `bb_check`, `bb_tasks`,
-`bb_runs_list`, `bb_runs_show`, `bb_artifacts_list`, `bb_artifact_read`,
-`bb_dlq_list`, `bb_preflight`, `bb_gate`) return the same shapes as their
-CLI/API counterparts — MCP is a typed adapter, not a second implementation.
+`bb --config <plane> mcp serve` runs an MCP stdio server: JSON-RPC 2.0 over
+stdin/stdout, no network listener, no external credentials for local-plane
+inspection. Consume it MCP-first where a host agent supports it; fall back to
+`bb ... --json` for anything the MCP tool table does not yet cover. The
+registered read tools (`bb_status`, `bb_check`, `bb_tasks`, `bb_runs_list`,
+`bb_runs_show`, `bb_artifacts_list`, `bb_artifact_read`, `bb_dlq_list`,
+`bb_preflight`, `bb_gate`) return the same shapes as their CLI/API
+counterparts — MCP is a typed adapter, not a second implementation. These ten
+tools are always registered; no environment variable weakens that.
 
-This slice ships read-only tools only. No mutating MCP tool exists; a
-`tools/call` for an unknown or would-be mutating name is rejected with a
-JSON-RPC `-32602` error. Do not expect `bb runs cancel`, `bb dlq replay`,
-`bb run`, or submission/gate mutations over MCP until a separate
-writable-MCP backlog lands its graduation signals.
+`bb_dispatch` (bitterblossom-116) is the one mutating exception, and it is
+opt-in only: set `BB_MCP_ENABLE_DISPATCH=1` on the `bb mcp serve` process to
+enable it. With the env var unset, it is absent from `tools/list` and any
+`tools/call` for it is rejected the same way an unknown tool name is. Enabled,
+it takes `repo`, `prompt`, and optional `model`/`label`/`branch_slug`/
+`base_ref`/`force`, builds the identical `bb.dispatch_job.v1` payload the CLI
+`bb dispatch` command builds, and enqueues it through the same `Ledger::ingest`
+door every other trigger uses. It never merges, deploys, or runs anything
+synchronously — a running `bb serve` drains the enqueued run, exactly as with
+`bb dispatch`. A repeat call with the same `(repo, label, branch_slug,
+base_ref)` is refused (returns the original run id, `duplicate: true`) unless
+`force: true` is set. See `docs/mcp-dispatch-authority.md` for the full
+authority boundary. No other mutating tool exists; `bb runs cancel`,
+`bb dlq replay`, and submission/gate mutations remain CLI/API only.
 
 Routing:
 
@@ -231,6 +241,7 @@ Routing:
 | Pre-dispatch readiness | MCP `bb_preflight` | `bb preflight <task> --json` |
 | Submission gate evaluation | MCP `bb_gate` | `bb gate --change <key> --json` |
 | Submission mutation | (not yet MCP) | `bb submit ... --json` |
+| Ad hoc bounded dispatch | MCP `bb_dispatch` (opt-in: `BB_MCP_ENABLE_DISPATCH=1`) | `bb dispatch --repo <path> --brief <file> [--model] [--label]` |
 
 ## Operator Dispatch Loop
 

@@ -1,18 +1,153 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::budget;
 use crate::harness;
 use crate::ledger::{AttemptStats, Ledger, RunRow};
-use crate::spec::{Plane, Task, TaskBudget};
+use crate::spec::{Plane, Task, TaskBudget, TriggerSpec};
 use crate::submit;
 use crate::substrate::{self, ExecSnapshot, WorkspacePlan, CARD_FILENAME};
 const MAX_RETRIES: i64 = 2;
 const DEFAULT_TIMEOUT_MINUTES: u64 = 60;
 const LEASE_WAIT: Duration = Duration::from_secs(60);
 const LEASE_POLL: Duration = Duration::from_millis(250);
+
+/// Byte cap for an ad hoc dispatch prompt/brief, shared by `bb dispatch` and
+/// the opt-in MCP `bb_dispatch` tool.
+pub const DISPATCH_BRIEF_MAX_BYTES: u64 = 1_048_576;
+
+/// Turn a free-text label into a safe git branch-slug fragment: lowercase
+/// alphanumerics separated by single hyphens, falling back to `"dispatch"`
+/// when nothing survives.
+pub fn slugify_label(label: &str) -> String {
+    let mut out = String::new();
+    for ch in label.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "dispatch".to_string()
+    } else {
+        out
+    }
+}
+
+fn task_accepts_manual(task: &Task) -> bool {
+    task.spec
+        .triggers
+        .iter()
+        .any(|trigger| matches!(trigger, TriggerSpec::Manual))
+}
+
+/// Select the task an ad hoc dispatch (CLI `bb dispatch` or the opt-in MCP
+/// `bb_dispatch` tool) should enqueue against: `BB_DISPATCH_TASK` when set,
+/// else a manual `dispatch` task, else a manual `build` task, else the single
+/// unambiguous manual task on the plane.
+pub fn default_dispatch_task(plane: &Plane) -> Result<String> {
+    if let Ok(task) = std::env::var("BB_DISPATCH_TASK") {
+        let task_ref = plane
+            .tasks
+            .get(&task)
+            .with_context(|| format!("BB_DISPATCH_TASK names unknown task '{task}'"))?;
+        if !task_accepts_manual(task_ref) {
+            bail!("BB_DISPATCH_TASK task '{task}' has no manual trigger");
+        }
+        return Ok(task);
+    }
+
+    for candidate in ["dispatch", "build"] {
+        if let Some(task) = plane.tasks.get(candidate) {
+            if task_accepts_manual(task) {
+                return Ok(candidate.to_string());
+            }
+        }
+    }
+
+    let manual = plane
+        .tasks
+        .values()
+        .filter(|task| task_accepts_manual(task))
+        .map(|task| task.name.clone())
+        .collect::<Vec<_>>();
+    match manual.as_slice() {
+        [task] => Ok(task.clone()),
+        [] => bail!("no manual dispatch task found; add a `dispatch` or `build` task"),
+        _ => bail!(
+            "multiple manual tasks found ({}); set BB_DISPATCH_TASK",
+            manual.join(", ")
+        ),
+    }
+}
+
+/// Build the canonical `bb.dispatch_job.v1` payload shared by the CLI
+/// `bb dispatch` command and the opt-in MCP `bb_dispatch` tool -- one
+/// payload shape, assembled in exactly one place, so the two entry points
+/// can never drift. `repo` must already exist and be a directory; `prompt`
+/// must already be within `DISPATCH_BRIEF_MAX_BYTES`; both are checked here,
+/// before the caller ever touches the ledger.
+pub fn build_dispatch_job_payload(
+    repo: &Path,
+    prompt: &str,
+    model: Option<String>,
+    label: String,
+    branch_slug: String,
+    base_ref: Option<String>,
+) -> Result<String> {
+    let repo = repo
+        .canonicalize()
+        .with_context(|| format!("repo path {}", repo.display()))?;
+    if !repo.is_dir() {
+        bail!("repo path {} is not a directory", repo.display());
+    }
+    let prompt_bytes = prompt.len() as u64;
+    if prompt_bytes > DISPATCH_BRIEF_MAX_BYTES {
+        bail!("prompt is {prompt_bytes} bytes; max is {DISPATCH_BRIEF_MAX_BYTES}");
+    }
+    let mut payload = serde_json::json!({
+        "schema_version": "bb.dispatch_job.v1",
+        "repo": repo.to_string_lossy(),
+        "prompt": prompt,
+        "model": model,
+        "label": label,
+        "branch_slug": branch_slug,
+    });
+    if let Some(base_ref) = base_ref {
+        payload["base_ref"] = serde_json::Value::String(base_ref);
+    }
+    Ok(payload.to_string())
+}
+
+/// Deterministic idempotency key for ad hoc dispatch de-dup: the same
+/// `(repo, label, branch_slug, base_ref)` tuple always derives the same key,
+/// so `Ledger::ingest`'s existing `(task, idempotency_key)` uniqueness
+/// refuses a repeat dispatch of the same job -- it returns the original run
+/// with `duplicate: true` instead of fanning out a second one. The explicit
+/// force path is simply not calling this (pass `idempotency_key: None` to
+/// `Ledger::ingest` instead), which always mints a fresh run.
+pub fn dispatch_idempotency_key(
+    repo: &str,
+    label: &str,
+    branch_slug: &str,
+    base_ref: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(repo.as_bytes());
+    h.update(b"\0");
+    h.update(label.as_bytes());
+    h.update(b"\0");
+    h.update(branch_slug.as_bytes());
+    h.update(b"\0");
+    h.update(base_ref.unwrap_or_default().as_bytes());
+    let digest = format!("{:x}", h.finalize());
+    format!("mcp-dispatch:{branch_slug}:{}", &digest[..16])
+}
 enum AttemptOutcome {
     Success {
         stats: AttemptStats,

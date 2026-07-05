@@ -746,7 +746,7 @@ bb submit reject --change K --fingerprint FP --reason TEXT
 bb submit abandon --change K
 bb gate --change K | --submission ID [--json]     # also GET /api/gate?change=K
 bb serve                                          # webhook + cron + queue
-bb mcp serve                                      # read-only MCP stdio server (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate); JSON-RPC over stdin/stdout
+bb mcp serve                                      # MCP stdio server: 10 always-on read-only tools (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate) plus opt-in mutating bb_dispatch (BB_MCP_ENABLE_DISPATCH=1); JSON-RPC over stdin/stdout; see docs/mcp-dispatch-authority.md
 ```
 
 `bb dispatch` is the lead/operator convenience wrapper for ad-hoc work. It

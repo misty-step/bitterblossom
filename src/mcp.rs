@@ -1,27 +1,57 @@
-//! Read-only MCP (Model Context Protocol) stdio adapter over the canonical
+//! MCP (Model Context Protocol) stdio adapter over the canonical
 //! Bitterblossom view helpers.
 //!
 //! `bb mcp serve` speaks JSON-RPC 2.0 over stdio (newline-delimited). It
 //! exposes a fixed table of read-only tools whose outputs come from the same
 //! helpers the CLI and HTTP API use — MCP never builds its own status/check
-//! shapes, so output stays compatible with `bb ... --json`. No mutating
-//! tools are registered; this slice is read-only by construction (backlog
-//! 078). A future writable MCP surface requires its own backlog item and
-//! the graduation signals recorded there.
+//! shapes, so output stays compatible with `bb ... --json`. Read-only is the
+//! default and unconditional posture (backlog 078): those tools are always
+//! registered and no environment variable weakens that.
+//!
+//! `bb_dispatch` (bitterblossom-116) is the one mutating exception, and it is
+//! opt-in by construction: it exists in `tools/list` and answers `tools/call`
+//! only when `BB_MCP_ENABLE_DISPATCH` is set on the server process. It is
+//! handled entirely outside the shared read-only `Tool` table below (see
+//! `dispatch_tool_descriptor`/`call_dispatch_tool`) so the read-only slice's
+//! code path never has a mutating branch to accidentally enable. It enqueues
+//! the same `bb.dispatch_job.v1` payload `bb dispatch` builds and never
+//! merges, deploys, or otherwise reaches past `Ledger::ingest` -- see
+//! `docs/mcp-dispatch-authority.md` for the authority boundary.
 
 use std::io::{BufRead, Write};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::artifacts;
-use crate::ledger::Ledger;
+use crate::dispatch;
+use crate::ledger::{IngressRequest, Ledger};
 use crate::serve;
 use crate::spec::Plane;
 
 /// MCP protocol version advertised on `initialize`. `2024-11-05` is the
 /// stable baseline every consuming client supports.
 const PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Name of the opt-in mutating dispatch tool. Grep-able by design: this is
+/// the one MCP tool name handled outside the read-only `Tool` table.
+const DISPATCH_TOOL_NAME: &str = "bb_dispatch";
+
+/// The one env var that turns `bb_dispatch` on. Explicit and grep-able by
+/// design -- an operator or a `grep BB_MCP_ENABLE_DISPATCH` audit can see at
+/// a glance whether a given `bb mcp serve` process can mutate anything.
+const DISPATCH_ENABLE_ENV: &str = "BB_MCP_ENABLE_DISPATCH";
+
+/// Whether the mutating dispatch tool is enabled for this process. Checked
+/// fresh on every `tools/list`/`tools/call` so toggling the env var and
+/// restarting `bb mcp serve` is the entire enablement story -- no separate
+/// config file, no runtime toggle RPC.
+fn dispatch_enabled() -> bool {
+    matches!(
+        std::env::var(DISPATCH_ENABLE_ENV).ok().as_deref(),
+        Some("1") | Some("true")
+    )
+}
 
 /// A read-only tool backed by a shared view helper. The helper takes a
 /// freshly opened ledger per call so a long-lived server sees current state.
@@ -223,6 +253,152 @@ fn gate_tool(plane: &Plane, ledger: &Ledger, args: &Value) -> Result<Value> {
     )?)?)
 }
 
+/// Descriptor for the opt-in `bb_dispatch` tool. Only added to `tools/list`
+/// when `dispatch_enabled()` is true -- see the module doc for why this is
+/// kept structurally separate from the read-only `Tool` table.
+fn dispatch_tool_descriptor() -> Value {
+    json!({
+        "name": DISPATCH_TOOL_NAME,
+        "description": "MUTATING. Opt-in only (requires BB_MCP_ENABLE_DISPATCH=1 on the \
+            server process). Enqueues one bounded ad hoc dispatch job -- the identical \
+            bb.dispatch_job.v1 payload `bb dispatch` builds -- and returns immediately with \
+            the run id plus follow-up bb logs/runs/artifacts commands; a running `bb serve` \
+            drains the run asynchronously. This tool never merges, deploys, or mutates \
+            anything beyond enqueuing that one run: it is exactly as authoritative as \
+            `bb dispatch` and no more. A repeat call with the same repo/label/branch_slug/ \
+            base_ref is refused (returns the original run id, duplicate: true) unless \
+            force: true is set. See docs/mcp-dispatch-authority.md.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["repo", "prompt"],
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": "Local directory path to the repo, same as `bb dispatch --repo`."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The dispatch brief text, inline (no file staging needed). \
+                        Capped at the same size `bb dispatch --brief` enforces."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional per-run model override, same as `bb dispatch --model`."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional human-readable label, same as `bb dispatch --label`. \
+                        Defaults to \"dispatch\" when omitted."
+                },
+                "branch_slug": {
+                    "type": "string",
+                    "description": "Optional explicit branch slug; defaults to a slugified `label`."
+                },
+                "base_ref": {
+                    "type": "string",
+                    "description": "Optional base git ref for the dispatched agent's own repo \
+                        setup; carried through the payload as context, same as the `base_ref` \
+                        field scripts/bb-dispatch-build already writes."
+                },
+                "force": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Bypass duplicate refusal and always mint a fresh run, even \
+                        if an identical (repo, label, branch_slug, base_ref) dispatch already \
+                        exists."
+                }
+            },
+            "additionalProperties": false
+        }
+    })
+}
+
+fn call_dispatch_tool(plane: &Plane, id: Value, args: &Value) -> Value {
+    match run_dispatch_tool(plane, args) {
+        Ok(value) => {
+            let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{ "type": "text", "text": text }],
+                    "isError": false,
+                },
+            })
+        }
+        Err(e) => call_error(id, &format!("{e:#}")),
+    }
+}
+
+/// Validate inputs, build the shared `bb.dispatch_job.v1` payload, derive the
+/// default duplicate-refusal idempotency key (skipped when `force: true`),
+/// and enqueue through the exact same `Ledger::ingest` path every other
+/// trigger (webhook, cron, CLI `bb dispatch`/`bb run`) already uses. No new
+/// mutation capability is introduced here -- this is the same ingress door,
+/// opened to one more caller.
+fn run_dispatch_tool(plane: &Plane, args: &Value) -> Result<Value> {
+    let repo = required_string_arg(args, "repo")?;
+    let prompt = required_string_arg(args, "prompt")?;
+    let model = string_arg(args, "model").map(str::to_string);
+    let label = string_arg(args, "label")
+        .filter(|v| !v.is_empty())
+        .unwrap_or("dispatch")
+        .to_string();
+    let branch_slug = string_arg(args, "branch_slug")
+        .filter(|v| !v.is_empty())
+        .map(dispatch::slugify_label)
+        .unwrap_or_else(|| dispatch::slugify_label(&label));
+    let base_ref = string_arg(args, "base_ref")
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+
+    let repo_path = std::path::Path::new(repo);
+    let payload = dispatch::build_dispatch_job_payload(
+        repo_path,
+        prompt,
+        model,
+        label.clone(),
+        branch_slug.clone(),
+        base_ref.clone(),
+    )?;
+    // Re-derive the canonical repo string for the idempotency key from the
+    // same payload we just built rather than canonicalizing twice with two
+    // chances to disagree.
+    let payload_value: Value = serde_json::from_str(&payload)?;
+    let canon_repo = payload_value["repo"]
+        .as_str()
+        .context("dispatch payload missing repo")?;
+
+    let task = dispatch::default_dispatch_task(plane)?;
+    let idempotency_key = (!force).then(|| {
+        dispatch::dispatch_idempotency_key(canon_repo, &label, &branch_slug, base_ref.as_deref())
+    });
+
+    let mut ledger = Ledger::open(&plane.db_path())?;
+    let outcome = ledger.ingest(IngressRequest {
+        task: &task,
+        trigger_kind: "manual",
+        idempotency_key: idempotency_key.as_deref(),
+        source_event_id: None,
+        payload: Some(&payload),
+        parent_run_id: None,
+    })?;
+
+    Ok(json!({
+        "run_id": outcome.run_id,
+        "task": task,
+        "state": outcome.state,
+        "duplicate": outcome.duplicate,
+        "idempotency_key": idempotency_key,
+        "follow_up": {
+            "logs": format!("bb logs -f {}", outcome.run_id),
+            "runs_show": format!("bb runs show {} --json", outcome.run_id),
+            "artifacts_list": format!("bb artifacts list {} --json", outcome.run_id),
+        },
+    }))
+}
+
 fn string_arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
     args.get(name).and_then(Value::as_str)
 }
@@ -246,7 +422,7 @@ pub fn serve_stdio(plane: &Plane) -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(req) => dispatch(plane, &req),
+            Ok(req) => route_request(plane, &req),
             Err(e) => Some(error_response(
                 Value::Null,
                 -32700,
@@ -261,9 +437,9 @@ pub fn serve_stdio(plane: &Plane) -> Result<()> {
     Ok(())
 }
 
-/// Dispatch one parsed JSON-RPC request. Returns `None` for notifications
+/// Route one parsed JSON-RPC request. Returns `None` for notifications
 /// (no `id`) so the server stays silent, matching the JSON-RPC contract.
-fn dispatch(plane: &Plane, req: &Value) -> Option<Value> {
+fn route_request(plane: &Plane, req: &Value) -> Option<Value> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = req.get("params");
@@ -288,7 +464,7 @@ fn dispatch(plane: &Plane, req: &Value) -> Option<Value> {
         "tools/list" => {
             let id = id.unwrap_or(Value::Null);
             let table = tools();
-            let tools = table
+            let mut tools = table
                 .iter()
                 .map(|t| {
                     json!({
@@ -298,6 +474,9 @@ fn dispatch(plane: &Plane, req: &Value) -> Option<Value> {
                     })
                 })
                 .collect::<Vec<_>>();
+            if dispatch_enabled() {
+                tools.push(dispatch_tool_descriptor());
+            }
             Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -310,6 +489,23 @@ fn dispatch(plane: &Plane, req: &Value) -> Option<Value> {
                 .and_then(|p| p.get("name"))
                 .and_then(|n| n.as_str())
                 .unwrap_or("");
+            if name == DISPATCH_TOOL_NAME {
+                if !dispatch_enabled() {
+                    return Some(error_response(
+                        id,
+                        -32602,
+                        &format!(
+                            "unknown tool: {DISPATCH_TOOL_NAME} (opt-in mutating dispatch is \
+                             disabled; set {DISPATCH_ENABLE_ENV}=1 on the `bb mcp serve` process \
+                             to enable it)"
+                        ),
+                    ));
+                }
+                let args = params
+                    .and_then(|p| p.get("arguments"))
+                    .unwrap_or(&Value::Null);
+                return Some(call_dispatch_tool(plane, id, args));
+            }
             let table = tools();
             match table.iter().find(|t| t.name == name) {
                 Some(t) => {
