@@ -3,8 +3,13 @@
 Backlog: bitterblossom-114 (child of epic bitterblossom-094). Proves the
 already-deployed, report-only `canary-triage` task's trigger-through-dispatch
 path against the production plane, using a replayed real low-severity Canary
-incident. This packet is a **partial** proof by lead ruling — see
-"Disposition" below — with the remaining half tracked as bitterblossom-925.
+incident. **Update 2026-07-05: fully proven end to end.** The first attempt
+(below, "Dispatch") was a partial proof per lead ruling, blocked on
+bitterblossom-925 (bot identity). The operator then rescoped 925 to the
+fully agent-driven path — required-vs-optional secret semantics, `GH_TOKEN`
+marked optional on `canary-triager` (bot-identity creation is web-UI-only and
+the operator declined it) — and once that shipped, dead letter 24 was
+replayed. See "Completion" below for the final run.
 
 ## Summary
 
@@ -130,14 +135,75 @@ an agent can do for itself). Once that lands, replay dead letter 24
 (`bb dlq replay 24 --json`) to give this exact run/payload/idempotency
 lineage a genuine completion rather than dispatching an unrelated new run.
 
+## Completion (2026-07-05)
+
+bitterblossom-925 shipped `optional_secrets` (PR #976,
+`142ffcead5097735cdde0c341c5b4f40f6af41a8`) — a declared secret that's
+unresolvable degrades the run instead of dead-lettering it. `canary-triager`'s
+`GH_TOKEN` moved from `secrets` to `optional_secrets` on the production plane
+(`plane/agents/canary-triager.toml`); `bb --config plane preflight
+canary-triage --json` now reports it as the informational
+`missing_optional_secret`, not the blocking `missing_secret`.
+
+Replaying dead letter 24 (`bb --config plane dlq replay 24 --json`) advanced
+past the secret gate into workspace prep and surfaced a second, unrelated
+finding: `task.toml`'s `workspace.repos` pinned the bitterblossom clone to
+`ref = "factory/bitterblossom-lane-20260701"`, a since-merged-and-deleted
+feature branch (confirmed absent via `git ls-remote --heads origin
+factory/bitterblossom-lane-20260701`, empty). Corrected to `ref = "master"`,
+matching the sibling `canary` repo entry — an ordinary stale-config fix in
+the operator's own untracked runtime plane, not a security-boundary edit.
+
+Replaying the resulting dead letter 25 (`bb --config plane dlq replay 25
+--json`) ran to completion:
+
+| Field | Value |
+|-------|-------|
+| Run id | `51a0944c862e` (parent `9a3884522dea` → `066128e70685`) |
+| State | `success`, exit code `0` |
+| Cost | `$0.0073` (43,381 input / 6,119 output tokens) |
+| Duration | 119.4s |
+| `GH_TOKEN` | never set — no operator identity, no bot identity, none at all |
+
+`REPORT.json` was written as designed:
+
+```json
+{
+  "status": "blocked",
+  "summary": "Canary API at https://canary-obs.fly.dev rejected all requests with HTTP 401 Unauthorized. The CANARY_API_KEY environment variable is present (32 chars) but not accepted by the endpoint. ...",
+  "residual_uncertainty": [
+    "...",
+    "GH_TOKEN is empty — no GitHub read-only inspection was possible for cross-referencing signal fingerprints against repo code"
+  ]
+}
+```
+
+The agent ran to completion and degraded exactly as its card promises: it
+noticed `GH_TOKEN`'s absence and named it correctly as one *minor* residual
+gap, not the blocker. The actual blocker is that `CANARY_API_KEY` itself is
+rejected (401) by the live Canary endpoint — almost certainly the same
+credential implicated in canary-916 (P1 rotation, filed 2026-07-04 after an
+unrelated grep mistake printed its value into a transcript); this run is
+corroborating evidence that the pre-rotation key is now invalid against the
+live service, not a new finding of its own.
+
+**Full acceptance now met:** the required-vs-optional mechanism works, the
+agent's own graceful-degradation behavior works, and a real `REPORT.json`
+exists from a genuine dispatch — end to end, zero GitHub credential of any
+kind.
+
 ## Residual risk
 
-- This is the first-ever execution attempt of this pathway; the rollout
-  scorecard (`docs/rollout-scorecards.md#canary-triage-report-only-backlog-080`)
-  needs `>=3` real low-severity incidents before promotion eligibility — this
-  packet supplies the trigger-side half of one, pending bitterblossom-925.
+- The rollout scorecard
+  (`docs/rollout-scorecards.md#canary-triage-report-only-backlog-080`) needs
+  `>=3` real low-severity incidents before promotion eligibility; this packet
+  supplies one full completed run plus the earlier trigger-side dead-letter
+  proof.
+- `CANARY_API_KEY` on this plane appears stale/rejected by the live Canary
+  endpoint (HTTP 401) — worth confirming against canary-916's rotation
+  status; canary-triage cannot produce a fully-informed report until it's
+  current.
 - A live `CANARY_API_KEY` value was accidentally printed into an agent
   transcript while investigating this card's credential availability (an
   unrelated grep-pattern mistake, not used for anything beyond that one
-  accidental print). Filed and being rotated as canary-916; not blocking
-  for this packet, noted here for completeness.
+  accidental print). Filed and being rotated as canary-916.
