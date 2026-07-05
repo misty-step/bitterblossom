@@ -428,6 +428,33 @@ fn read_api_requires_bearer_and_rejects_query_token() {
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("id=\"authPanel\""));
     assert!(body.contains("localStorage"));
+
+    // Every dashboard data source shares the same `read_authorized` gate --
+    // prove the query-token bypass is closed on more than just /api/runs, and
+    // that /api/submissions and /api/gate (which take request-specific query
+    // params) are gated before those params are even parsed.
+    for route in [
+        "/api/dlq",
+        "/api/submissions",
+        "/api/notify",
+        "/api/gate?submission=missing",
+    ] {
+        assert_eq!(http_get(port, route, None).0, 401, "{route}");
+        assert_eq!(
+            http_get(
+                port,
+                &format!(
+                    "{route}{}token=test-token",
+                    if route.contains('?') { "&" } else { "?" }
+                ),
+                None
+            )
+            .0,
+            401,
+            "{route} must not authenticate via a query-string token"
+        );
+    }
+
     assert_eq!(
         http_get(port, "/api/gate?notsubmission=x", Some("test-token")).0,
         400
@@ -483,6 +510,57 @@ fn operator_html_stores_token_locally_and_reprompts_on_unauthorized_api() {
 }
 
 #[test]
+fn operator_html_renders_submissions_and_gates_from_existing_read_apis() {
+    let html = include_str!("../src/operator.html");
+
+    // bitterblossom-118: submissions/gates were entirely absent from the
+    // dashboard. Pin that the view exists, is wired to the same /api/*
+    // helpers serve.rs already exposes (no new backend), and links out to
+    // /api/gate for full quorum detail rather than duplicating gate logic
+    // in JS.
+    assert!(html.contains(r#"data-view-button="submissions""#));
+    assert!(html.contains(r#"data-view="submissions""#));
+    assert!(html.contains(r#"fetchJson("/api/submissions?limit=50")"#));
+    assert!(html.contains("function renderSubmissions()"));
+    assert!(html.contains("function verdictSummary("));
+    assert!(html.contains("/api/gate?submission="));
+}
+
+#[test]
+fn operator_html_renders_notify_outbox_as_a_table_not_only_a_count() {
+    let html = include_str!("../src/operator.html");
+
+    // Before this card, /api/notify was only ever surfaced as an aggregate
+    // pending/failed count in the proof strip -- pin that the raw outbox
+    // rows are now fetched and rendered.
+    assert!(html.contains(r#"fetchJson("/api/notify?limit=50")"#));
+    assert!(html.contains(r#"id="notifyRows""#));
+    assert!(html.contains("function notifyStatusTone("));
+}
+
+#[test]
+fn operator_html_surfaces_per_run_stale_fresh_classification() {
+    let html = include_str!("../src/operator.html");
+
+    // progress::classify's per-run "stale_executing"/"on_track" verdict was
+    // only ever aggregated into a freshness_contracts count; pin that the
+    // Runs table now carries it per row, keyed off the same
+    // status.tasks[].progress.running data serve.rs already returns.
+    assert!(html.contains("function runFreshnessMap()"));
+    assert!(html.contains("task.progress?.running"));
+    assert!(html.contains("function freshnessCell("));
+    assert!(html.contains("<th>freshness</th>"));
+}
+
+#[test]
+fn operator_html_surfaces_provider_key_status_per_task() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains("function providerKeyCell("));
+    assert!(html.contains("task.provider_key"));
+}
+
+#[test]
 fn operator_html_distinguishes_external_runs_from_native_rows() {
     let html = include_str!("../src/operator.html");
 
@@ -525,6 +603,8 @@ fn read_api_exposes_dashboard_observability_routes() {
         "/api/leases",
         "/api/ingress",
         "/api/export",
+        "/api/dlq",
+        "/api/submissions",
     ] {
         assert_eq!(http_get(port, route, None).0, 401, "{route}");
         let (status, body) = http_get(port, route, Some("test-token"));

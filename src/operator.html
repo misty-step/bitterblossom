@@ -351,7 +351,7 @@ tbody tr:first-child td { border-top: 0; }
 }
 .health-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
   margin-top: 1rem;
 }
@@ -464,6 +464,7 @@ tbody tr:first-child td { border-top: 0; }
     <button class="is-active" data-view-button="overview">overview</button>
     <button data-view-button="runs">runs</button>
     <button data-view-button="tasks">tasks</button>
+    <button data-view-button="submissions">submissions</button>
     <button data-view-button="health">health</button>
     <div class="rail-foot">
       <div id="railStatus">loading</div>
@@ -537,7 +538,7 @@ tbody tr:first-child td { border-top: 0; }
       <article class="plate">
         <h2>Runs</h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>created</th><th>source</th><th>state</th><th>task</th><th>trigger</th><th>agent</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>trace</th></tr></thead>
+          <thead><tr><th>created</th><th>source</th><th>state</th><th>freshness</th><th>task</th><th>trigger</th><th>agent</th><th>duration</th><th class="right">cost</th><th class="right">tokens</th><th>trace</th></tr></thead>
           <tbody id="runRows"></tbody>
         </table></div>
       </article>
@@ -547,8 +548,18 @@ tbody tr:first-child td { border-top: 0; }
       <article class="plate">
         <h2>Configured Tasks</h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>task</th><th>agent</th><th>substrate</th><th>triggers</th><th>budget</th><th>state</th></tr></thead>
+          <thead><tr><th>task</th><th>agent</th><th>substrate</th><th>triggers</th><th>budget</th><th>key</th><th>state</th></tr></thead>
           <tbody id="taskRows"></tbody>
+        </table></div>
+      </article>
+    </section>
+
+    <section class="view" data-view="submissions">
+      <article class="plate">
+        <h2>Submissions &amp; Gates</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>submission</th><th>change</th><th>rev</th><th class="right">round</th><th>state</th><th>verdicts</th><th class="right">rejections</th><th>gate</th></tr></thead>
+          <tbody id="submissionRows"></tbody>
         </table></div>
       </article>
     </section>
@@ -574,6 +585,13 @@ tbody tr:first-child td { border-top: 0; }
           <div class="table-wrap"><table>
             <thead><tr><th>received</th><th>task</th><th>kind</th><th>duplicate</th></tr></thead>
             <tbody id="ingressRows"></tbody>
+          </table></div>
+        </article>
+        <article class="plate">
+          <h2>Notify Outbox</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>event</th><th>status</th><th class="right">attempts</th><th>updated</th><th>error</th></tr></thead>
+            <tbody id="notifyRows"></tbody>
           </table></div>
         </article>
       </section>
@@ -657,16 +675,18 @@ async function load() {
   $("error").classList.remove("is-visible");
   $("railStatus").textContent = "loading";
   try {
-    const [status, tasks, runs, dlq, leases, ingress, exportedText] = await Promise.all([
+    const [status, tasks, runs, dlq, leases, ingress, notify, submissions, exportedText] = await Promise.all([
       fetchJson("/api/status"),
       fetchJson("/api/tasks"),
       fetchJson("/api/runs"),
       fetchJson("/api/dlq"),
       fetchJson("/api/leases"),
       fetchJson("/api/ingress?limit=40"),
+      fetchJson("/api/notify?limit=50"),
+      fetchJson("/api/submissions?limit=50"),
       fetchText("/api/export")
     ]);
-    state.data = { status, tasks, runs, dlq, leases, ingress, exported: parseExport(exportedText) };
+    state.data = { status, tasks, runs, dlq, leases, ingress, notify, submissions, exported: parseExport(exportedText) };
     showDashboard();
     render();
     $("railStatus").textContent = "live";
@@ -705,6 +725,7 @@ function render() {
   renderActions();
   renderRuns();
   renderTasks();
+  renderSubmissions();
   renderHealth();
 }
 
@@ -772,6 +793,28 @@ function runById() {
   return new Map(state.data.runs.map((run) => [run.id, run]));
 }
 
+// Per-run stale/fresh classification only exists for running/awaiting_recovery
+// runs (progress::classify has nothing to say about a terminal run beyond
+// "done") and only ships scoped to each task in /api/status -- flatten it
+// into a run-id-keyed map so the Runs table can badge it without a
+// per-run API call.
+function runFreshnessMap() {
+  const map = new Map();
+  for (const task of state.data.status.tasks || []) {
+    for (const view of task.progress?.running || []) {
+      map.set(view.run_id, view);
+    }
+  }
+  return map;
+}
+
+function freshnessCell(view) {
+  if (!view) return `<span class="faint">-</span>`;
+  const tone = view.classification === "stale_executing" ? "warn" : "ok";
+  const age = view.age_seconds == null ? "" : ` (${fmtDuration(view.age_seconds * 1000)})`;
+  return `<span class="${tone}">${esc(view.classification)}</span>${esc(age)}`;
+}
+
 function latestAttemptByRun() {
   const attempts = new Map();
   for (const row of state.data.exported) {
@@ -836,13 +879,14 @@ function renderActions() {
 
 function renderRuns() {
   const totals = tokenTotals();
+  const freshness = runFreshnessMap();
   const rows = allRuns();
-  const rowHtml = rows.map((run) => runRow(run, totals)).join("");
-  $("recentRuns").innerHTML = rows.slice(0, 10).map((run) => runRow(run, totals, true)).join("") || `<tr><td colspan="8" class="empty">no runs recorded</td></tr>`;
-  $("runRows").innerHTML = rowHtml || `<tr><td colspan="10" class="empty">no runs recorded</td></tr>`;
+  const rowHtml = rows.map((run) => runRow(run, totals, freshness)).join("");
+  $("recentRuns").innerHTML = rows.slice(0, 10).map((run) => runRow(run, totals, freshness, true)).join("") || `<tr><td colspan="8" class="empty">no runs recorded</td></tr>`;
+  $("runRows").innerHTML = rowHtml || `<tr><td colspan="11" class="empty">no runs recorded</td></tr>`;
 }
 
-function runRow(run, totals, compact = false) {
+function runRow(run, totals, freshness, compact = false) {
   const token = totals.get(run.id) || {};
   const tokens = token.input == null && token.output == null ? "-" : `${token.input || 0}/${token.output || 0}`;
   const agent = `${run.agent_name || "-"}${run.agent_version ? `@v${run.agent_version}` : ""}`;
@@ -865,6 +909,7 @@ function runRow(run, totals, compact = false) {
     <td>${esc(short(run.created_at, 19))}</td>
     <td><span class="source ${esc(run.source || "native")}">${esc(source)}</span></td>
     <td><span class="state ${stateClass(state)}">${esc(state)}</span></td>
+    <td>${freshnessCell(freshness.get(run.id))}</td>
     <td class="item">${esc(run.task)}</td>
     <td>${esc(run.trigger_kind)}</td>
     <td>${esc(agent)}</td>
@@ -903,9 +948,51 @@ function renderTasks() {
       <td>${esc(task.substrate)}</td>
       <td>${triggers || "-"}</td>
       <td>${budget}</td>
+      <td>${providerKeyCell(task.provider_key)}</td>
       <td>${parked}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="6" class="empty">no tasks configured</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="empty">no tasks configured</td></tr>`;
+}
+
+function providerKeyCell(key) {
+  if (!key) return `<span class="faint">-</span>`;
+  const tone = key.status === "ok" ? "ok" : key.status === "unavailable" ? "faint" : "warn";
+  const drift = (key.drift || []).length ? `<br><span class="muted">${esc(key.drift.join(", "))}</span>` : "";
+  return `<span class="${tone}">${esc(key.status)}</span>${drift}`;
+}
+
+function verdictSummary(verdicts) {
+  const counts = { pass: 0, blocking: 0, advisory: 0 };
+  for (const v of verdicts || []) {
+    if (counts[v.verdict] != null) counts[v.verdict] += 1;
+  }
+  const parts = [
+    counts.pass ? `<span class="ok">${counts.pass} pass</span>` : null,
+    counts.blocking ? `<span class="err">${counts.blocking} blocking</span>` : null,
+    counts.advisory ? `<span class="warn">${counts.advisory} advisory</span>` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : `<span class="faint">no verdicts yet</span>`;
+}
+
+function submissionStateTone(state) {
+  if (state === "clear") return "ok";
+  if (state === "blocked" || state === "escalated") return "err";
+  if (state === "abandoned") return "faint";
+  return "accent";
+}
+
+function renderSubmissions() {
+  const rows = state.data.submissions || [];
+  $("submissionRows").innerHTML = rows.map((row) => `<tr>
+    <td>${esc(short(row.id))}</td>
+    <td class="item">${esc(short(row.change_key, 28))}</td>
+    <td>${esc(short(row.rev))}</td>
+    <td class="right">${esc(row.round)}</td>
+    <td><span class="${submissionStateTone(row.state)}">${esc(row.state)}</span></td>
+    <td>${verdictSummary(row.verdicts)}</td>
+    <td class="right">${(row.rejections || []).length}</td>
+    <td><a href="/api/gate?submission=${encodeURIComponent(row.id)}">gate</a></td>
+  </tr>`).join("") || `<tr><td colspan="8" class="empty">no submissions recorded</td></tr>`;
 }
 
 function triggerLabel(trigger) {
@@ -926,6 +1013,19 @@ function renderHealth() {
     <td>${esc(short(event.received_at, 19))}</td><td class="item">${esc(event.task)}</td>
     <td>${esc(event.trigger_kind)}</td><td>${event.duplicate ? "yes" : "no"}</td>
   </tr>`).join("") || `<tr><td colspan="4" class="empty">no ingress events</td></tr>`;
+  $("notifyRows").innerHTML = (state.data.notify || []).map((row) => `<tr>
+    <td class="item">${esc(row.event)}</td>
+    <td><span class="${notifyStatusTone(row.status)}">${esc(row.status)}</span></td>
+    <td class="right">${esc(row.attempts)}</td>
+    <td>${esc(short(row.updated_at, 19))}</td>
+    <td>${esc(short(row.last_error, 60))}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="empty">no notification outbox activity</td></tr>`;
+}
+
+function notifyStatusTone(status) {
+  if (status === "delivered" || status === "acknowledged") return "ok";
+  if (status === "failed") return "err";
+  return "warn";
 }
 
 function switchView(view) {
