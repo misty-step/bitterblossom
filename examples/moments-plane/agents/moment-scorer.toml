@@ -1,0 +1,30 @@
+# Zero-credential command-harness agent (bitterblossom-914): no model, no
+# provider, no secrets. `moment-scorer.py` is deterministic Rust-adjacent
+# workload logic kept out of the Rust spine (matching hygiene-reflex.py's
+# own convention) -- it reads the plane's own run ledger read-only and
+# writes moment cards to its own separate store; no network, no LLM call.
+#
+# --db must be an ABSOLUTE path to the real plane's ledger when graduated
+# out of this local demo template: the command harness runs each attempt in
+# its own isolated workspace (same as every other command-harness task —
+# see incident-triage-wrapper.sh), so a relative `.bb/plane.db` default
+# would miss the real ledger entirely. Replace the placeholder path below
+# with your live plane's `db_path`, made absolute.
+version = 1
+harness = "command"
+model = ""
+bin = "python3"
+args = [
+  "bitterblossom/scripts/moment-scorer.py",
+  "scan",
+  "--db",
+  "/absolute/path/to/your/plane/.bb/plane.db",
+  "--moments-db",
+  "/absolute/path/to/your/plane/.bb/moments.db",
+]
+
+[policy]
+trigger_bindings = ["manual", "cron"]
+wall_clock_minutes = 5
+output_bytes_cap = 200000
+side_effect_policy = "kill"

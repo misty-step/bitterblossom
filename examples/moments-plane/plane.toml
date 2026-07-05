@@ -1,0 +1,14 @@
+# Flight-recorder moments starter template (bitterblossom-914). This is
+# public starter config, not an operator instance plane. `dev = true` lets
+# the `local` substrate validate the wiring with `bb check`/`bb run` from a
+# clean checkout, with no external credentials; a real deployment graduates
+# this into the operator's own live plane (see README for the one
+# operational detail that changes: an absolute --db path).
+dev = true
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7077"
+
+[budget]
+max_cost_per_day_usd = 1.0

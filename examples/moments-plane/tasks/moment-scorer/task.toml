@@ -1,0 +1,17 @@
+agent = "moment-scorer"     # the zero-credential command agent above
+substrate = "local"         # local substrate: dev/test machinery (plane sets dev = true)
+                            # graduate to your real substrate (sprites, etc.) alongside
+                            # the absolute --db path swap in agents/moment-scorer.toml.
+
+[budget]
+timeout_minutes = 5         # enforced: wall-clock kill
+max_runs_per_day = 24       # generous cap on scan invocations themselves --
+                            # the ≤3/day PUBLISHED-moment cap is enforced by
+                            # the scorer's own logic, not this budget field.
+
+[[trigger]]
+kind = "manual"             # bb run moment-scorer
+
+[[trigger]]
+kind = "cron"
+schedule = "0 * * * *"      # hourly: post-run scoring, not a live per-run hook
