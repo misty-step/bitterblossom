@@ -69,6 +69,19 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
                 "--model".into(),
                 agent.model.clone(),
                 "--no-session".into(),
+                // Bitterblossom-918: a global pi extension (observed:
+                // ops-watchdog) can register a recurring sampler that
+                // outlives `--no-session` teardown, throwing the SDK's
+                // stale-context guard after the model response already
+                // succeeded. Every bounded bb dispatch is a one-shot,
+                // non-interactive commission that gains nothing from a
+                // personal pi extension, so extension discovery is off by
+                // default here rather than per-agent-config opt-out. This is
+                // the operator's own recorded workaround, pending the
+                // upstream fix (pi-agent-config#23, deliberately unmerged —
+                // pi-agent-config is being retired in favor of Roster).
+                // Remove once bb no longer dispatches through `pi`.
+                "--no-extensions".into(),
                 "--mode".into(),
                 "json".into(),
                 "-p".into(),

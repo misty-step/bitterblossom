@@ -238,6 +238,142 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
     assert_eq!(parsed.stats.cost_usd, Some(0.03));
 }
 
+/// Regression for bitterblossom-918: the wrapper's real (PATH-found) `pi`
+/// invocation must disable extension discovery, matching the systemic
+/// `harness.rs::build_command` fix — a global pi extension (observed:
+/// ops-watchdog) can crash a `--no-session` run after a successful model
+/// response (reproduced live against this machine's real pi + ops-watchdog
+/// install; see bitterblossom-918-report.md). Workaround pending the
+/// upstream fix (pi-agent-config#23, deliberately unmerged per the
+/// operator's pi-agent-config retirement ruling).
+#[test]
+fn incident_triage_wrapper_disables_pi_extensions_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    // `agent_bin` must resolve literally to "pi" (not a custom path) to
+    // exercise the wrapper's `[ "$agent_bin" = "pi" ]` native branch — a
+    // stub named anything else falls through to the untouched generic
+    // fallback branch, matching how the existing npx-fallback test below
+    // manipulates PATH rather than INCIDENT_TRIAGE_AGENT_BIN.
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let stub = bin_dir.join("pi");
+    write_executable(
+        &stub,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" > invoked-args.txt
+cat >/dev/null
+cat > REPORT.json <<'JSON'
+{
+  "schema": "bb.incident_triage_response.v1",
+  "status": "hypotheses_written",
+  "bb_run_id": "run-test",
+  "delivery_id": "DLV-test",
+  "incident": {"id": "INC-test123", "service": "canary", "severity": "low", "fingerprint": "fp-test"},
+  "repo": "misty-step/canary",
+  "progress_writebacks": [{"action": "hypotheses-written", "ref": "ANN-test"}],
+  "hypotheses": [{"claim": "synthetic", "confidence": "medium", "why": "fixture"}],
+  "experiments": [],
+  "fix_attempts": [],
+  "iteration_guard": {"max_fix_attempts": 3, "attempts_used": 0, "stopped": false},
+  "scope_honesty": {"auto_deploy_on_merge": true, "v1_stop": "hypotheses_writeback_drill"},
+  "artifact_paths": ["REPORT.json"],
+  "residual_risk": []
+}
+JSON
+printf '{"type":"turn_end"}\n'
+"#,
+    );
+
+    let path = format!("{}:/usr/bin:/bin", bin_dir.to_string_lossy());
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("PATH", path)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invoked_args = fs::read_to_string(dir.path().join("invoked-args.txt")).unwrap();
+    assert!(
+        invoked_args.contains("--no-extensions"),
+        "the wrapper's pi invocation must disable extension discovery by \
+         default (bitterblossom-918): {invoked_args}"
+    );
+}
+
+/// Same regression as above, for the pinned-`npx`-fallback branch: the flag
+/// must be present there too, not only on the PATH-found `pi` path.
+#[test]
+fn incident_triage_wrapper_npx_fallback_disables_pi_extensions_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "powder");
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let fake_npx = bin_dir.join("npx");
+    write_executable(
+        &fake_npx,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" > invoked-args.txt
+shift 2
+cat >/dev/null
+cat > REPORT.json <<'JSON'
+{
+  "schema": "bb.incident_triage_response.v1",
+  "status": "hypotheses_written",
+  "bb_run_id": "run-test",
+  "delivery_id": "DLV-test",
+  "incident": {"id": "INC-test123", "service": "powder", "severity": "low", "fingerprint": "fp-test"},
+  "repo": "misty-step/powder",
+  "progress_writebacks": [{"action": "hypotheses-written", "ref": "ANN-test"}],
+  "hypotheses": [{"claim": "synthetic", "confidence": "medium", "why": "fixture"}],
+  "experiments": [],
+  "fix_attempts": [],
+  "iteration_guard": {"max_fix_attempts": 3, "attempts_used": 0, "stopped": false},
+  "scope_honesty": {"auto_deploy_on_merge": false, "v1_stop": "hypotheses_writeback_drill"},
+  "artifact_paths": ["REPORT.json"],
+  "residual_risk": []
+}
+JSON
+printf '{"type":"turn_end"}\n'
+"#,
+    );
+
+    let path = format!("{}:/usr/bin:/bin", bin_dir.to_string_lossy());
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("PATH", path)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invoked_args = fs::read_to_string(dir.path().join("invoked-args.txt")).unwrap();
+    assert!(
+        invoked_args.contains("--no-extensions"),
+        "the wrapper's npx-fallback pi invocation must disable extension \
+         discovery by default (bitterblossom-918): {invoked_args}"
+    );
+}
+
 #[test]
 fn incident_triage_wrapper_falls_back_to_pinned_npx_pi_package() {
     let dir = tempfile::tempdir().unwrap();

@@ -34,6 +34,30 @@ fn pi_command_carries_provider_and_model() {
     assert!(joined.contains("toolResult"), "{joined}");
 }
 
+/// Regression for bitterblossom-918: every bounded `harness = "pi"` dispatch
+/// must disable extension discovery by default. Without it, a non-interactive
+/// `--no-session` run can crash after a successful model response when a
+/// global pi extension (observed: ops-watchdog) registers a recurring
+/// sampler that outlives session teardown and throws the SDK's stale-context
+/// guard — reproduced live against this machine's real pi + ops-watchdog
+/// install (see bitterblossom-918-report.md). `--no-extensions` is a
+/// workaround recorded pending the upstream fix (pi-agent-config#23,
+/// deliberately unmerged per the operator's pi-agent-config retirement
+/// ruling) — remove this assertion (and the flag) once bb no longer needs it.
+#[test]
+fn pi_command_disables_extension_discovery_by_default() {
+    let agent: bitterblossom::spec::AgentSpec =
+        toml::from_str("harness = \"pi\"\nmodel = \"moonshotai/kimi-k2.6\"\n").unwrap();
+    let cmd = build_command(&agent, &bitterblossom::spec::TaskBudget::default()).unwrap();
+    let joined = cmd.join(" ");
+    assert!(
+        joined.contains("--no-extensions"),
+        "every harness=pi dispatch must disable extension discovery by default \
+         (bitterblossom-918: an active pi extension can crash a --no-session run \
+         after a successful response): {joined}"
+    );
+}
+
 #[test]
 fn claude_command_uses_strictest_policy_turn_or_iteration_cap() {
     let agent: bitterblossom::spec::AgentSpec = toml::from_str(

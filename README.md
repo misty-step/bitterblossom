@@ -162,6 +162,16 @@ payloads, not Rust changes.
   (webhook/cron) bind only `auth = "api"` agents — cheap open-weight
   models via OpenRouter on open harnesses (pi/omp). Api-auth execs are
   hermetic: scrubbed env, workspace-local HOME, declared secrets only.
+- Every `harness = "pi"` dispatch (and `scripts/incident-triage-wrapper.sh`'s
+  own `pi` invocation) passes `--no-extensions` by default
+  (bitterblossom-918): a global pi extension can register a recurring
+  sampler that outlives `--no-session` teardown and crash the process after
+  a successful model response with the SDK's stale-context guard —
+  reproduced live on this machine with the `ops-watchdog` extension. This is
+  a recorded workaround, not the real fix; the real fix
+  (`phrazzld/pi-agent-config#23`) stays open and unmerged because
+  `pi-agent-config` is being retired in favor of Roster. Remove the flag
+  once bb no longer needs it.
 - The plane holds no judgment: workloads are config, agents own their own
   decomposition, and a workload-specific branch in the spine is wrong by
   definition.

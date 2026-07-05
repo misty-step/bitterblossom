@@ -425,6 +425,15 @@ cat "$event_file" >> "$prompt_file"
 printf '\n\nRUN.json:\n\n' >> "$prompt_file"
 cat "$run_file" >> "$prompt_file"
 
+# Bitterblossom-918: a global pi extension (observed: ops-watchdog) can
+# register a recurring sampler that outlives --no-session teardown, throwing
+# the SDK's stale-context guard after the model response already succeeded.
+# This wrapper is a bounded, non-interactive commission that gains nothing
+# from a personal pi extension, so --no-extensions is on by default here
+# rather than left to per-invocation opt-out. Operator's own recorded
+# workaround, pending the upstream fix (pi-agent-config#23, deliberately
+# unmerged -- pi-agent-config is being retired in favor of Roster). Remove
+# once this wrapper no longer needs it.
 run_agent() {
   if [ "$agent_via_npx" = "1" ]; then
     "$agent_cmd" \
@@ -434,6 +443,7 @@ run_agent() {
       --model "$model" \
       --thinking "$agent_thinking" \
       --no-session \
+      --no-extensions \
       --mode json \
       -p
   elif [ "$agent_bin" = "pi" ]; then
@@ -442,6 +452,7 @@ run_agent() {
       --model "$model" \
       --thinking "$agent_thinking" \
       --no-session \
+      --no-extensions \
       --mode json \
       -p
   else
