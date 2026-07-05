@@ -1,0 +1,16 @@
+# Production-shaped proactive CI-gate auditor template.
+#
+# This file is public starter config, not an operator instance plane. Replace
+# example repos, hosts, budgets, and hook secrets in your runtime copy.
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7078"
+max_body_bytes = 1048576
+max_cron_catchup_fires = 1
+
+[notify]
+# webhook_url = "https://ntfy.sh/my-ci-audit"
+
+[budget]
+max_cost_per_day_usd = 3.0

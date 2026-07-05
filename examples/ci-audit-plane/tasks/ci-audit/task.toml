@@ -1,0 +1,27 @@
+agent = "ci-auditor"
+substrate = "sprites"
+required_artifacts = ["REPORT.json"]
+
+[rollout]
+authority = "report-only"
+scorecard = "docs/rollout-scorecards.md (ci-audit, report-only, backlog 121)"
+
+[workspace]
+host = "example-org/ci-audit-lane-1"
+repos = [
+  { url = "https://github.com/example-org/product-api.git", ref = "main" },
+  { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 25
+max_runs_per_day = 4
+max_cost_per_run_usd = 0.5
+turn_cap = 35
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "cron"
+schedule = "0 13 * * *"

@@ -1,0 +1,38 @@
+{
+  "schema": "bb.ci_audit.report.v1",
+  "repo": "example-org/product-api",
+  "trigger": {
+    "kind": "manual",
+    "reference": "manual payload {\"repo\":\"example-org/product-api\"}"
+  },
+  "current_gates": [
+    {
+      "name": "unit-tests",
+      "invoked_by": ".github/workflows/ci.yml",
+      "reproduction_command": "cargo test"
+    }
+  ],
+  "missing_or_weak_gates": [
+    {
+      "severity": "moderate",
+      "kind": "lint",
+      "summary": "No lint gate runs in CI; clippy is available locally but not enforced."
+    }
+  ],
+  "proposed_checks": [
+    "Add `cargo clippy --all-targets -- -D warnings` as a required CI step, matching what the repo already runs locally."
+  ],
+  "risk": "low -- adding an existing local check to CI does not change runtime behavior",
+  "reproduction_commands": [
+    "cargo test",
+    "cargo clippy --all-targets -- -D warnings"
+  ],
+  "artifacts": [
+    "REPORT.json"
+  ],
+  "cost_usd": 0.018,
+  "residual_risk": [
+    "The sample did not inspect a live repository checkout.",
+    "A human should confirm the proposed clippy gate does not currently fail on existing code before making it required."
+  ]
+}

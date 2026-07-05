@@ -242,6 +242,64 @@ Rollback / stop conditions: any single forbidden action (merge, deploy, out-of-s
 Operator approval needed for next level: yes
 ```
 
+### ci-audit (report-only) — backlog 121
+
+The proactive counterpart to the existing `ci-diagnose` reflex (public-plane
+fixture): `ci-diagnose` reacts to one already-failed CI signal named in an
+incoming webhook; `ci-audit` inspects an explicitly allowlisted repo's own
+gates, tests, and lints on a daily cron or manual dispatch, whether or not
+anything just failed, and writes a report-only hardening recommendation. A
+manual dispatch payload must name one repo already in `workspace.repos`; a
+payload naming any other repo is refused before the audit runs and no
+`REPORT.json` is written for the refused call.
+
+```text
+Task family:            ci-audit
+Current authority:      report-only
+Allowed actions:        inspect one allowlisted repo's CI configuration (workflow files, test runners, lint configs), write REPORT.json naming current gates, missing/weak gates, proposed checks, risk, cost, and exact reproduction commands
+Forbidden actions:      edit files, push branches, open PRs, weaken an existing gate, merge, deploy, post comments
+Evidence metrics:       useful, reviewer-actionable reports across the allowlisted repo(s); 0 mutations attempted; every reproduction command actually reproduces the named evidence; spend within cap
+Promotion trigger:      scorecard green makes ci-audit-pr (PR-only) eligible for operator approval on that repo family
+Rollback / hold trigger: any report that claims a mutation happened, or proposes weakening an existing gate
+Budget / cost cap:      4 runs/day, $0.50/run (examples/ci-audit-plane/tasks/ci-audit/task.toml budget block)
+Duplicate-suppression key: n/a at this level -- no webhook trigger exists (proactive audit, not event-reactive); the daily cron and the task's max_runs_per_day cap bound worst-case fanout, same role bb's cron catch-up bound (backlog 083) plays elsewhere
+Required artifacts:     REPORT.json (schema bb.ci_audit.report.v1)
+Operator approval needed for next level: yes
+```
+
+### ci-audit-pr (PR-only) — backlog 121
+
+The PR-only companion to `ci-audit`, following `canary-remediate`'s
+(backlog 115) and `docs-sync-pr`'s (backlog 120) exact precedent: a separate
+task and agent (never the same authority level doing both jobs) that
+consumes an existing, actionable `ci-audit` report and opens one bounded
+CI-hardening PR -- it never audits from scratch. Manual-dispatch only: no
+cron or webhook trigger is wired in `task.toml`, and `ci-hardener`'s own
+`policy.trigger_bindings` declares only `manual`. Scoped to a narrower repo
+allowlist than the report-only auditor (one repo, not two). This task
+family's one absolute red line, beyond the general PR-only ladder rules: it
+must never weaken, loosen, skip, or remove an existing gate, test, or lint --
+`gates_weakened` in its report must always be an empty array. Per
+canary-remediate's and docs-sync-pr's precedent, a dedicated bot/app
+identity scoped to the allowlisted repo (bitterblossom-925) is a hard
+prerequisite before this task's first live dispatch.
+
+```text
+Task family:            ci-audit-pr
+Current authority:      PR-only
+Allowed actions:        read a prior ci-audit REPORT.json, clone/checkout only the allowlisted repo, create one branch, add or strengthen only the checks that report's proposed_checks named, open exactly one pull request, write REPORT.json describing the PR
+Forbidden actions:      merges, deploys, weakening/loosening/skipping/removing any existing gate/test/lint, a second active PR for the same source report, editing any file outside the hardening, touching any repo outside the allowlist, auditing from scratch
+Evidence metrics:       every PR traces to a prior actionable ci-audit report; 0 merges; 0 deploys; 0 gates weakened (gates_weakened always empty); 0 files touched outside the hardening; 0 repos touched outside the allowlist; at most one active PR per source report
+Promotion trigger:      scorecard green + operator approval makes guarded-land (merge behind CI/gate/review/allowlist) eligible for this repo family
+Rollback / hold trigger: any merge/deploy attempt, any gate weakened, any PR against a non-allowlisted repo, or a duplicate-PR storm
+Budget / cost cap:      3 runs/day, $0.75/run (examples/ci-audit-plane/tasks/ci-audit-pr/task.toml budget block)
+Duplicate-suppression key: agent-verified only, not plane-enforced -- the card instructs checking for an existing open PR against the allowlisted repo before branching (gh pr list --repo <repo> --state open --search "ci-audit"); same as canary-remediate and docs-sync-pr, because no webhook trigger exists at this authority level to key a ledger-level dedupe off
+Required artifacts:     REPORT.json (schema bb.ci_audit_pr.report.v1)
+Bot identity / token provisioning: ci-hardener declares GH_TOKEN like ci-auditor; per bitterblossom-925, provisioning a dedicated bot/app identity scoped to the allowlisted repo (not the operator's personal token, and not a token with broader reach than the allowlist) is an operator-gated prerequisite before this task's first live dispatch, same as canary-remediate's and docs-sync-pr's
+Rollback / stop conditions: any single forbidden action (merge, deploy, gate weakening, out-of-scope file edit, out-of-allowlist repo touch) is an immediate hold -- revert this task to report-only-equivalent (no dispatch) until root-caused
+Operator approval needed for next level: yes
+```
+
 ### fix-prompt-generator (report-only) — backlog 062
 
 ```text

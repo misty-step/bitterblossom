@@ -1,0 +1,27 @@
+{
+  "schema": "bb.ci_audit_pr.report.v1",
+  "repo": "example-org/product-api",
+  "source_report": "run:f6e5d4c3b2a1",
+  "duplicate_check": {
+    "existing_open_pr": false,
+    "checked_via": "gh pr list --repo example-org/product-api --state open --search \"ci-audit\""
+  },
+  "pr": {
+    "opened": true,
+    "number": 456,
+    "url": "https://github.com/example-org/product-api/pull/456",
+    "branch": "bb/ci-audit/2026-07-05-add-clippy-gate"
+  },
+  "gates_added": [
+    "cargo clippy --all-targets -- -D warnings, required in .github/workflows/ci.yml"
+  ],
+  "gates_weakened": [],
+  "artifacts": [
+    "REPORT.json"
+  ],
+  "cost_usd": 0.27,
+  "residual_risk": [
+    "The sample did not open a live pull request.",
+    "A human reviewer must approve and merge the PR; this task has no merge authority."
+  ]
+}

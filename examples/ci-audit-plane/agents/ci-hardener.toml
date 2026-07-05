@@ -1,0 +1,24 @@
+version = 1
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+role = "ci-hardener"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/ci#audit",
+  "harness-kit/deliver#gate-only-patch",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "edit"
+provider_key_name = "ci-hardener"
+provider_spend_cap_usd = 0.75
+model_allowlist = ["deepseek/deepseek-v4-flash"]
+trigger_bindings = ["manual"]
+iteration_cap = 12
+turn_cap = 25
+tool_action_cap = 50
+output_bytes_cap = 24000
+wall_clock_minutes = 20
+side_effect_policy = "kill"

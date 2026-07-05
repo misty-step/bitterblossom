@@ -1,0 +1,24 @@
+version = 1
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+role = "ci-auditor"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+skills = [
+  "harness-kit/ci#audit",
+  "harness-kit/diagnose#audit-domain",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "read"
+provider_key_name = "ci-auditor"
+provider_spend_cap_usd = 0.5
+model_allowlist = ["deepseek/deepseek-v4-flash"]
+trigger_bindings = ["manual", "cron"]
+iteration_cap = 18
+turn_cap = 35
+tool_action_cap = 70
+output_bytes_cap = 24000
+wall_clock_minutes = 25
+side_effect_policy = "kill"
