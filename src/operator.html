@@ -702,6 +702,14 @@ async function load() {
       $("railStatus").textContent = "auth";
       return;
     }
+    // A stored token can still be present here (network/5xx/oversized-
+    // response failures aren't auth failures) -- without this, the
+    // unconditional showAuth() call below the auth form's initial render
+    // leaves the auth overlay locked over the shell forever, so the error
+    // banner set below is written but never actually visible to the
+    // operator (bitterblossom-119).
+    showDashboard();
+    $("planeSentence").textContent = "no data";
     $("error").textContent = error.message;
     $("error").classList.add("is-visible");
     $("railStatus").textContent = "error";

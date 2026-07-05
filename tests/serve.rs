@@ -510,6 +510,37 @@ fn operator_html_stores_token_locally_and_reprompts_on_unauthorized_api() {
 }
 
 #[test]
+fn operator_html_unlocks_the_shell_on_a_non_auth_fetch_error() {
+    // bitterblossom-119: a stored-but-valid token combined with a non-401
+    // fetch failure (network down, 5xx, oversized response) used to leave
+    // the auth overlay locked over the shell forever -- the error banner
+    // was written and marked visible, but nobody could ever see it, since
+    // only showDashboard() (called on success) or the auth-required branch
+    // dismissed the overlay. Pins that the generic-error branch now also
+    // calls showDashboard() so the banner is reachable, and resets the
+    // plane-sentence placeholder instead of leaving a stale "loading plane".
+    let html = include_str!("../src/operator.html");
+
+    let catch_block = html
+        .split("} catch (error) {")
+        .nth(1)
+        .expect("load() has a catch block");
+    let generic_error_branch = catch_block
+        .split("if (error.authRequired) {")
+        .nth(1)
+        .and_then(|rest| rest.split_once("    }\n"))
+        .map(|(_, after)| after)
+        .expect("catch block has an auth-required branch followed by the generic path");
+
+    assert!(
+        generic_error_branch.contains("showDashboard();"),
+        "the non-auth error path must unlock the shell so the error banner is visible: {generic_error_branch}"
+    );
+    assert!(generic_error_branch.contains("$(\"error\").classList.add(\"is-visible\")"));
+    assert!(generic_error_branch.contains("planeSentence"));
+}
+
+#[test]
 fn operator_html_renders_submissions_and_gates_from_existing_read_apis() {
     let html = include_str!("../src/operator.html");
 
