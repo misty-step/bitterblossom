@@ -163,6 +163,12 @@ pub struct AgentSpec {
     pub args: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Backlog 925: declared secrets that degrade the run instead of
+    /// dead-lettering it when unresolvable (e.g. read-only repo-context
+    /// tokens the agent's own card already knows how to work without). A
+    /// name here is never also required in `secrets` -- see validate().
+    #[serde(default)]
+    pub optional_secrets: Vec<String>,
     /// Optional per-agent governance boundary (backlog 091): validated at
     /// load, projected read-only via check/task-list/api-tasks JSON.
     #[serde(default)]
@@ -652,11 +658,19 @@ impl Plane {
                 }
                 _ => {}
             }
-            for secret in &agent.secrets {
+            for secret in agent.secrets.iter().chain(agent.optional_secrets.iter()) {
                 if secret == "ANTHROPIC_API_KEY" || secret == "OPENAI_API_KEY" {
                     bail!(
                         "agent '{name}': secret '{secret}' is forbidden — \
                          claude/codex run on subscription auth, never API keys"
+                    );
+                }
+            }
+            for secret in &agent.secrets {
+                if agent.optional_secrets.contains(secret) {
+                    bail!(
+                        "agent '{name}': secret '{secret}' is declared both required \
+                         and optional — it can only be one"
                     );
                 }
             }

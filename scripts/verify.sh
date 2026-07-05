@@ -126,7 +126,14 @@ rm -rf "$self_drill_tmp"
 # artifact transport/containment mechanism (attempt identity, relative paths,
 # binary/oversized/symlink policy), not workload judgment about artifact
 # meaning.
-SPINE_LOC_CAP=12210
+# Raised 2026-07-05 for bitterblossom-925: an agent can declare
+# optional_secrets alongside secrets -- unresolvable ones degrade the run
+# (absent from the workload env) instead of dead-lettering it, with a
+# distinct missing_optional_secret preflight finding kind. Ledger/dispatch
+# mechanism (a name is never in both lists; forbidden ANTHROPIC_API_KEY/
+# OPENAI_API_KEY checks now cover both), not workload judgment about which
+# secrets a given task actually needs.
+SPINE_LOC_CAP=12280
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

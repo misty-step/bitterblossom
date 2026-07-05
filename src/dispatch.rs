@@ -360,6 +360,27 @@ fn attempt_on_host(
         };
         secrets.push((name.clone(), value));
     }
+    // Backlog 925: an optional secret that cannot be resolved degrades the
+    // run instead of dead-lettering it -- it is simply absent from the
+    // workload's env, and the card's own contract is responsible for
+    // behaving sanely without it (e.g. a report-only agent still writes a
+    // blocked/degraded report rather than crashing). A provider-key minting
+    // error is a real misconfiguration, not an absent credential, so that
+    // still fails the run the same as a required secret would.
+    for name in &task.agent.optional_secrets {
+        match crate::provider_keys::resolve_secret_for_task(plane, task, name) {
+            Ok(Some(value)) => secrets.push((name.clone(), value)),
+            Ok(None) => {
+                if let Ok(value) = std::env::var(name) {
+                    secrets.push((name.clone(), value));
+                }
+            }
+            Err(e) => {
+                let _ = session.release();
+                return fail(false, format!("provider key: {e:#}"));
+            }
+        }
+    }
     let trigger = ledger.run(run_id)?;
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),

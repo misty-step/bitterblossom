@@ -140,7 +140,14 @@ fn canary_triage_task_is_report_only_sprite_reflex_contract() {
         .agent
         .secrets
         .contains(&"OPENROUTER_API_KEY".to_string()));
-    assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
+    // Backlog 925: GH_TOKEN is read-only repo context for this report-only
+    // task, not load-bearing -- optional, not required, so an absent token
+    // degrades the run instead of dead-lettering it.
+    assert!(!task.agent.secrets.contains(&"GH_TOKEN".to_string()));
+    assert!(task
+        .agent
+        .optional_secrets
+        .contains(&"GH_TOKEN".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
     assert_eq!(task.spec.substrate, "sprites");
