@@ -204,6 +204,12 @@ enum JanitorCommand {
         apply: bool,
         #[arg(long)]
         json: bool,
+        /// Skip any candidate whose path contains this substring -- never
+        /// evaluated, never touched. Repeatable. For worktrees that belong
+        /// to a different workstream/operator scope even though they are
+        /// registered against a repo in `--root`.
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
     },
 }
 
@@ -1345,8 +1351,9 @@ fn run() -> Result<()> {
                 grace_hours,
                 apply,
                 json,
+                excludes,
             } => {
-                let candidates = reap::sweep(&ledger, &roots, grace_hours, apply)?;
+                let candidates = reap::sweep(&ledger, &roots, grace_hours, apply, &excludes)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&candidates)?);
                 } else {

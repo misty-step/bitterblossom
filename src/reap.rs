@@ -189,16 +189,26 @@ fn remove_worktree(primary_repo: &Path, path: &Path) -> Result<()> {
 /// anything -- it only evaluates and reports. A refused candidate is
 /// recorded as a `checkout_reap_refused` run event when it has a run_id, so
 /// the reason is visible from `bb runs show`, never silently dropped.
+///
+/// `excludes`: any candidate whose path contains one of these substrings is
+/// skipped entirely -- never evaluated (no `git status` call at all), never
+/// touched. For worktrees that belong to a different workstream/operator
+/// scope even though they are registered against a repo in `primary_repos`.
 pub fn sweep(
     ledger: &Ledger,
     primary_repos: &[PathBuf],
     grace_hours: f64,
     apply: bool,
+    excludes: &[String],
 ) -> Result<Vec<ReapCandidate>> {
     let mut candidates = Vec::new();
+    let is_excluded = |path: &Path| excludes.iter().any(|x| path.to_string_lossy().contains(x));
 
     for primary in primary_repos {
         for path in discover_worktrees(primary)? {
+            if is_excluded(&path) {
+                continue;
+            }
             let mut c = evaluate(&path, "discovered", None, grace_hours);
             if c.eligible && apply {
                 match remove_worktree(primary, &path) {
@@ -218,6 +228,9 @@ pub fn sweep(
             continue;
         };
         let path = PathBuf::from(&checkout_path);
+        if is_excluded(&path) {
+            continue;
+        }
         let mut c = evaluate(&path, "registered", Some(run.id.clone()), grace_hours);
         if c.eligible && apply {
             // Registered checkouts are not necessarily linked worktrees of a

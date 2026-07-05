@@ -184,13 +184,42 @@ fn clean_pushed_aged_worktree_is_eligible_and_apply_removes_it() {
     assert!(wt.exists(), "evaluate() alone must never delete anything");
 
     let ledger = Ledger::open(&base.path().join("empty.db")).unwrap();
-    let candidates = reap::sweep(&ledger, std::slice::from_ref(&primary), 6.0, true).unwrap();
+    let candidates = reap::sweep(&ledger, std::slice::from_ref(&primary), 6.0, true, &[]).unwrap();
     let done = candidates
         .iter()
         .find(|c| c.path.contains("lane-done"))
         .unwrap();
     assert!(done.removed, "should have been removed: {}", done.reason);
     assert!(!wt.exists(), "the worktree directory should be gone");
+}
+
+#[test]
+fn excluded_candidate_is_never_evaluated_or_touched_even_when_eligible() {
+    let base = tempfile::tempdir().unwrap();
+    let (_bare, primary) = make_repo_with_remote(base.path());
+    let wt = add_worktree_with_age(&primary, "lane-out-of-scope", 100.0);
+    push(&primary, "lane-out-of-scope");
+
+    let ledger = Ledger::open(&base.path().join("empty.db")).unwrap();
+    let excludes = vec!["lane-out-of-scope".to_string()];
+    let candidates = reap::sweep(
+        &ledger,
+        std::slice::from_ref(&primary),
+        6.0,
+        true,
+        &excludes,
+    )
+    .unwrap();
+    assert!(
+        !candidates
+            .iter()
+            .any(|c| c.path.contains("lane-out-of-scope")),
+        "an excluded path must not appear in the report at all"
+    );
+    assert!(
+        wt.exists(),
+        "excluded candidate must survive even with --apply"
+    );
 }
 
 #[test]
@@ -201,7 +230,7 @@ fn dry_run_never_mutates_even_when_everything_is_eligible() {
     push(&primary, "lane-dryrun");
 
     let ledger = Ledger::open(&base.path().join("empty.db")).unwrap();
-    let candidates = reap::sweep(&ledger, std::slice::from_ref(&primary), 6.0, false).unwrap();
+    let candidates = reap::sweep(&ledger, std::slice::from_ref(&primary), 6.0, false, &[]).unwrap();
     let found = candidates
         .iter()
         .find(|c| c.path.contains("lane-dryrun"))
@@ -225,7 +254,7 @@ fn registered_checkout_path_refusal_is_recorded_as_a_run_event() {
     fs::write(wt.join("late-edit.txt"), "still working\n").unwrap();
 
     let run_id = terminal_run(&mut ledger, "demo", wt.to_str().unwrap());
-    let candidates = reap::sweep(&ledger, &[], 6.0, true).unwrap();
+    let candidates = reap::sweep(&ledger, &[], 6.0, true, &[]).unwrap();
     let found = candidates
         .iter()
         .find(|c| c.run_id.as_deref() == Some(run_id.as_str()))
@@ -253,7 +282,7 @@ fn registered_checkout_path_is_removed_when_safe() {
     push(&primary, "lane-registered-done");
 
     let run_id = terminal_run(&mut ledger, "demo", wt.to_str().unwrap());
-    let candidates = reap::sweep(&ledger, &[], 6.0, true).unwrap();
+    let candidates = reap::sweep(&ledger, &[], 6.0, true, &[]).unwrap();
     let found = candidates
         .iter()
         .find(|c| c.run_id.as_deref() == Some(run_id.as_str()))
