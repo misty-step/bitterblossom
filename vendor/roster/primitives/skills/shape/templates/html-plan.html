@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en" data-ae-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML Plan: Replace with title</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&amp;family=Geist+Mono:wght@100..900&amp;display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/misty-step/aesthetic@v2.5.1/aesthetic.css">
+  <style>
+    :root {
+      --ae-accent: #2643d0;
+      --ae-accent-dark: #8c9eff;
+    }
+
+    .plan-wide .ae-bar,
+    .plan-wide .ae-stage {
+      width: min(92rem, 100% - 4rem);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(25em, 0.72fr);
+      gap: 3em;
+      align-items: end;
+    }
+
+    .kicker {
+      display: block;
+      margin-bottom: 0.8em;
+    }
+
+    .rule {
+      border-top: 1px solid var(--ae-line);
+      margin: 1.5em 0;
+    }
+
+    .grid-2,
+    .grid-3,
+    .grid-4 {
+      display: grid;
+      gap: 1px;
+      background: var(--ae-line);
+    }
+
+    .grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grid-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .grid-5 {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .cell {
+      min-width: 0;
+      background: var(--ae-surface);
+      padding: 1.2em 1.35em;
+    }
+
+    .wash {
+      background: var(--ae-wash);
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 8em minmax(0, 1fr) minmax(15em, 0.68fr);
+      gap: 1.3em;
+      border-top: 1px solid var(--ae-line);
+      padding-top: 1em;
+      margin-top: 1em;
+    }
+
+    .phase:first-child {
+      border-top: 0;
+      margin-top: 0;
+      padding-top: 0;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    .status {
+      display: inline-flex;
+      gap: 0.45em;
+      align-items: baseline;
+    }
+
+    .status svg {
+      transform: translateY(0.15em);
+    }
+
+    .review-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 2em;
+    }
+
+    @media (max-width: 980px) {
+      .plan-wide .ae-bar,
+      .plan-wide .ae-stage {
+        width: min(100% - 2rem, 92rem);
+      }
+
+      .hero,
+      .grid-2,
+      .grid-3,
+      .grid-4,
+      .grid-5,
+      .phase,
+      .review-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<svg aria-hidden="true" style="display: none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path d="M20 6 9 17l-5-5"></path>
+  </symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24">
+    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path>
+    <path d="M12 9v4"></path>
+    <path d="M12 17h.01"></path>
+  </symbol>
+  <symbol id="i-x" viewBox="0 0 24 24">
+    <path d="M18 6 6 18"></path>
+    <path d="m6 6 12 12"></path>
+  </symbol>
+</svg>
+
+<div class="ae-screen plan-wide">
+  <header class="ae-bar">
+    <a class="ae-name" href="#">PLAN / EXECUTOR HANDOFF</a>
+    <p class="ae-chrome">draft for rendered review before execution</p>
+  </header>
+
+  <main class="ae-stage ae-stage-scroll">
+    <article class="ae-view">
+      <section class="hero" aria-label="Plan contract">
+        <div>
+          <p class="ae-chrome kicker">REPLACE WITH WORK ID OR BACKLOG SOURCE</p>
+          <h1 class="ae-strong">Replace with the outcome this work will make true.</h1>
+          <p class="ae-lede">State the user or operator outcome, the chosen design, and why this is the best direction now. This hero is the plan contract: an executor should know what to do, what not to do, and what proof will settle the work before reading the support sections.</p>
+        </div>
+        <aside class="ae-panel">
+          <h2 class="ae-h">CHOSEN DESIGN</h2>
+          <p><span class="status"><svg class="ae-icon ae-ok"><use href="#i-check"></use></svg> Replace with the recommended path.</span></p>
+          <div class="rule"></div>
+          <h2 class="ae-h">QUALITY SYSTEM</h2>
+          <p>Standards: name what makes this good in this repo, not just done.</p>
+          <p>Proof: live oracle + structural gate + useful fresh critic when substantive.</p>
+          <div class="rule"></div>
+          <p class="ae-dim">Premise source: <code>sha256:&lt;digest&gt; &lt;path-or-url&gt;</code></p>
+          <p class="ae-dim">Plan status: opened in browser and reviewed for hierarchy before execution.</p>
+        </aside>
+      </section>
+
+      <!-- Executive grid = first-viewport contract; keep entries short and executable. -->
+      <section class="grid-5" aria-label="Executive contract" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">STANDARDS</h2>
+          <p>The local bar for good work: architecture, UX, safety, repo fit, durability, or operator workflow.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">ACCEPTANCE</h2>
+          <p>Observable behavior, artifact, or decision that must be true when the executor finishes.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">VERIFY</h2>
+          <p>Independent proof methods: live oracle, structural gate, and fresh critic when risk earns it.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">COMMUNICATE</h2>
+          <p>When the agent reports: framing, edits, rendered evidence, critic result, gate, and closeout.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">STOP IF</h2>
+          <p>Conditions that halt execution instead of improvising: missing oracle, contradicted premise, blocked auth, unclear approval.</p>
+        </article>
+      </section>
+
+      <section class="grid-3" aria-label="Current change proof" style="margin-top: 1px">
+        <article class="cell">
+          <h2 class="ae-h">CURRENT STATE</h2>
+          <p>What is true now. Link to load-bearing files, screens, logs, tickets, or docs the executor must trust.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">CHANGE SHAPE</h2>
+          <p>What will be added, removed, rewritten, or deliberately left alone. Name the smallest durable surface.</p>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">PROOF SURFACE</h2>
+          <p>The live evidence loop: command, browser route, API probe, artifact hash, screenshot, or critic receipt.</p>
+        </article>
+      </section>
+
+      <section class="grid-2" aria-label="Scope and anchors" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">SCOPE</h2>
+          <p><strong>Goal:</strong> outcome, not implementation mechanism.</p>
+          <p><strong>Non-goals:</strong> tempting work that must stay out of this handoff.</p>
+          <p><strong>Invariants:</strong> contracts, behavior, accessibility, security, or repo conventions that must survive.</p>
+        </article>
+        <article class="cell">
+          <h2 class="ae-h">REPO ANCHORS</h2>
+          <p><a href="#">path/to/file</a> - convention or contract to follow.</p>
+          <p><a href="#">path/to/test</a> - regression surface or executable oracle.</p>
+          <p><a href="#">path/to/doc</a> - operator-facing source of truth.</p>
+        </article>
+      </section>
+
+      <section class="ae-panel" aria-label="Execution plan" style="margin-top: 2em">
+        <h2 class="ae-h">EXECUTION PLAN</h2>
+        <div class="phase">
+          <strong class="ae-accent">1 frame</strong>
+          <p>Read the live anchors, confirm the premise, and lock the work shape before implementation.</p>
+          <p class="ae-dim">Evidence: exact files read, browser artifact opened, and any operator decision recorded.</p>
+        </div>
+        <div class="phase">
+          <strong class="ae-accent">2 build</strong>
+          <p>Make the smallest durable change that satisfies the chosen design. Delete or simplify before adding surface.</p>
+          <p class="ae-dim">Evidence: source diff, failing-then-passing test, rendered artifact, or live probe.</p>
+        </div>
+        <div class="phase">
+          <strong class="ae-accent">3 review</strong>
+          <p>Run the useful critic: artifact-only, fresh-context, aimed at the failure that would embarrass production.</p>
+          <p class="ae-dim">Evidence: critic receipt with blockers fixed, rejected with reason, or explicitly waived.</p>
+        </div>
+        <div class="phase">
+          <strong class="ae-accent">4 close</strong>
+          <p>Run the gate, inspect the live surface, resolve visible files, and report residual risk.</p>
+          <p class="ae-dim">Evidence: command output, rendered route, final git status, and remote-sync result when relevant.</p>
+        </div>
+      </section>
+
+      <section class="grid-2" aria-label="Alternatives and risks" style="margin-top: 2em">
+        <article class="cell">
+          <h2 class="ae-h">ALTERNATIVE DESIGNS</h2>
+          <div class="table-wrap">
+            <table class="ae-table">
+              <thead>
+                <tr><th>option</th><th>why it helps</th><th>tradeoff</th><th>verdict</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="ae-item">chosen path</td><td>...</td><td>...</td><td>choose</td></tr>
+                <tr><td class="ae-item">boring/manual path</td><td>...</td><td>...</td><td>reject / defer</td></tr>
+                <tr><td class="ae-item">inverted premise</td><td>...</td><td>...</td><td>reject / learn</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="cell wash">
+          <h2 class="ae-h">RISKS</h2>
+          <div class="table-wrap">
+            <table class="ae-table">
+              <thead>
+                <tr><th>risk</th><th>mitigation</th><th>owner</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Most likely breakage.</td><td>How the executor catches or undoes it.</td><td>agent</td></tr>
+                <tr><td>Most expensive miss.</td><td>Extra review, test, monitor, or stop condition.</td><td>agent / operator</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- Review topology = instrumentation; do not duplicate the executive grid. -->
+      <section class="ae-panel" aria-label="Review topology" style="margin-top: 2em">
+        <h2 class="ae-h">REVIEW TOPOLOGY</h2>
+        <div class="table-wrap">
+          <table class="ae-table">
+            <thead>
+              <tr><th>selected tier</th><th>why this tier fits</th><th>critic lenses</th><th>waiver / escalation</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="ae-item">replace with tier</td><td>Blast radius, reversibility, public risk, and observability.</td><td>Architecture, security, test strength, UX, copy, or operator workflow.</td><td>What must be approved before reducing review.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="ae-dim">Tier definitions live in <code>harnesses/shared/references/quality-system.md</code>; fill the selected topology here instead of copying the reference.</p>
+        <p><strong>Ignore:</strong> name nitpicks and style preferences that should not burn review attention.</p>
+      </section>
+
+      <section class="review-grid" aria-label="Review and communication" style="margin-top: 2em">
+        <article class="ae-plate">
+          <p class="ae-plate-cap">REVIEW - useful attacks</p>
+          <p><span class="status"><svg class="ae-icon ae-warn"><use href="#i-alert"></use></svg> Hidden context.</span> What would the executor be unable to know from this page alone?</p>
+          <p><span class="status"><svg class="ae-icon ae-warn"><use href="#i-alert"></use></svg> Weak oracle.</span> Which claim lacks a command, route, artifact, or receipt?</p>
+          <p><span class="status"><svg class="ae-icon ae-warn"><use href="#i-alert"></use></svg> Scope creep.</span> Where does the plan invite improvisation beyond the chosen design?</p>
+        </article>
+        <article class="ae-plate">
+          <p class="ae-plate-cap">COMMUNICATION - agent cadence</p>
+          <p>Before edits: state goal, assumptions, files, and oracle.</p>
+          <p>During edits: report meaningful changes and rendered evidence, not every command.</p>
+          <p>Before closeout: report gate, critic result, residual risk, and final tree state.</p>
+        </article>
+      </section>
+    </article>
+  </main>
+
+  <footer class="ae-bar">
+    <p class="ae-foot">Generated from <code>skills/shape/templates/html-plan.html</code>. Fill this file directly as HTML; do not export prose into it.</p>
+  </footer>
+</div>
+</body>
+</html>

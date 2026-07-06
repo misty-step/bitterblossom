@@ -1,26 +1,30 @@
 schema_version: roster.skills_index.v1
-phase: P0-reference-only
-note: Physical skill migration is P3. These entries intentionally point at the live harness-kit predecessor.
+phase: P3-phase-1-done
+note: Physical migration (roster-916, phase 1 of roster-005) copied these bodies byte-identical into primitives/skills/; paths below are roster-owned. harness-kit's copies are untouched and still bootstrap-serve six harnesses. harness-engineering is unreferenced by any agent and is deferred to phase 2 -- its path still points at harness-kit on purpose. roster-919 added the designer and incident-hound agents; their design and factory-apps skills had no prior agent reference and did not migrate in phase 1 either -- both still point at harness-kit on purpose, same phase-2-deferred shape as harness-engineering.
 skills:
   - name: deliver
-    path: /Users/phaedrus/Development/harness-kit/skills/deliver/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/deliver/SKILL.md
   - name: powder
-    path: /Users/phaedrus/Development/harness-kit/skills/.external/misty-powder/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/.external/misty-powder/SKILL.md
   - name: sprites
-    path: /Users/phaedrus/Development/harness-kit/skills/sprites/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/sprites/SKILL.md
   - name: code-review
-    path: /Users/phaedrus/Development/harness-kit/skills/code-review/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/code-review/SKILL.md
   - name: qa
-    path: /Users/phaedrus/Development/harness-kit/skills/qa/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/qa/SKILL.md
   - name: ci
-    path: /Users/phaedrus/Development/harness-kit/skills/ci/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/ci/SKILL.md
   - name: shape
-    path: /Users/phaedrus/Development/harness-kit/skills/shape/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/shape/SKILL.md
   - name: harness-engineering
     path: /Users/phaedrus/Development/harness-kit/skills/harness-engineering/SKILL.md
   - name: research
-    path: /Users/phaedrus/Development/harness-kit/skills/research/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/research/SKILL.md
   - name: orient
-    path: /Users/phaedrus/Development/harness-kit/skills/orient/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/orient/SKILL.md
   - name: diagnose
-    path: /Users/phaedrus/Development/harness-kit/skills/diagnose/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/diagnose/SKILL.md
+  - name: design
+    path: /Users/phaedrus/Development/harness-kit/skills/design/SKILL.md
+  - name: factory-apps
+    path: /Users/phaedrus/Development/harness-kit/skills/factory-apps/SKILL.md

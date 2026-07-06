@@ -15,13 +15,13 @@ permissions:
   mutations: none
 skills:
   - name: code-review
-    path: /Users/phaedrus/Development/harness-kit/skills/code-review/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/code-review/SKILL.md
     reason: review finding discipline and fresh-context synthesis
   - name: ci
-    path: /Users/phaedrus/Development/harness-kit/skills/ci/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/ci/SKILL.md
     reason: gate interpretation and CI evidence
   - name: diagnose
-    path: /Users/phaedrus/Development/harness-kit/skills/diagnose/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/diagnose/SKILL.md
     reason: root-cause-oriented investigation of suspicious behavior
   - name: thermo-nuclear-maintainability
     path: vendor/skills/thermo-nuclear-code-quality-review/SKILL.md

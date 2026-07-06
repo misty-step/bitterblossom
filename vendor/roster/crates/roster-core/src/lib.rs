@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -49,6 +49,47 @@ impl Roster {
     }
 }
 
+/// Tier -> per-harness invocable model id, loaded from `primitives/
+/// tiers.yaml`. Distinct from the pre-existing `primitives/providers.yaml`
+/// (a peer-harness-CLI dispatch table migrated from harness-kit's
+/// agents.yaml at P0 -- how to invoke codex/claude/pi/etc, not consulted by
+/// this struct): two files, two concepts.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Providers {
+    pub schema_version: String,
+    pub tiers: BTreeMap<String, TierBindings>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TierBindings {
+    pub claude: String,
+    pub codex: String,
+    pub bb: String,
+}
+
+impl Providers {
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, RosterError> {
+        let path = root.as_ref().join("primitives/tiers.yaml");
+        let text = fs::read_to_string(&path).map_err(|source| RosterError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        serde_yaml::from_str(&text).map_err(|source| RosterError::Yaml { path, source })
+    }
+
+    fn claude_tier(&self, tier: &str) -> Option<&str> {
+        self.tiers
+            .get(tier)
+            .map(|bindings| bindings.claude.as_str())
+    }
+
+    fn bb_tier(&self, tier: &str) -> Option<&str> {
+        self.tiers.get(tier).map(|bindings| bindings.bb.as_str())
+    }
+}
+
 #[derive(Debug)]
 pub struct Agent {
     pub directory: PathBuf,
@@ -72,6 +113,8 @@ pub struct Role {
     pub permissions: Permissions,
     pub skills: Vec<SkillRef>,
     pub mcps: Vec<String>,
+    #[serde(default)]
+    pub mcps_contextual: Vec<String>,
     pub subagent_rights: SubagentRights,
     pub evidence_expectations: Vec<String>,
 }
@@ -136,23 +179,17 @@ pub enum RosterError {
     Validation(String),
 }
 
-pub fn render_claude_agent(agent: &Agent) -> String {
+pub fn render_claude_agent(agent: &Agent, providers: &Providers) -> String {
     let role = &agent.role;
-    let skills = role
-        .skills
-        .iter()
-        .map(|skill| format!("  - {}", skill.name))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let model = claude_model(role, providers);
+    let tools = claude_tools(role);
 
     format!(
         r#"---
 name: {name}
 description: {description}
-model: {preferred}
-reasoning: {reasoning}
-skills:
-{skills}
+model: {model}
+tools: {tools}
 ---
 
 # {name}
@@ -164,6 +201,14 @@ skills:
 - Preferred: {preferred}
 - Fallbacks: {fallbacks}
 - Reasoning: {reasoning}
+
+## Skills To Read
+
+{skills}
+
+## MCP Servers
+
+{mcp_servers}
 
 ## Permissions
 
@@ -179,15 +224,14 @@ skills:
 "#,
         name = role.name,
         description = role.description,
+        model = model,
+        tools = tools,
         preferred = role.model_policy.preferred,
         reasoning = role.model_policy.reasoning,
-        skills = if skills.is_empty() {
-            "  []".to_string()
-        } else {
-            skills
-        },
+        skills = render_skills(&role.skills, &[]),
         instructions = agent.instructions.trim(),
         fallbacks = role.model_policy.fallbacks.join(", "),
+        mcp_servers = render_mcp_servers(&role.mcps, &role.mcps_contextual, &[]),
         filesystem = role.permissions.filesystem,
         commands = role.permissions.commands,
         network = role.permissions.network,
@@ -197,9 +241,55 @@ skills:
     )
 }
 
-pub fn render_bb_agent(agent: &Agent) -> String {
+fn claude_model(role: &Role, providers: &Providers) -> String {
+    let preferred = &role.model_policy.preferred;
+
+    if let Some(model) = providers.claude_tier(preferred) {
+        return model.to_string();
+    }
+
+    // `preferred` isn't a known tier symbol, so treat it as a literal model
+    // id. Pass Claude subagent model names straight through; conservatively
+    // map the handful of literal Claude ids role.yaml might carry to their
+    // subagent-frontmatter short form; anything else (a codex/browser-only
+    // id, or an unrecognized string) falls back to `inherit` — the subagent
+    // runs on the session's own model — rather than guessing a wrong one.
+    match preferred.as_str() {
+        "sonnet" | "opus" | "haiku" | "inherit" => preferred.clone(),
+        "claude-opus-4-8" => "opus".to_string(),
+        "claude-sonnet-5" => "sonnet".to_string(),
+        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => "haiku".to_string(),
+        _ => "inherit".to_string(),
+    }
+}
+
+fn claude_tools(role: &Role) -> String {
+    let mut tools = vec!["Read"];
+
+    if role.permissions.filesystem.contains("write") || role.permissions.mutations != "none" {
+        tools.push("Write");
+        tools.push("Edit");
+    }
+
+    tools.push("Grep");
+    tools.push("Glob");
+
+    if role.permissions.commands != "none" && role.permissions.commands != "disabled-by-default" {
+        tools.push("Bash");
+    }
+
+    if role.permissions.network == "allowed" {
+        tools.push("WebSearch");
+    }
+
+    tools.join(", ")
+}
+
+// bb (Bitterblossom) config has no MCP concept: `role.mcps`/`mcps_contextual`
+// are not rendered into the generated TOML at all, required or contextual.
+pub fn render_bb_agent(agent: &Agent, providers: &Providers) -> Result<String, String> {
     let role = &agent.role;
-    let model = bb_model(role);
+    let model = bb_model(role, providers)?;
     let skills = toml_array(
         &role
             .skills
@@ -208,7 +298,7 @@ pub fn render_bb_agent(agent: &Agent) -> String {
             .collect::<Vec<_>>(),
     );
 
-    format!(
+    Ok(format!(
         r#"# Generated from roster agent {name}.
 # Roster preferred model: {preferred}
 # Roster reasoning: {reasoning}
@@ -237,7 +327,7 @@ side_effect_policy = "kill"
         reasoning = toml_escape(&role.model_policy.reasoning),
         model = toml_escape(&model),
         skills = skills,
-    )
+    ))
 }
 
 pub fn render_brief(
@@ -270,9 +360,9 @@ Read: {instruction_path}
 
 {skills}
 
-## MCP Selection
+## MCP Servers
 
-{mcps}
+{mcp_servers}
 
 ## Permissions
 
@@ -300,7 +390,7 @@ Read: {instruction_path}
         instruction_path = agent.instruction_path().display(),
         instructions = agent.instructions.trim(),
         skills = render_skills(&role.skills, add_skills),
-        mcps = render_mcps(&role.mcps, add_mcps),
+        mcp_servers = render_mcp_servers(&role.mcps, &role.mcps_contextual, add_mcps),
         filesystem = role.permissions.filesystem,
         commands = role.permissions.commands,
         network = role.permissions.network,
@@ -331,15 +421,35 @@ Read: {instruction_path}
     output
 }
 
-fn bb_model(role: &Role) -> String {
+fn bb_model(role: &Role, providers: &Providers) -> Result<String, String> {
     if let Some(model) = openrouter_model(&role.model_policy.preferred) {
-        return model.to_string();
+        return Ok(model.to_string());
     }
-    role.model_policy
+    if let Some(model) = role
+        .model_policy
         .fallbacks
         .iter()
-        .find_map(|fallback| openrouter_model(fallback).map(ToOwned::to_owned))
-        .unwrap_or_else(|| role.model_policy.preferred.clone())
+        .find_map(|fallback| openrouter_model(fallback))
+    {
+        return Ok(model.to_string());
+    }
+
+    // Neither `preferred` nor any fallback is a literal `openrouter/`-prefixed
+    // model id. Resolve `preferred` as a tier symbol through providers.yaml
+    // instead of ever falling back to the bare tier string (that string is
+    // not an invocable model, so a bb config carrying it would silently fail
+    // at dispatch time rather than at render time).
+    providers
+        .bb_tier(&role.model_policy.preferred)
+        .map(|model| openrouter_model(model).unwrap_or(model).to_string())
+        .ok_or_else(|| {
+            format!(
+                "cannot resolve bb model for agent {:?}: preferred {:?} is not an \
+                 openrouter/-prefixed literal, has no openrouter/-prefixed fallback, \
+                 and is not a known tier in primitives/tiers.yaml",
+                role.name, role.model_policy.preferred
+            )
+        })
 }
 
 fn openrouter_model(value: &str) -> Option<&str> {
@@ -360,6 +470,7 @@ pub fn render_show(agent: &Agent) -> String {
 - Reasoning: {reasoning}
 - Skills: {skill_count}
 - MCPs: {mcps}
+- Contextual MCPs: {mcps_contextual}
 
 ## Evidence Expectations
 
@@ -377,6 +488,11 @@ pub fn render_show(agent: &Agent) -> String {
             "none".to_string()
         } else {
             role.mcps.join(", ")
+        },
+        mcps_contextual = if role.mcps_contextual.is_empty() {
+            "none".to_string()
+        } else {
+            role.mcps_contextual.join(", ")
         },
         evidence = bullet_list(&role.evidence_expectations),
     )
@@ -477,6 +593,10 @@ fn validate_agent(directory: &Path, role: &Role, instructions: &str) -> Result<(
         require_non_empty(mcp, "mcps[]", directory)?;
     }
 
+    for mcp in &role.mcps_contextual {
+        require_non_empty(mcp, "mcps_contextual[]", directory)?;
+    }
+
     for expectation in &role.evidence_expectations {
         require_non_empty(expectation, "evidence_expectations[]", directory)?;
     }
@@ -526,12 +646,18 @@ fn render_skills(skills: &[SkillRef], add_skills: &[String]) -> String {
     }
 }
 
-fn render_mcps(mcps: &[String], add_mcps: &[String]) -> String {
+fn render_mcp_servers(mcps: &[String], mcps_contextual: &[String], add_mcps: &[String]) -> String {
+    let required = mcp_lines(mcps, &[]);
+    let contextual = mcp_lines(mcps_contextual, add_mcps);
+    format!("### Required\n\n{required}\n\n### Contextual (bind when present)\n\n{contextual}")
+}
+
+fn mcp_lines(mcps: &[String], overrides: &[String]) -> String {
     let mut lines = mcps
         .iter()
         .map(|mcp| format!("- {mcp}"))
         .collect::<Vec<_>>();
-    for mcp in add_mcps {
+    for mcp in overrides {
         lines.push(format!("- override: {mcp}"));
     }
     if lines.is_empty() {

@@ -1,0 +1,34 @@
+schema_version: roster.role.v1
+name: designer
+description: Visible-artifact critique and polish across UI, design-system primitives, docs pages, and diagrams.
+model_policy:
+  preferred: fable-class
+  fallbacks:
+    - claude-opus-4-8
+    - openrouter/moonshotai/kimi-k2.7-code
+  reasoning: medium
+permissions:
+  filesystem: workspace-write
+  commands: allowed
+  network: allowed
+  secrets: none
+  mutations: styling-and-markup-scope
+skills:
+  - name: design
+    path: /Users/phaedrus/Development/harness-kit/skills/design/SKILL.md
+    reason: front door to visual-critique specialists (impeccable-impeccable, anthropic-frontend-design, leon-*, vercel-web-design-guidelines); not yet migrated to primitives/skills (roster-919 phase-1 addendum, see skills-index.yaml note)
+  - name: artifact
+    path: /Users/phaedrus/Development/roster/primitives/skills/artifact/SKILL.md
+    reason: publish before/after evidence the same way orchestrator does
+  - name: qa
+    path: /Users/phaedrus/Development/roster/primitives/skills/qa/SKILL.md
+    reason: visual regression pass after a polish commit
+mcps: []
+subagent_rights:
+  may_dispatch: false
+  may_spawn_subagents: false
+  may_use_peer_harnesses: false
+evidence_expectations:
+  - Every critique cites a rendered screenshot at true viewport (CDP device-metrics — Chrome headless floors --window-size; do not trust a resized browser chrome as the real viewport).
+  - Every change ships a before/after screenshot pair, not a single after shot.
+  - No design claim without the pixels — a described improvement without a rendered screenshot is not evidence.

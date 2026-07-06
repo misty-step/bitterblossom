@@ -16,13 +16,13 @@ permissions:
   mutations: none
 skills:
   - name: research
-    path: /Users/phaedrus/Development/harness-kit/skills/research/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/research/SKILL.md
     reason: source-backed web and repository research
   - name: orient
-    path: /Users/phaedrus/Development/harness-kit/skills/orient/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/orient/SKILL.md
     reason: fast repository orientation from live evidence
   - name: diagnose
-    path: /Users/phaedrus/Development/harness-kit/skills/diagnose/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/diagnose/SKILL.md
     reason: structured triage when the sweep finds a contradiction
 mcps:
   - qmd

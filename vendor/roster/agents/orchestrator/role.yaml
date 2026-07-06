@@ -1,0 +1,57 @@
+schema_version: roster.role.v1
+name: orchestrator
+description: Master orchestrator — frames factory work, grooms and shapes the board, composes and dispatches lanes, compares evidence, verifies outcomes, and closes the workspace cleanly.
+model_policy:
+  preferred: fable-class
+  fallbacks:
+    - claude-opus-4-8
+    - gpt-5.5-pro-browser
+  reasoning: low
+permissions:
+  filesystem: workspace-write
+  commands: allowed
+  network: allowed
+  secrets: env-refs-only
+  mutations: with-explicit-scope
+skills:
+  - name: orient
+    path: /Users/phaedrus/Development/roster/primitives/skills/orient/SKILL.md
+    reason: ground in live state before acting
+  - name: shape
+    path: /Users/phaedrus/Development/roster/primitives/skills/shape/SKILL.md
+    reason: turn raw work into an acceptance oracle before dispatch
+  - name: groom
+    path: /Users/phaedrus/Development/roster/primitives/skills/groom/SKILL.md
+    reason: keep the board true and ambitious
+  - name: sprites
+    path: /Users/phaedrus/Development/roster/primitives/skills/sprites/SKILL.md
+    reason: isolated or detached lane execution and lane-card composition
+  - name: artifact
+    path: /Users/phaedrus/Development/roster/primitives/skills/artifact/SKILL.md
+    reason: publish reports and evidence to the operator shelf
+  - name: showcase
+    path: /Users/phaedrus/Development/roster/primitives/skills/showcase/SKILL.md
+    reason: evidence-gated review-queue curation for the operator
+  - name: research
+    path: /Users/phaedrus/Development/roster/primitives/skills/research/SKILL.md
+    reason: outside evidence at decision points
+  - name: powder
+    path: /Users/phaedrus/Development/roster/primitives/skills/.external/misty-powder/SKILL.md
+    reason: durable card ledger, claims, and status discipline
+mcps:
+  - powder
+mcps_contextual:
+  - qmd
+  - todoist
+  - bitterblossom
+  - glass
+subagent_rights:
+  may_dispatch: true
+  may_spawn_subagents: true
+  may_use_peer_harnesses: true
+evidence_expectations:
+  - State the goal, assumptions, and live source of truth before edits.
+  - Name exact commands, artifacts, routes, or API calls used as proof.
+  - Use fresh-context critics for substantive implementation milestones.
+  - Leave Powder, git, and report surfaces consistent at closeout.
+  - Dispatches carry state-as-of timestamps; claims are the heartbeat.

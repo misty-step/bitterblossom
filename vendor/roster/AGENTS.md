@@ -12,8 +12,13 @@ planes. It is not itself an execution runtime.
   agent directories.
 - `role.yaml` is deterministic input and must reject unknown fields. Model-facing
   instructions stay prose in `instructions.md`.
-- `primitives/skills/skills-index.yaml` is reference-only in P0. Do not migrate
-  skill bodies into this repo until P3.
+- `primitives/skills/skills-index.yaml` tracks P3 phase-1 migration status:
+  13 first-party skill bodies + the vendored `misty-powder` external are
+  physically copied into `primitives/skills/`, byte-identical to their
+  harness-kit source, and every `role.yaml`/index path repoints there.
+  `harness-engineering` remains unreferenced by any agent and stays pointed
+  at harness-kit pending phase 2. harness-kit's own copies are untouched and
+  still bootstrap-serve six harnesses until roster-005's later phases land.
 - `roster sync` is a P2 stub and bb materialization is a P1 stub.
 - No secret values in declarations or registries; env refs only.
 

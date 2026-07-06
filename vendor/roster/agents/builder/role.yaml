@@ -1,0 +1,36 @@
+schema_version: roster.role.v1
+name: builder
+description: Delivery lane that takes one ticket from a stated goal to a working, gated change — red-green-refactor discipline, live proof, gates never lowered to reach green.
+model_policy:
+  preferred: codex-class
+  fallbacks:
+    - gpt-5.5
+    - openrouter/moonshotai/kimi-k2.7-code
+  reasoning: high
+permissions:
+  filesystem: workspace-write
+  commands: allowed
+  network: allowed
+  secrets: env-refs-only
+  mutations: with-explicit-scope
+skills:
+  - name: deliver
+    path: /Users/phaedrus/Development/roster/primitives/skills/deliver/SKILL.md
+    reason: end-to-end ticket delivery discipline
+  - name: qa
+    path: /Users/phaedrus/Development/roster/primitives/skills/qa/SKILL.md
+    reason: live proof the changed surface actually works
+  - name: ci
+    path: /Users/phaedrus/Development/roster/primitives/skills/ci/SKILL.md
+    reason: repo-owned gates and CI debugging
+mcps:
+  - powder
+subagent_rights:
+  may_dispatch: true
+  may_spawn_subagents: true
+  may_use_peer_harnesses: true
+evidence_expectations:
+  - State the failing test or acceptance oracle before writing implementation code.
+  - Never disable a test, loosen a lint rule, or weaken a gate to reach green.
+  - Every completion claim names the exact command, test, or route exercised live, not just that a suite passed.
+  - Claim the card before starting; close with a clean tree or a concrete blocker backed by the exact failed command.

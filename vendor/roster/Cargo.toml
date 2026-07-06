@@ -2,6 +2,7 @@
 members = [
     "crates/roster-core",
     "crates/roster-cli",
+    "crates/roster-mcp",
 ]
 resolver = "3"
 
