@@ -14,6 +14,48 @@ cargo clippy --all-targets -- -D warnings
 echo "==> tests"
 cargo test
 
+# bitterblossom-124: coverage ratchet, not an arbitrary one-time threshold --
+# see docs/coverage-ratchet.md for the full policy. Baseline recorded
+# 2026-07-06: 81.06% total line coverage. Floor sits a little under that so
+# routine measurement noise across platforms cannot false-fail; raise the
+# floor only after a deliberate coverage improvement, in the same commit,
+# with a comment recording the new baseline (same convention as
+# SPINE_LOC_CAP below). cargo-llvm-cov reruns the suite under instrumentation
+# (mechanism cost, not workload judgment) and emits an lcov report as the
+# coverage-proxy artifact this card's acceptance requires.
+COVERAGE_LINE_FLOOR=80.5
+echo "==> coverage ratchet (line floor <= $COVERAGE_LINE_FLOOR%; docs/coverage-ratchet.md)"
+mkdir -p target/coverage
+if cargo llvm-cov --fail-under-lines "$COVERAGE_LINE_FLOOR" --lcov --output-path target/coverage/lcov.info; then
+  :
+elif [ -n "${BB_COVERAGE_WAIVER:-}" ]; then
+  echo "COVERAGE WAIVED: $BB_COVERAGE_WAIVER"
+  echo "(this bypass must be visible in the PR/workflow diff that set BB_COVERAGE_WAIVER -- see docs/coverage-ratchet.md)"
+else
+  echo "line coverage dropped below the ratchet floor ($COVERAGE_LINE_FLOOR%)."
+  echo "Fix the regression, or for a deliberate reviewed exception set BB_COVERAGE_WAIVER=\"<reason>\"."
+  echo "See docs/coverage-ratchet.md."
+  exit 1
+fi
+
+# bitterblossom-124: application-floor browser execution gate for the
+# operator dashboard, distinct from bitterblossom-119's rendered-screenshot
+# proof (states/layout) -- this is automated syntax validation, a headless
+# load with zero console errors, and one real click path (auth, then a view
+# switch), at desktop and mobile widths. Skips gracefully if Node/Playwright
+# are not present locally (not a repo dependency; see docs/coverage-ratchet.md
+# for setup); CI always installs both so the check is never silently absent
+# there (.github/workflows/ci.yml).
+echo "==> dashboard browser smoke (docs/coverage-ratchet.md)"
+if command -v node >/dev/null 2>&1 && node -e "require.resolve('playwright')" >/dev/null 2>&1; then
+  node scripts/dashboard-smoke.mjs "$PWD/target/debug/bb"
+elif [ -n "${CI:-}" ]; then
+  echo "CI must have Node + Playwright installed for this gate; see .github/workflows/ci.yml"
+  exit 1
+else
+  echo "node/playwright not found locally -- skipping (required in CI). See docs/coverage-ratchet.md to install."
+fi
+
 echo "==> OpenRouter model catalog fixture"
 scripts/check-model-catalog.sh --catalog tests/fixtures/openrouter-models-current.json --json >/dev/null
 

@@ -39,3 +39,9 @@ thinktank.log
 
 /target
 /target
+
+# bitterblossom-124: dashboard-smoke.mjs/capture-dashboard-screenshots.mjs are
+# invoked like external dev tools (Playwright), never a committed dependency.
+node_modules/
+package.json
+package-lock.json
