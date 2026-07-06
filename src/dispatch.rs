@@ -229,6 +229,15 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
             Some(&serde_json::to_string(&task.roster)?),
         )?;
     }
+    crate::glass::post_dispatched(
+        plane,
+        ledger,
+        run_id,
+        &task.name,
+        &task.agent_name,
+        &task.agent.harness,
+        &task.agent.model,
+    );
     let started = Instant::now();
 
     let mut attempt_n = ledger.attempt_count(run_id)?;
@@ -237,12 +246,19 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
         let outcome = run_attempt(plane, ledger, run_id, task, attempt_n)?;
         match outcome {
             AttemptOutcome::Success { stats } => {
-                ledger.finalize_run(
-                    run_id,
-                    stats.cost_usd,
-                    started.elapsed().as_millis() as i64,
-                )?;
+                let duration_ms = started.elapsed().as_millis() as i64;
+                ledger.finalize_run(run_id, stats.cost_usd, duration_ms)?;
                 ledger.transition(run_id, "success", None)?;
+                crate::glass::post_completed(
+                    plane,
+                    ledger,
+                    run_id,
+                    &task.name,
+                    &task.agent_name,
+                    "success",
+                    stats.cost_usd,
+                    Some(duration_ms),
+                );
                 if let Some(v) = budget::post_run_check(task, stats.cost_usd) {
                     ledger.record_budget_event(Some(&task.name), v.kind, &v.detail)?;
                     ledger.park_task(&task.name, &v.detail)?;
@@ -256,12 +272,19 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                 break;
             }
             AttemptOutcome::Parked { stats } => {
-                ledger.finalize_run(
-                    run_id,
-                    stats.cost_usd,
-                    started.elapsed().as_millis() as i64,
-                )?;
+                let duration_ms = started.elapsed().as_millis() as i64;
+                ledger.finalize_run(run_id, stats.cost_usd, duration_ms)?;
                 ledger.transition(run_id, "parked_on_ask", None)?;
+                crate::glass::post_completed(
+                    plane,
+                    ledger,
+                    run_id,
+                    &task.name,
+                    &task.agent_name,
+                    "parked_on_ask",
+                    stats.cost_usd,
+                    Some(duration_ms),
+                );
                 break;
             }
             AttemptOutcome::Failure {
@@ -353,6 +376,17 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                 } else {
                     ledger.transition(run_id, "failure", Some(&error))?;
                 }
+                let final_state = ledger.run(run_id)?.state;
+                crate::glass::post_completed(
+                    plane,
+                    ledger,
+                    run_id,
+                    &task.name,
+                    &task.agent_name,
+                    &final_state,
+                    stats.cost_usd,
+                    Some(started.elapsed().as_millis() as i64),
+                );
                 break;
             }
             AttemptOutcome::Failure {
@@ -378,6 +412,16 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                     ledger,
                     "run_dead_lettered",
                     &serde_json::json!({ "run_id": run_id, "task": task.name, "dead_letter": dl, "error": error }),
+                );
+                crate::glass::post_completed(
+                    plane,
+                    ledger,
+                    run_id,
+                    &task.name,
+                    &task.agent_name,
+                    "failure",
+                    None,
+                    Some(started.elapsed().as_millis() as i64),
                 );
                 break;
             }

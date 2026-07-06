@@ -5,6 +5,7 @@ pub mod budget;
 pub mod canary;
 pub mod dispatch;
 pub mod doctor;
+pub mod glass;
 pub mod harness;
 pub mod health;
 pub mod ingress;

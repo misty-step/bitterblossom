@@ -292,6 +292,11 @@ impl Ledger {
         // can authenticate its own `bb ask` calls without the operator's
         // global BB_API_TOKEN (least privilege: scoped to this run only).
         ensure_column(&conn, "runs", "ask_token", "TEXT")?;
+        // bitterblossom-933: the glass session id for this run's lineage
+        // root, stored the first time a post creates one (glass assigns
+        // session ids; bb cannot invent its own -- verified live, an
+        // unrecognized session_id is a 404, not an auto-create).
+        ensure_column(&conn, "runs", "glass_session_id", "TEXT")?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
@@ -782,6 +787,26 @@ impl Ledger {
             .conn
             .query_row(
                 "SELECT ask_token FROM runs WHERE id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_run_glass_session(&self, run_id: &str, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET glass_session_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![run_id, session_id, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn run_glass_session(&self, run_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT glass_session_id FROM runs WHERE id = ?1",
                 params![run_id],
                 |r| r.get(0),
             )

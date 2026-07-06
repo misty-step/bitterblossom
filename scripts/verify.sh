@@ -232,7 +232,18 @@ rm -rf "$self_drill_tmp"
 # client dependency added, matching canary.rs/notify.rs). No module
 # ballooned (main.rs/ledger.rs/serve.rs each grew ~60-90 lines; ask.rs is
 # new); this is dispatch/ledger/CLI mechanism, not workload judgment.
-SPINE_LOC_CAP=14100
+# bitterblossom-933: 14100 -> 14450 for a new src/glass.rs (215 lines) -- the
+# run plane's own lifecycle emitter (dispatched/completed/asked/resumed
+# posts), shelling to curl exactly like canary.rs/notify.rs/ask.rs, plus a
+# handful of call sites at existing dispatch.rs/serve.rs lifecycle seams and
+# a small ledger addition (`glass_session_id`, mirroring `ask_token`) for
+# glass's own real session-id contract, proven live against the deployed
+# instance: an unrecognized session_id 404s, so bb persists whatever id
+# glass assigns on the first post and reuses it, rather than inventing one.
+# No module ballooned. This is the observability floor the card asks for --
+# "a small emitter at existing lifecycle seams, not a new subsystem" -- not
+# workload judgment.
+SPINE_LOC_CAP=14450
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

@@ -73,6 +73,9 @@ bind = "127.0.0.1:7077"
 [notify]
 webhook_url = "https://ntfy.sh/my-plane"   # state transitions only
 
+[glass]                            # bitterblossom-933: lifecycle observability floor
+base_url = "https://glass.example.ts.net:9040"   # absent = no-op, like [notify]
+
 [backup]                          # optional; projected by `bb status --json`
 enabled = true
 provider = "litestream"
@@ -463,6 +466,34 @@ are observability receipts, not dispatch leases.
   `"name":"bb-plane"`) or check-ins 404. This is a different secret from
   `BB_API_TOKEN` and unrelated to `CANARY_API_KEY` (canary's own admin key,
   never set here).
+
+### Glass lifecycle emitter (bitterblossom-933)
+
+`src/glass.rs` posts to a [Glass](https://github.com/misty-step/glass) live
+stage automatically at run lifecycle points -- dispatched, completed
+(success/failure/parked_on_ask), asked, and resumed (the last two only once
+bitterblossom-930's HITL machinery is in play) -- with zero agent
+cooperation required. Configure `[glass].base_url` in `plane.toml`; absent,
+this is a no-op, exactly like `[notify]`. Delivery is best-effort (shells to
+curl, matching canary.rs/notify.rs/ask.rs); a glass outage never affects
+dispatch.
+
+Glass assigns session ids itself -- `POST /api/posts` with an unrecognized
+`session_id` is a 404, not an auto-create (verified against the live
+instance). So the first post in a run's lineage omits `session_id`,
+persists whatever glass returns to `runs.glass_session_id` keyed on the
+lineage root (walking `parent_run_id` back), and every later post in that
+lineage reuses it -- this is what makes a parked run and its resume land in
+one coherent glass session instead of two unrelated posts.
+
+Operational note: glass instances typically live behind Tailscale (e.g.
+`https://<host>.<tailnet>.ts.net:<port>`, "tailnet only" -- the short
+MagicDNS name alone fails TLS SNI matching, use the full `.ts.net` FQDN). A
+plane dispatched from a network that is not itself on that tailnet (for
+example, a Fly-hosted `bb serve` with no Tailscale sidecar) cannot reach it;
+`[glass].base_url` should only be set once the dispatching plane's network
+can actually resolve and reach that host, or every post silently no-ops
+into stderr warnings.
 
 Cost attribution rides OpenRouter's per-response usage accounting
 (`usage.cost` arrives with pi/omp responses — no extra calls), parsed

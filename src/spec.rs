@@ -16,6 +16,8 @@ pub struct PlaneSpec {
     #[serde(default)]
     pub notify: NotifySpec,
     #[serde(default)]
+    pub glass: GlassSpec,
+    #[serde(default)]
     pub backup: BackupSpec,
     #[serde(default)]
     pub budget: GlobalBudget,
@@ -31,6 +33,7 @@ impl Default for PlaneSpec {
             dev: false,
             ingress: IngressSpec::default(),
             notify: NotifySpec::default(),
+            glass: GlassSpec::default(),
             backup: BackupSpec::default(),
             budget: GlobalBudget::default(),
             workload_repos: Vec::new(),
@@ -127,6 +130,15 @@ impl Default for IngressSpec {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NotifySpec {
     pub webhook_url: Option<String>,
+}
+
+/// bitterblossom-933: the run plane's own glass emitter. Mirrors NotifySpec
+/// exactly -- absent `base_url` is a no-op, not an error; this is a
+/// best-effort observability floor, not a durable delivery guarantee like
+/// `[notify]`'s webhook.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlassSpec {
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

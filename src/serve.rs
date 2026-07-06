@@ -744,6 +744,18 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             req.blocking,
             req.window_seconds,
         )?;
+        if let Ok(task) = plane.task(&req.task) {
+            crate::glass::post_asked(
+                &plane,
+                &ledger,
+                &req.run_id,
+                &req.task,
+                &task.agent_name,
+                &id,
+                &req.kind,
+                &req.question,
+            );
+        }
         return Ok((201, serde_json::to_string(&ask)?));
     }
     if let Some(rest) = path_no_query.strip_prefix("/api/asks/") {
@@ -807,6 +819,17 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                     payload: Some(&resume_payload),
                     parent_run_id: Some(&ask.run_id),
                 })?;
+                if let Ok(task) = plane.task(&ask.task) {
+                    crate::glass::post_resumed(
+                        &plane,
+                        &ledger,
+                        &ask.run_id,
+                        &outcome.run_id,
+                        &ask.task,
+                        &task.agent_name,
+                        &ask.id,
+                    );
+                }
                 resumed_run_id = Some(outcome.run_id);
             }
             return Ok((
