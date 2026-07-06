@@ -202,3 +202,27 @@ CREATE TABLE IF NOT EXISTS plane_pause (
   reason TEXT NOT NULL,
   at TEXT NOT NULL
 );
+
+-- bitterblossom-930: HITL asks (question|decision|approval) a dispatched
+-- attempt raises via the `bb ask` CLI. `state`: open -> answered (fast path,
+-- the still-running attempt polls and sees it) or open -> parked (window
+-- elapsed with no answer; the run finalizes as `parked_on_ask` and answering
+-- a parked ask creates a lineage-linked resume run instead of unblocking a
+-- poll). `blocking` distinguishes park+escalate from proceed-on-assumption.
+CREATE TABLE IF NOT EXISTS asks (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  task TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  question TEXT NOT NULL,
+  context TEXT,
+  blocking INTEGER NOT NULL,
+  window_seconds INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  answer TEXT,
+  answered_at TEXT,
+  answered_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS asks_run ON asks(run_id);

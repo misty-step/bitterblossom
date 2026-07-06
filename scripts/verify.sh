@@ -207,7 +207,18 @@ rm -rf "$self_drill_tmp"
 # CLI/ledger/serve-probe mechanism composing existing read paths, not
 # workload judgment; no HTTP client dependency added (shells to curl like
 # canary::deliver). Both raises landed independently and are additive.
-SPINE_LOC_CAP=13450
+# bitterblossom-930: the HITL ask/answer runtime primitive -- an `asks`
+# ledger table + state machine, the `parked_on_ask` run state and its
+# dispatch.rs outcome (a new terminal AttemptOutcome, no change to existing
+# retry/success/failure branches), three serve.rs HTTP routes (raise, poll,
+# answer -- answer reuses the existing ledger.ingest + dispatch_loop pickup
+# path, the same mechanism `dlq replay` already uses for lineage-linked
+# re-dispatch; no new concurrency model, no long-poll on the single-threaded
+# http_loop), and a new src/ask.rs CLI module (shells to curl, no HTTP
+# client dependency added, matching canary.rs/notify.rs). No module
+# ballooned (main.rs/ledger.rs/serve.rs each grew ~60-90 lines; ask.rs is
+# new); this is dispatch/ledger/CLI mechanism, not workload judgment.
+SPINE_LOC_CAP=14100
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

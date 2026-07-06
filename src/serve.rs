@@ -11,7 +11,7 @@ use subtle::ConstantTimeEq;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ingress;
-use crate::ledger::{ExternalRunCreate, Ledger, LEDGER_SCHEMA_VERSION};
+use crate::ledger::{ExternalRunCreate, IngressRequest, Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
 use crate::spec::{Plane, TriggerSpec};
 use crate::{canary, dispatch, notify, progress};
@@ -555,6 +555,30 @@ fn bearer_matches(value: &str, token: &str) -> bool {
     found.len() == token.len() && found.as_bytes().ct_eq(token.as_bytes()).into()
 }
 
+/// Extract a presented bearer value regardless of what it should match --
+/// used by the ask/answer routes, whose valid token is per-run, not the
+/// plane-wide `BB_API_TOKEN` `read_authorized` checks against.
+fn presented_bearer(request: &tiny_http::Request) -> Option<String> {
+    request.headers().iter().find_map(|h| {
+        h.field
+            .as_str()
+            .as_str()
+            .eq_ignore_ascii_case("authorization")
+            .then(|| h.value.as_str().strip_prefix("Bearer ").map(str::to_string))
+            .flatten()
+    })
+}
+
+fn ask_token_authorized(request: &tiny_http::Request, expected: Option<&str>) -> bool {
+    match (presented_bearer(request), expected) {
+        (Some(presented), Some(expected)) => {
+            presented.len() == expected.len()
+                && presented.as_bytes().ct_eq(expected.as_bytes()).into()
+        }
+        _ => false,
+    }
+}
+
 fn query_param(url: &str, name: &str) -> Option<String> {
     let (_, query) = url.split_once('?')?;
     query.split('&').find_map(|kv| {
@@ -599,6 +623,24 @@ struct ExternalRunPatch {
     completed_at: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct AskRaiseRequest {
+    run_id: String,
+    task: String,
+    kind: String,
+    question: String,
+    #[serde(default)]
+    context: Option<String>,
+    blocking: bool,
+    window_seconds: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct AskAnswerRequest {
+    answer: String,
+    answered_by: String,
+}
+
 fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16, String)> {
     let method = request.method().to_string();
     let url = request.url().to_string();
@@ -609,6 +651,121 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
 
     if method == "GET" && (url == "/" || url.starts_with("/?")) {
         return Ok((200, include_str!("operator.html").into()));
+    }
+
+    // bitterblossom-930: the HITL ask/answer surface. Raise and poll are
+    // authenticated by the ask's own per-run capability token (the
+    // dispatched agent's declared BB_API_TOKEN-equivalent for its own run
+    // only -- it never receives the operator's global token), so this must
+    // run before the generic `/api/*` GET handler below, which requires the
+    // plane-wide `BB_API_TOKEN` and would otherwise 401 every ask poll.
+    // Answer is operator-facing and uses that same plane-wide token.
+    let path_no_query = url.split('?').next().unwrap_or(&url).to_string();
+    if method == "POST" && path_no_query == "/api/asks" {
+        let plane = Plane::load(root)?;
+        let ledger = Ledger::open(&plane.db_path())?;
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
+            Ok(body) => body,
+            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        };
+        let req: AskRaiseRequest = match serde_json::from_str(&body) {
+            Ok(req) => req,
+            Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
+        };
+        if !matches!(req.kind.as_str(), "question" | "decision" | "approval") {
+            return Ok((
+                400,
+                json_error(format!(
+                    "kind '{}' must be question, decision, or approval",
+                    req.kind
+                )),
+            ));
+        }
+        let stored_token = ledger.run_ask_token(&req.run_id)?;
+        if !ask_token_authorized(request, stored_token.as_deref()) {
+            return Ok((401, json_error("bad ask_token for run_id".into())));
+        }
+        let id = format!("ask-{}", crate::ledger::new_id());
+        let ask = ledger.raise_ask(
+            &id,
+            &req.run_id,
+            &req.task,
+            &req.kind,
+            &req.question,
+            req.context.as_deref(),
+            req.blocking,
+            req.window_seconds,
+        )?;
+        return Ok((201, serde_json::to_string(&ask)?));
+    }
+    if let Some(rest) = path_no_query.strip_prefix("/api/asks/") {
+        let plane = Plane::load(root)?;
+        let mut ledger = Ledger::open(&plane.db_path())?;
+        if method == "GET" {
+            let id = rest.to_string();
+            let ask = match ledger.ask(&id) {
+                Ok(ask) => ask,
+                Err(_) => return Ok((404, json_error(format!("ask {id} not found")))),
+            };
+            let stored_token = ledger.run_ask_token(&ask.run_id)?;
+            if !ask_token_authorized(request, stored_token.as_deref()) {
+                return Ok((401, json_error("bad ask_token".into())));
+            }
+            let ask = ledger.park_ask_if_expired(&id)?;
+            return Ok((200, serde_json::to_string(&ask)?));
+        }
+        if method == "POST" {
+            let Some(id) = rest.strip_suffix("/answer") else {
+                return Ok((404, "{\"error\":\"not found\"}".into()));
+            };
+            if !read_authorized(request) {
+                return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
+            }
+            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
+                Ok(body) => body,
+                Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+            };
+            let req: AskAnswerRequest = match serde_json::from_str(&body) {
+                Ok(req) => req,
+                Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
+            };
+            let ask = match ledger.answer_ask(id, &req.answer, &req.answered_by) {
+                Ok(ask) => ask,
+                Err(err) => return Ok((409, json_error(err.to_string()))),
+            };
+            let run = ledger.run(&ask.run_id)?;
+            let mut resumed_run_id = None;
+            if run.state == "parked_on_ask" {
+                let packet = match crate::artifacts::read(
+                    &ledger,
+                    &ask.run_id,
+                    dispatch::ASK_PACKET_FILENAME,
+                )? {
+                    crate::artifacts::ReadOutcome::Text { content, .. } => Some(content),
+                    _ => None,
+                };
+                let resume_payload = serde_json::json!({
+                    "ask": {"id": ask.id, "kind": ask.kind, "question": ask.question, "context": ask.context},
+                    "answer": req.answer,
+                    "answered_by": req.answered_by,
+                    "packet": packet,
+                })
+                .to_string();
+                let outcome = ledger.ingest(IngressRequest {
+                    task: &ask.task,
+                    trigger_kind: "resume",
+                    idempotency_key: Some(&format!("resume:{}", ask.id)),
+                    source_event_id: None,
+                    payload: Some(&resume_payload),
+                    parent_run_id: Some(&ask.run_id),
+                })?;
+                resumed_run_id = Some(outcome.run_id);
+            }
+            return Ok((
+                200,
+                serde_json::json!({"ask": ask, "resumed_run_id": resumed_run_id}).to_string(),
+            ));
+        }
     }
 
     if method == "GET" && url.starts_with("/api/") {

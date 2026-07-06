@@ -10,6 +10,10 @@ use crate::spec::{Plane, Task, TaskBudget, TriggerSpec};
 use crate::submit;
 use crate::substrate::{self, ExecSnapshot, WorkspacePlan, CARD_FILENAME};
 const MAX_RETRIES: i64 = 2;
+/// bitterblossom-930: re-exported for callers that only need dispatch's
+/// vocabulary; the substrate module owns the canonical definition since it
+/// is the layer that collects the file (mirrors `REPORT_FILENAME`).
+pub use crate::substrate::ASK_PACKET_FILENAME;
 const DEFAULT_TIMEOUT_MINUTES: u64 = 60;
 const LEASE_WAIT: Duration = Duration::from_secs(60);
 const LEASE_POLL: Duration = Duration::from_millis(250);
@@ -158,6 +162,11 @@ enum AttemptOutcome {
         stats: AttemptStats,
         cap_breach: Option<InFlightCapBreach>,
     },
+    /// bitterblossom-930: the attempt wrote `ASK_PACKET.json` and stopped
+    /// cleanly instead of finishing. Terminal, like Success -- never retries.
+    Parked {
+        stats: AttemptStats,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -244,6 +253,15 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
                         &serde_json::json!({ "run_id": run_id, "task": task.name, "detail": v.detail }),
                     );
                 }
+                break;
+            }
+            AttemptOutcome::Parked { stats } => {
+                ledger.finalize_run(
+                    run_id,
+                    stats.cost_usd,
+                    started.elapsed().as_millis() as i64,
+                )?;
+                ledger.transition(run_id, "parked_on_ask", None)?;
                 break;
             }
             AttemptOutcome::Failure {
@@ -517,10 +535,16 @@ fn attempt_on_host(
         }
     }
     let trigger = ledger.run(run_id)?;
+    // bitterblossom-930: mint once per attempt rather than reusing a stored
+    // token across retries -- a fresh capability per attempt is simpler to
+    // reason about than invalidating a prior one, and the ledger column is
+    // last-write-wins by design (only the current attempt's token is valid).
+    let ask_token = uuid::Uuid::new_v4().simple().to_string();
+    ledger.set_run_ask_token(run_id, &ask_token)?;
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
-        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "trigger": {"kind": trigger.trigger_kind, "idempotency_key": trigger.idempotency_key}, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate, "roster": &task.roster}).to_string(),
+        run_context: serde_json::json!({"run_id": run_id, "task": &task.name, "trigger": {"kind": trigger.trigger_kind, "idempotency_key": trigger.idempotency_key}, "agent": {"name": &task.agent_name, "version": task.agent.version, "role": &task.agent.role, "harness": &task.agent.harness, "model": &task.agent.model}, "substrate": &task.spec.substrate, "roster": &task.roster, "ask_token": &ask_token}).to_string(),
         payload: match (&submission, ledger.run_payload(run_id)?) {
             (Some(sub), Some(raw)) => {
                 let mut v: serde_json::Value = serde_json::from_str(&raw)?;
@@ -802,6 +826,24 @@ fn attempt_on_host(
         }
     }
     session.release().context("release session")?;
+    // bitterblossom-930: a parked ask takes precedence over the normal
+    // required-artifact contract -- the attempt stopped deliberately, not by
+    // finishing its commission, so REPORT.json (or similar) is not expected.
+    if attempt_dir.join(ASK_PACKET_FILENAME).exists() {
+        ledger.finish_attempt(
+            attempt_id,
+            "parked_on_ask",
+            None,
+            Some(exec.exit_code),
+            &parsed.stats,
+            Some(&artifact_dir),
+        )?;
+        ledger.set_attempt_phase(attempt_id, "released")?;
+        ledger.record_progress(run_id, "phase:released")?;
+        return Ok(AttemptOutcome::Parked {
+            stats: parsed.stats,
+        });
+    }
     if let Some(error) = missing_artifact_error(&task.spec.required_artifacts, &attempt_dir) {
         ledger.finish_attempt(
             attempt_id,

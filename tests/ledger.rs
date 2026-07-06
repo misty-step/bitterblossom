@@ -251,3 +251,73 @@ fn open_refuses_newer_schema_before_running_migrations() {
         "{err}"
     );
 }
+
+// bitterblossom-930: the asks ledger primitive, exercised directly (no HTTP,
+// no subprocess) so it counts as unit coverage of the state machine itself.
+#[test]
+fn ask_lifecycle_open_answer_park_and_reject_double_answer() {
+    let (_dir, mut ledger) = open_ledger();
+    let run_id = ingest_manual(&mut ledger, "demo", None).run_id;
+    ledger.transition(&run_id, "running", None).unwrap();
+    ledger.set_run_ask_token(&run_id, "secret-token").unwrap();
+    assert_eq!(
+        ledger.run_ask_token(&run_id).unwrap().as_deref(),
+        Some("secret-token")
+    );
+
+    let ask = ledger
+        .raise_ask(
+            "ask-1",
+            &run_id,
+            "demo",
+            "question",
+            "may I proceed?",
+            Some("{\"evidence\":[]}"),
+            true,
+            600,
+        )
+        .unwrap();
+    assert_eq!(ask.state, "open");
+    assert!(ask.answer.is_none());
+    assert_eq!(ledger.asks_for_run(&run_id).unwrap().len(), 1);
+
+    // Well within the window: polling for expiry is a no-op.
+    let still_open = ledger.park_ask_if_expired("ask-1").unwrap();
+    assert_eq!(still_open.state, "open");
+
+    let answered = ledger.answer_ask("ask-1", "go ahead", "operator").unwrap();
+    assert_eq!(answered.state, "answered");
+    assert_eq!(answered.answer.as_deref(), Some("go ahead"));
+    assert_eq!(answered.answered_by.as_deref(), Some("operator"));
+    assert!(answered.answered_at.is_some());
+
+    let err = ledger
+        .answer_ask("ask-1", "different", "operator")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already answered"), "{err}");
+}
+
+#[test]
+fn ask_parks_once_its_window_has_elapsed() {
+    let (_dir, mut ledger) = open_ledger();
+    let run_id = ingest_manual(&mut ledger, "demo", None).run_id;
+    ledger.transition(&run_id, "running", None).unwrap();
+    ledger.set_run_ask_token(&run_id, "secret-token").unwrap();
+
+    ledger
+        .raise_ask(
+            "ask-2", &run_id, "demo", "approval", "deploy?", None, true, 0,
+        )
+        .unwrap();
+    // window_seconds = 0: any elapsed time parks it.
+    let parked = ledger.park_ask_if_expired("ask-2").unwrap();
+    assert_eq!(parked.state, "parked");
+
+    // Answering a parked ask still records the answer -- the caller (the
+    // serve.rs route) is responsible for deciding whether that also creates
+    // a resume run, based on the owning run's own state, not the ask row.
+    let answered = ledger.answer_ask("ask-2", "approve", "operator").unwrap();
+    assert_eq!(answered.state, "answered");
+    assert_eq!(answered.answer.as_deref(), Some("approve"));
+}

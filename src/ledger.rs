@@ -19,6 +19,7 @@ pub const RUN_STATES: &[&str] = &[
     "awaiting_recovery",
     "blocked_budget",
     "retired",
+    "parked_on_ask",
 ];
 pub const EXTERNAL_RUN_STATUSES: &[&str] = &["running", "done", "failed"];
 
@@ -31,6 +32,7 @@ fn transition_allowed(from: &str, to: &str) -> bool {
             | ("running", "success")
             | ("running", "failure")
             | ("running", "awaiting_recovery")
+            | ("running", "parked_on_ask")
             | ("blocked_budget", "pending")
             | ("blocked_budget", "retired")
             | ("awaiting_recovery", "success")
@@ -118,6 +120,29 @@ pub struct DeadLetterRow {
     pub acknowledged_at: Option<String>,
     /// `open` (no replay, no acknowledgement), `replayed`, or `acknowledged`.
     pub status: String,
+}
+
+/// bitterblossom-930: one HITL ask raised by a running attempt via `bb ask`.
+/// `state`: "open" (raised, not yet answered) -> "answered" (fast path, the
+/// still-running attempt's next poll sees it) or -> "parked" (window elapsed
+/// with no answer; the owning run has separately finalized as
+/// `parked_on_ask`, and answering now creates a resume run instead).
+#[derive(Debug, Serialize)]
+pub struct AskRow {
+    pub id: String,
+    pub run_id: String,
+    pub task: String,
+    pub kind: String,
+    pub question: String,
+    pub context: Option<String>,
+    pub blocking: bool,
+    pub window_seconds: i64,
+    pub state: String,
+    pub answer: Option<String>,
+    pub answered_at: Option<String>,
+    pub answered_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -263,6 +288,10 @@ impl Ledger {
         // config_source_repo (the stable task-config source) because a lane's
         // own worktree is disposable plane state, not config.
         ensure_column(&conn, "runs", "checkout_path", "TEXT")?;
+        // bitterblossom-930: per-run capability token so a dispatched attempt
+        // can authenticate its own `bb ask` calls without the operator's
+        // global BB_API_TOKEN (least privilege: scoped to this run only).
+        ensure_column(&conn, "runs", "ask_token", "TEXT")?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
@@ -738,6 +767,111 @@ impl Ledger {
                 Err(err)
             }
         }
+    }
+
+    pub fn set_run_ask_token(&self, run_id: &str, token: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET ask_token = ?2, updated_at = ?3 WHERE id = ?1",
+            params![run_id, token, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn run_ask_token(&self, run_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT ask_token FROM runs WHERE id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Raise a new ask for a running attempt. `kind` is "question", "decision",
+    /// or "approval"; validated by the caller (HTTP route), not here, so the
+    /// ledger stays a plain data store.
+    #[allow(clippy::too_many_arguments)]
+    pub fn raise_ask(
+        &self,
+        id: &str,
+        run_id: &str,
+        task: &str,
+        kind: &str,
+        question: &str,
+        context: Option<&str>,
+        blocking: bool,
+        window_seconds: i64,
+    ) -> Result<AskRow> {
+        self.conn.execute(
+            "INSERT INTO asks (id, run_id, task, kind, question, context, blocking,
+               window_seconds, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', ?9, ?9)",
+            params![
+                id,
+                run_id,
+                task,
+                kind,
+                question,
+                context,
+                blocking as i64,
+                window_seconds,
+                now()
+            ],
+        )?;
+        self.ask(id)
+    }
+
+    pub fn ask(&self, id: &str) -> Result<AskRow> {
+        self.conn
+            .query_row(
+                &format!("{ASK_SELECT} WHERE id = ?1"),
+                params![id],
+                row_to_ask,
+            )
+            .with_context(|| format!("ask {id} not found"))
+    }
+
+    /// Lazily transition an ask past its window into `parked` if it is still
+    /// `open` and unanswered. Idempotent; called on every poll so the CLI's
+    /// own poll loop is the only clock this primitive depends on.
+    pub fn park_ask_if_expired(&self, id: &str) -> Result<AskRow> {
+        self.conn.execute(
+            "UPDATE asks SET state = 'parked', updated_at = ?2
+             WHERE id = ?1 AND state = 'open'
+               AND (unixepoch(?2) - unixepoch(created_at)) >= window_seconds",
+            params![id, now()],
+        )?;
+        self.ask(id)
+    }
+
+    pub fn asks_for_run(&self, run_id: &str) -> Result<Vec<AskRow>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{ASK_SELECT} WHERE run_id = ?1 ORDER BY created_at ASC"
+        ))?;
+        let rows = stmt
+            .query_map(params![run_id], row_to_ask)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Record an answer. Works whether the ask is still `open` (the raising
+    /// attempt's next poll sees it -- fast path) or already `parked` (the
+    /// caller is responsible for creating the resume run; this only records
+    /// the answer). Refuses an ask that already has an answer.
+    pub fn answer_ask(&self, id: &str, answer: &str, answered_by: &str) -> Result<AskRow> {
+        let changed = self.conn.execute(
+            "UPDATE asks SET answer = ?2, answered_at = ?3, answered_by = ?4,
+               state = 'answered', updated_at = ?3
+             WHERE id = ?1 AND answer IS NULL",
+            params![id, answer, now(), answered_by],
+        )?;
+        if changed != 1 {
+            let current = self.ask(id)?;
+            bail!("ask {id} already answered at {:?}", current.answered_at);
+        }
+        self.ask(id)
     }
 
     pub fn blocked_budget_runs_for_task(&self, task: &str) -> Result<Vec<RunRow>> {
@@ -1348,6 +1482,28 @@ fn row_to_dlq(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeadLetterRow> {
         replayed_run_id: replayed,
         acknowledged_reason: r.get(7)?,
         acknowledged_at,
+    })
+}
+
+const ASK_SELECT: &str = "SELECT id, run_id, task, kind, question, context, blocking,
+  window_seconds, state, answer, answered_at, answered_by, created_at, updated_at FROM asks";
+
+fn row_to_ask(r: &rusqlite::Row<'_>) -> rusqlite::Result<AskRow> {
+    Ok(AskRow {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        task: r.get(2)?,
+        kind: r.get(3)?,
+        question: r.get(4)?,
+        context: r.get(5)?,
+        blocking: r.get::<_, i64>(6)? != 0,
+        window_seconds: r.get(7)?,
+        state: r.get(8)?,
+        answer: r.get(9)?,
+        answered_at: r.get(10)?,
+        answered_by: r.get(11)?,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
     })
 }
 

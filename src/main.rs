@@ -7,7 +7,8 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use bitterblossom::{
-    artifacts, budget, canary, dispatch, ledger, mcp, provider_keys, reap, recovery, serve, spec,
+    artifacts, ask, budget, canary, dispatch, ledger, mcp, provider_keys, reap, recovery, serve,
+    spec,
 };
 use clap::{Parser, Subcommand};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -102,6 +103,12 @@ enum Command {
     Task {
         #[command(subcommand)]
         command: TaskCommand,
+    },
+    /// HITL: raise a question/decision/approval from a running attempt (any
+    /// harness, via its own Bash tool) and answer one operator-side.
+    Ask {
+        #[command(subcommand)]
+        command: AskCommand,
     },
     /// Submission-loop merge gate: list/open changes, reject findings, waive
     /// required members, abandon.
@@ -432,6 +439,47 @@ enum SubmitCommand {
     Abandon {
         #[arg(long)]
         change: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AskCommand {
+    /// Raise an ask and wait: reads run_id/task/ask_token from RUN.json in
+    /// the current directory (the workspace dispatch already provides),
+    /// POSTs to the plane, then polls. Exit 0 with the answer on stdout if
+    /// answered within `--window-seconds`; exits 75 (documented parked exit
+    /// code) if the window elapses first -- the caller must then write its
+    /// own `ASK_PACKET.json` episodic handoff packet and stop, not retry.
+    Raise {
+        question: String,
+        #[arg(long, default_value = "question")]
+        kind: String,
+        /// "blocking" (park + escalate on timeout) or "advisory" (proceed on
+        /// a stated assumption; a late answer folds in later).
+        #[arg(long)]
+        semantics: String,
+        #[arg(long)]
+        window_seconds: i64,
+        #[arg(long)]
+        context: Option<String>,
+        /// Defaults to the `BB_API_BASE_URL` env var if omitted.
+        #[arg(long)]
+        api_base_url: Option<String>,
+        #[arg(long, default_value = "RUN.json")]
+        run_json: PathBuf,
+    },
+    /// Operator-facing: deliver an answer. Uses `BB_API_TOKEN` like the rest
+    /// of the read API. If the ask's run already parked, this creates a
+    /// lineage-linked resume run (same mechanism `dlq replay` uses); if the
+    /// run is still running, the raising attempt's next poll sees it.
+    Answer {
+        ask_id: String,
+        answer: String,
+        #[arg(long, default_value = "operator")]
+        answered_by: String,
+        /// Defaults to the `BB_API_BASE_URL` env var if omitted.
+        #[arg(long)]
+        api_base_url: Option<String>,
     },
 }
 
@@ -1186,6 +1234,52 @@ fn run() -> Result<()> {
                 for id in released {
                     println!("  {id}");
                 }
+            }
+        },
+        Command::Ask { command } => match command {
+            AskCommand::Raise {
+                question,
+                kind,
+                semantics,
+                window_seconds,
+                context,
+                api_base_url,
+                run_json,
+            } => {
+                let blocking = match semantics.as_str() {
+                    "blocking" => true,
+                    "advisory" => false,
+                    other => bail!("--semantics must be 'blocking' or 'advisory', got '{other}'"),
+                };
+                let api_base_url = api_base_url
+                    .or_else(|| std::env::var("BB_API_BASE_URL").ok())
+                    .context("--api-base-url or BB_API_BASE_URL required")?;
+                match ask::raise(
+                    &api_base_url,
+                    &run_json,
+                    &kind,
+                    &question,
+                    context.as_deref(),
+                    blocking,
+                    window_seconds,
+                )? {
+                    ask::RaiseOutcome::Answered(answer) => println!("{answer}"),
+                    ask::RaiseOutcome::Parked => std::process::exit(ask::PARKED_EXIT_CODE),
+                }
+            }
+            AskCommand::Answer {
+                ask_id,
+                answer,
+                answered_by,
+                api_base_url,
+            } => {
+                let api_token = std::env::var("BB_API_TOKEN").context("BB_API_TOKEN not set")?;
+                let api_base_url = api_base_url
+                    .or_else(|| std::env::var("BB_API_BASE_URL").ok())
+                    .context("--api-base-url or BB_API_BASE_URL required")?;
+                let response =
+                    ask::answer(&api_base_url, &api_token, &ask_id, &answer, &answered_by)?;
+                println!("{response}");
             }
         },
         Command::Submit { command } => match command {

@@ -391,6 +391,23 @@ impl Session for SpriteSession {
             42 => {}
             _ => bail!("read artifact REPORT.json failed: {}", out.stderr.trim()),
         }
+        let packet_path = shell_quote(&format!(
+            "{}/{}",
+            self.workspace,
+            super::ASK_PACKET_FILENAME
+        ));
+        let out = self.remote_shell(
+            &format!("if [ -f {packet_path} ]; then cat {packet_path}; else exit 42; fi"),
+            Duration::from_secs(120),
+        )?;
+        match out.exit_code {
+            0 => self.write_artifact(super::ASK_PACKET_FILENAME, out.stdout.as_bytes())?,
+            42 => {}
+            _ => bail!(
+                "read artifact ASK_PACKET.json failed: {}",
+                out.stderr.trim()
+            ),
+        }
         if !self.marker.is_empty() {
             let _ = self.remote_shell(
                 &format!("rm -f /tmp/{}.pid", self.marker),

@@ -4,6 +4,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use bitterblossom::ask;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
 
@@ -346,6 +347,340 @@ fn external_runs_body_cap_answers_before_buffering_full_stream() {
     let (status, response) =
         http_oversized_stream_probe(port, "POST", "/api/external-runs", Some("test-token"), 9);
     assert_eq!(status, 413, "{response}");
+}
+
+// bitterblossom-930: HITL ask/answer HTTP surface. These tests manufacture a
+// "running" run directly through the ledger (bypassing a real dispatched
+// attempt, already covered by tests/e2e_local.rs's parked-run tests) so they
+// can exercise the raise/poll/answer routes' own auth and state machine in
+// isolation.
+fn running_run_with_ask_token(root: &std::path::Path, task: &str, token: &str) -> String {
+    let plane = Plane::load(root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let run_id = ledger
+        .ingest(IngressRequest {
+            task,
+            trigger_kind: "manual",
+            idempotency_key: None,
+            source_event_id: None,
+            payload: None,
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+    ledger.transition(&run_id, "running", None).unwrap();
+    ledger.set_run_ask_token(&run_id, token).unwrap();
+    run_id
+}
+
+fn write_run_json(
+    dir: &std::path::Path,
+    run_id: &str,
+    task: &str,
+    ask_token: &str,
+) -> std::path::PathBuf {
+    let path = dir.join("RUN.json");
+    fs::write(
+        &path,
+        serde_json::json!({"run_id": run_id, "task": task, "ask_token": ask_token}).to_string(),
+    )
+    .unwrap();
+    path
+}
+
+/// The CLI end of the primitive: a dispatched attempt shells out to `bb ask
+/// raise` from its own workspace, exactly like a real card would. This
+/// exercises `src/ask.rs` for real (curl, JSON parsing, the poll loop) rather
+/// than only the HTTP routes it talks to.
+#[test]
+fn bb_ask_raise_cli_answers_within_window_and_parks_past_it() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let port_file = dir.path().join("bb-serve-port");
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
+    wait_for_http(port);
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    // Fast path: `bb ask raise` blocks polling until answered, then prints
+    // the answer to stdout and exits 0.
+    let run_id = running_run_with_ask_token(dir.path(), "demo", "cli-ask-secret-1");
+    let run_json = write_run_json(dir.path(), &run_id, "demo", "cli-ask-secret-1");
+    let raiser = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "ask",
+            "raise",
+            "may I proceed?",
+            "--semantics",
+            "blocking",
+            "--window-seconds",
+            "600",
+            "--api-base-url",
+            &base_url,
+            "--run-json",
+            run_json.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Give the raise a moment to land before answering it via the CLI's own
+    // operator-facing command (exercises both `ask raise` and `ask answer`).
+    let ask_id = wait_for_ask(dir.path(), &run_id);
+    let answer_out = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "ask",
+            "answer",
+            &ask_id,
+            "yes, proceed",
+            "--api-base-url",
+            &base_url,
+        ])
+        .env("BB_API_TOKEN", "test-token")
+        .output()
+        .unwrap();
+    assert!(
+        answer_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&answer_out.stderr)
+    );
+    let raise_out = wait_for_exit(raiser, Duration::from_secs(10));
+    assert!(raise_out.status.success(), "{raise_out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&raise_out.stdout).trim(),
+        "yes, proceed"
+    );
+
+    // Parked path: window_seconds = 0 means any elapsed time parks it, so
+    // `bb ask raise` must exit the documented parked code without an answer.
+    let run_id_2 = running_run_with_ask_token(dir.path(), "demo", "cli-ask-secret-2");
+    let run_json_2 = write_run_json(dir.path(), &run_id_2, "demo", "cli-ask-secret-2");
+    let raiser_2 = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "ask",
+            "raise",
+            "deploy?",
+            "--kind",
+            "approval",
+            "--semantics",
+            "blocking",
+            "--window-seconds",
+            "0",
+            "--api-base-url",
+            &base_url,
+            "--run-json",
+            run_json_2.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let parked_out = wait_for_exit(raiser_2, Duration::from_secs(10));
+    assert_eq!(parked_out.status.code(), Some(ask::PARKED_EXIT_CODE));
+}
+
+fn wait_for_ask(root: &std::path::Path, run_id: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let plane = Plane::load(root).unwrap();
+        let ledger = Ledger::open(&plane.db_path()).unwrap();
+        if let Some(ask) = ledger.asks_for_run(run_id).unwrap().into_iter().next() {
+            return ask.id;
+        }
+        if Instant::now() >= deadline {
+            panic!("no ask raised for run {run_id} within 5s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn ask_raise_and_answer_fast_path_without_parking() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let port_file = dir.path().join("bb-serve-port");
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
+    wait_for_http(port);
+
+    let run_id = running_run_with_ask_token(dir.path(), "demo", "ask-secret-1");
+
+    // Wrong token is refused before an ask row is even considered.
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/asks",
+        Some("wrong-token"),
+        Some(&format!(
+            r#"{{"run_id":"{run_id}","task":"demo","kind":"question","question":"proceed?","blocking":true,"window_seconds":600}}"#
+        )),
+    );
+    assert_eq!(status, 401);
+
+    // An unknown kind is refused before touching the ledger.
+    let (status, response) = http_request(
+        port,
+        "POST",
+        "/api/asks",
+        Some("ask-secret-1"),
+        Some(&format!(
+            r#"{{"run_id":"{run_id}","task":"demo","kind":"bogus","question":"proceed?","blocking":true,"window_seconds":600}}"#
+        )),
+    );
+    assert_eq!(status, 400, "{response}");
+
+    // Polling an ask that does not exist is a 404, not a stale row.
+    let (status, _) = http_get(port, "/api/asks/ask-does-not-exist", Some("ask-secret-1"));
+    assert_eq!(status, 404);
+
+    // A POST under /api/asks/<id>/ with no recognized suffix is a 404, not a
+    // silent fallthrough to the answer handler.
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/asks/some-id/not-answer",
+        Some("test-token"),
+        Some("{}"),
+    );
+    assert_eq!(status, 404);
+
+    let (status, response) = http_request(
+        port,
+        "POST",
+        "/api/asks",
+        Some("ask-secret-1"),
+        Some(&format!(
+            r#"{{"run_id":"{run_id}","task":"demo","kind":"question","question":"proceed?","blocking":true,"window_seconds":600}}"#
+        )),
+    );
+    assert_eq!(status, 201, "{response}");
+    let raised: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    let ask_id = raised["id"].as_str().unwrap().to_string();
+    assert_eq!(raised["state"], "open");
+
+    // Poll before an answer exists: still open.
+    let (status, response) = http_get(port, &format!("/api/asks/{ask_id}"), Some("ask-secret-1"));
+    assert_eq!(status, 200, "{response}");
+    let polled: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    assert_eq!(polled["state"], "open");
+
+    // Operator answers -- still within the window, so no resume run.
+    let (status, response) = http_request(
+        port,
+        "POST",
+        &format!("/api/asks/{ask_id}/answer"),
+        Some("test-token"),
+        Some(r#"{"answer":"go ahead","answered_by":"operator"}"#),
+    );
+    assert_eq!(status, 200, "{response}");
+    let answered: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    assert_eq!(answered["ask"]["state"], "answered");
+    assert_eq!(answered["ask"]["answer"], "go ahead");
+    assert!(answered["resumed_run_id"].is_null());
+
+    // A second answer is refused -- already answered.
+    let (status, _) = http_request(
+        port,
+        "POST",
+        &format!("/api/asks/{ask_id}/answer"),
+        Some("test-token"),
+        Some(r#"{"answer":"different","answered_by":"operator"}"#),
+    );
+    assert_eq!(status, 409);
+
+    // The raising attempt's next poll sees the answer.
+    let (status, response) = http_get(port, &format!("/api/asks/{ask_id}"), Some("ask-secret-1"));
+    assert_eq!(status, 200, "{response}");
+    let polled: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    assert_eq!(polled["state"], "answered");
+    assert_eq!(polled["answer"], "go ahead");
+}
+
+#[test]
+fn ask_parks_after_window_and_answering_creates_a_lineage_linked_resume_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let port_file = dir.path().join("bb-serve-port");
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
+    wait_for_http(port);
+
+    let run_id = running_run_with_ask_token(dir.path(), "demo", "ask-secret-2");
+
+    let (status, response) = http_request(
+        port,
+        "POST",
+        "/api/asks",
+        Some("ask-secret-2"),
+        Some(&format!(
+            r#"{{"run_id":"{run_id}","task":"demo","kind":"approval","question":"deploy?","blocking":true,"window_seconds":0}}"#
+        )),
+    );
+    assert_eq!(status, 201, "{response}");
+    let raised: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    let ask_id = raised["id"].as_str().unwrap().to_string();
+
+    // Poll immediately: window_seconds = 0 means any elapsed time parks it.
+    let (status, response) = http_get(port, &format!("/api/asks/{ask_id}"), Some("ask-secret-2"));
+    assert_eq!(status, 200, "{response}");
+    let polled: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    assert_eq!(polled["state"], "parked");
+
+    // Mirror what dispatch.rs does on a real park: finalize the run itself.
+    {
+        let plane = Plane::load(dir.path()).unwrap();
+        let ledger = Ledger::open(&plane.db_path()).unwrap();
+        ledger.transition(&run_id, "parked_on_ask", None).unwrap();
+    }
+
+    let (status, response) = http_request(
+        port,
+        "POST",
+        &format!("/api/asks/{ask_id}/answer"),
+        Some("test-token"),
+        Some(r#"{"answer":"approve","answered_by":"operator"}"#),
+    );
+    assert_eq!(status, 200, "{response}");
+    let answered: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    let resumed_run_id = answered["resumed_run_id"]
+        .as_str()
+        .expect("a parked ask's answer creates a resume run")
+        .to_string();
+    assert_ne!(resumed_run_id, run_id);
+
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    let resumed = ledger.run(&resumed_run_id).unwrap();
+    assert_eq!(resumed.trigger_kind, "resume");
+    assert_eq!(resumed.parent_run_id.as_deref(), Some(run_id.as_str()));
+    assert_eq!(
+        resumed.idempotency_key.as_deref(),
+        Some(format!("resume:{ask_id}").as_str())
+    );
 }
 
 struct ChildGuard(Child);

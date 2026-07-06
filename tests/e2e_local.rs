@@ -26,6 +26,16 @@ cat > /dev/null
 echo 'this is not json'
 "#;
 
+// bitterblossom-930: the agent parked on an ask instead of finishing --
+// writes its own episodic handoff packet (ASK_PACKET.json) and a normal
+// success-shaped result on stdout. The packet's presence, not the exit
+// code or parsed stdout, is what makes dispatch classify this as parked.
+const PARKED_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+printf '{"packet_version":1,"note":"parked mid-turn"}\n' > ASK_PACKET.json
+echo '{"type":"result","subtype":"success","result":"parked, awaiting answer","total_cost_usd":0.0004,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
+"#;
+
 // Parseable claude-shaped result on stdout, but no REPORT.json written.
 const NOREPORT_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
@@ -574,4 +584,51 @@ exit 3
         "{:?}",
         run.state_reason
     );
+}
+
+#[test]
+fn ask_packet_marker_parks_the_run_instead_of_succeeding() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path(), PARKED_STUB, "");
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+
+    assert_eq!(run.state, "parked_on_ask", "{:?}", run.state_reason);
+    assert!(
+        run.cost_usd.is_some(),
+        "parked runs still record attempt cost"
+    );
+
+    let attempts = ledger.attempts(&run_id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].outcome.as_deref(), Some("parked_on_ask"));
+    assert_eq!(attempts[0].phase, "released");
+
+    let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    let packet = fs::read_to_string(artifact_dir.join(dispatch::ASK_PACKET_FILENAME)).unwrap();
+    assert!(packet.contains("parked mid-turn"));
+
+    // No retry: a single attempt is terminal for a parked outcome, unlike
+    // pre-execute failures which retry up to MAX_RETRIES.
+    assert_eq!(ledger.attempt_count(&run_id).unwrap(), 1);
+}
+
+#[test]
+fn ask_packet_bypasses_the_required_artifact_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    // required_artifacts names something the PARKED_STUB never writes; a
+    // parked outcome must not be reclassified as a missing-artifact failure.
+    let plane = make_plane(
+        dir.path(),
+        PARKED_STUB,
+        "required_artifacts = [\"REPORT.json\"]\n",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run_id = manual_run(&mut ledger, "demo", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+
+    assert_eq!(run.state, "parked_on_ask", "{:?}", run.state_reason);
 }

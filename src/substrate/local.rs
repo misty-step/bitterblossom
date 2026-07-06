@@ -182,6 +182,10 @@ impl Session for LocalSession {
         if report.exists() {
             std::fs::copy(report, self.artifacts.join(super::REPORT_FILENAME))?;
         }
+        let packet = self.workspace.join(super::ASK_PACKET_FILENAME);
+        if packet.exists() {
+            std::fs::copy(packet, self.artifacts.join(super::ASK_PACKET_FILENAME))?;
+        }
         Ok(())
     }
 }

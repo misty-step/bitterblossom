@@ -93,6 +93,11 @@ pub trait Session {
 pub const CARD_FILENAME: &str = "LANE_CARD.md";
 pub const EVENT_FILENAME: &str = "EVENT.json";
 pub const REPORT_FILENAME: &str = "REPORT.json";
+/// bitterblossom-930: the episodic handoff packet an attempt writes to its
+/// workspace when it parks on an unanswered ask. Collected the same way as
+/// `REPORT_FILENAME` -- copied into the attempt's artifact dir on release,
+/// never parsed by the substrate or dispatch, just relayed.
+pub const ASK_PACKET_FILENAME: &str = "ASK_PACKET.json";
 
 pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
     match kind {
