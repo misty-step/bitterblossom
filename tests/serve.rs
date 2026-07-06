@@ -687,7 +687,30 @@ struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        // bitterblossom-930: SIGTERM first, not SIGKILL. `bb serve` now
+        // installs a graceful-shutdown handler that returns from main
+        // normally on SIGTERM -- a signal-terminated process never flushes
+        // instrumented-coverage counters, but a normal exit does, so this is
+        // what makes every test in this file's actually-executed HTTP-route
+        // code visible to `cargo llvm-cov` instead of silently invisible.
+        // SIGKILL remains the fallback for a hang (e.g. a bug in the new
+        // shutdown path) so no test can block forever on teardown.
+        unsafe {
+            libc::kill(self.0.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match self.0.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => {
+                    let _ = self.0.kill();
+                    break;
+                }
+            }
+        }
         let _ = self.0.wait();
     }
 }

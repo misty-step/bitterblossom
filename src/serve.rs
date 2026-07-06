@@ -454,44 +454,92 @@ fn http_loop(root: &Path, bind: &str) -> Result<()> {
     let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
     eprintln!("bb serve listening on {bind}");
     report_bound_port(&server);
+    install_graceful_shutdown_handler();
 
-    for mut request in server.incoming_requests() {
-        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_request(root, &mut request)
-        }));
-        let (status, body) = match response {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                report_runtime_error("http request", "bb.http.request", &e);
-                (500, format!("{{\"error\":\"{e}\"}}"))
-            }
-            Err(panic) => {
-                let payload = panic
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("non-string panic payload");
-                let detail = format!("http request panic: {payload}");
-                eprintln!("{detail}");
-                canary::report_error("bb.http.panic", &detail);
-                (500, "{\"error\":\"internal server error\"}".to_string())
+    // Poll with a bounded timeout rather than blocking forever on
+    // `incoming_requests()` so a SIGTERM (recorded by the signal handler
+    // above, itself async-signal-safe -- only an atomic store) is noticed
+    // and the loop returns Ok(()) instead of the process dying mid-signal.
+    // That matters beyond graceful operator restarts: an instrumented-
+    // coverage build only flushes its .profraw on a normal process exit, not
+    // on an unhandled-signal termination (verified empirically), so a test
+    // harness that sends SIGTERM instead of SIGKILL now gets real coverage
+    // credit for whatever this loop executed.
+    while !shutdown_requested() {
+        let request = match server.recv_timeout(SHUTDOWN_POLL_INTERVAL) {
+            Ok(Some(request)) => request,
+            Ok(None) => continue,
+            Err(e) => {
+                report_runtime_error("http accept", "bb.http.accept", &anyhow::anyhow!(e));
+                continue;
             }
         };
-        let content_type: &[u8] = if body.starts_with("<!doctype") {
-            b"text/html; charset=utf-8"
-        } else {
-            b"application/json"
-        };
-        let _ = request.respond(
-            tiny_http::Response::from_string(body)
-                .with_status_code(status)
-                .with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type)
-                        .expect("static header"),
-                ),
-        );
+        handle_one_request(root, request);
     }
+    eprintln!("bb serve: SIGTERM received, shutting down");
     Ok(())
+}
+
+fn handle_one_request(root: &Path, mut request: tiny_http::Request) {
+    let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_request(root, &mut request)
+    }));
+    let (status, body) = match response {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            report_runtime_error("http request", "bb.http.request", &e);
+            (500, format!("{{\"error\":\"{e}\"}}"))
+        }
+        Err(panic) => {
+            let payload = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("non-string panic payload");
+            let detail = format!("http request panic: {payload}");
+            eprintln!("{detail}");
+            canary::report_error("bb.http.panic", &detail);
+            (500, "{\"error\":\"internal server error\"}".to_string())
+        }
+    };
+    let content_type: &[u8] = if body.starts_with("<!doctype") {
+        b"text/html; charset=utf-8"
+    } else {
+        b"application/json"
+    };
+    let _ = request.respond(
+        tiny_http::Response::from_string(body)
+            .with_status_code(status)
+            .with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type)
+                    .expect("static header"),
+            ),
+    );
+}
+
+const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(200);
+static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+extern "C" fn on_sigterm(_signal: libc::c_int) {
+    // Async-signal-safe: an atomic store is the only thing done here.
+    SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Graceful shutdown, not just an operator nicety: `bb serve` previously had
+/// no way to exit other than a bind/panic error or an unhandled signal, and
+/// coverage instrumentation only flushes on a normal exit -- see
+/// docs/coverage-ratchet.md and bitterblossom-930's commit for the full
+/// finding (an unhandled SIGTERM behaved identically to SIGKILL for that
+/// purpose, empirically verified, until this handler existed).
+fn install_graceful_shutdown_handler() {
+    unsafe {
+        libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t);
+    }
 }
 
 fn ingress_bind(configured: &str) -> String {

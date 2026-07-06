@@ -23,7 +23,21 @@ cargo test
 # SPINE_LOC_CAP below). cargo-llvm-cov reruns the suite under instrumentation
 # (mechanism cost, not workload judgment) and emits an lcov report as the
 # coverage-proxy artifact this card's acceptance requires.
-COVERAGE_LINE_FLOOR=80.5
+#
+# bitterblossom-930: raised 80.5 -> 84.0 after fixing the real cause of a
+# false coverage regression, not papering over it. tests/serve.rs's
+# ChildGuard SIGKILLed every spawned `bb serve` test process; instrumented
+# coverage only flushes .profraw on a normal exit (an unhandled SIGTERM
+# behaved identically to SIGKILL -- verified empirically), so all ~24 tests'
+# worth of already-executing HTTP-route coverage in serve.rs was invisible
+# to this measurement, not just untested. Fix: `bb serve` now installs a
+# SIGTERM handler that returns from main normally (src/serve.rs
+# `install_graceful_shutdown_handler`), and ChildGuard sends SIGTERM first
+# (falling back to SIGKILL only if the process hangs). New baseline:
+# 84.81% total line coverage, serve.rs alone 34.18% -> 79.19%. Floor sits a
+# little under that for the same measurement-noise reason as the original
+# baseline.
+COVERAGE_LINE_FLOOR=84.0
 echo "==> coverage ratchet (line floor <= $COVERAGE_LINE_FLOOR%; docs/coverage-ratchet.md)"
 mkdir -p target/coverage
 if cargo llvm-cov --fail-under-lines "$COVERAGE_LINE_FLOOR" --lcov --output-path target/coverage/lcov.info; then
