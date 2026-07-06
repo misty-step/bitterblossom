@@ -37,6 +37,13 @@ pub struct Report {
     pub findings: Vec<Finding>,
 }
 
+/// Inspect every configured task. Used by `bb doctor` to fold missing-secret
+/// and unspawnable-binary findings into one verified-live report without
+/// requiring an operator to already know which task or gate member to name.
+pub fn run_all(plane: &Plane) -> Report {
+    check_tasks(plane, plane.tasks.values())
+}
+
 /// Inspect one task (`Some(task)`) or the submission-storm member set
 /// (`storm = true`). Exactly one of the two must be requested.
 pub fn run(plane: &Plane, task: Option<&str>, storm: bool) -> Result<Report> {

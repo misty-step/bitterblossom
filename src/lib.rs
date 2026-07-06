@@ -3,6 +3,7 @@ pub mod attention;
 pub mod budget;
 pub mod canary;
 pub mod dispatch;
+pub mod doctor;
 pub mod harness;
 pub mod health;
 pub mod ingress;

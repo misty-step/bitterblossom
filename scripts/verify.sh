@@ -155,7 +155,16 @@ rm -rf "$self_drill_tmp"
 # existing recovery.rs boot-classification pattern -- it decides nothing
 # about whether the work was good, only whether the checkout can vanish
 # with nothing lost.
-SPINE_LOC_CAP=13000
+#
+# Raised again 2026-07-05 for bitterblossom-123: `bb doctor` (src/doctor.rs)
+# is the application-floor verified-live onboarding gate -- config load,
+# ledger reachability/schema, preflight::run_all (new all-tasks entry point)
+# folded into one report, plus a best-effort/--expect-serve curl probe of
+# the two unauthenticated routes bb serve already exposes (/health, /).
+# CLI/ledger/serve-probe mechanism composing existing read paths, not
+# workload judgment; no HTTP client dependency added (shells to curl like
+# canary::deliver). Both raises landed independently and are additive.
+SPINE_LOC_CAP=13450
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

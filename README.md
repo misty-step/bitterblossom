@@ -39,6 +39,7 @@ bb keys sync --all --check  # compare stored keys with provider caps/usage
 bb task park|unpark <task>  # budget breaches park; unpark is explicit
 bb recover                  # classify runs inherited from a dead plane
 bb check                    # validate the config surface
+bb doctor                   # verified-live: config + db + secrets/binaries + (optionally) a running serve
 ```
 
 ## Agent skill
@@ -77,7 +78,9 @@ Release notes are synthesized automatically on publish and live at
 
 The one-minute zero-credential golden path — no secrets, no remote
 substrate, no network. It validates the plane, dispatches a task, records
-a run, exposes status, and reads the run bundle:
+a run, exposes status, reads the run bundle, and ends at **doctor**: onboarding
+isn't done at build/install, it's done when doctor proves the plane is
+actually live, not just configured.
 
 ```bash
 cargo build
@@ -87,7 +90,15 @@ cargo build
 ./target/debug/bb --config examples/local-plane status --json
 ./target/debug/bb --config examples/local-plane runs show <run-id> --json   # from the run --json output
 ./target/debug/bb --config examples/local-plane artifacts read <run-id> REPORT.json --json
+./target/debug/bb --config examples/local-plane doctor --json              # end of onboarding: verified live
 ```
+
+`bb doctor` composes the same checks above into one pass/fail verdict —
+config loads, the ledger is reachable and schema-current, every task's
+declared secrets and command-harness binaries preflight clean, and (with
+`--expect-serve`, once `bb serve` for this config is actually running) its
+unauthenticated `/health` and `/` routes answer. Each failing check names
+concrete remediation; the command exits non-zero if anything fails.
 
 `examples/local-plane/` is a zero-credential local plane: a `command`-harness
 agent whose inline script writes a small `REPORT.json`. The `local` substrate

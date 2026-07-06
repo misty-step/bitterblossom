@@ -36,7 +36,14 @@ sprite exec -- whoami
 ./target/debug/bb --config "$BB_RUNTIME_PLANE" status --json
 ./target/debug/bb --config "$BB_RUNTIME_PLANE" dlq list --json
 ./target/debug/bb --config "$BB_RUNTIME_PLANE" notify list --json
+./target/debug/bb --config "$BB_RUNTIME_PLANE" doctor --expect-serve --json
 ```
+
+`bb doctor --expect-serve` folds the config/db/secrets/binaries checks above
+plus a live probe of the running plane's unauthenticated `/health` and `/`
+routes into one pass/fail verdict — the fast "is this runtime plane actually
+healthy end to end" gate before the itemized checks, not a replacement for
+reading them.
 
 Before running GitHub-backed BB tasks, make `GH_TOKEN` explicit for the command
 that fans out the work:

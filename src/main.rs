@@ -163,6 +163,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Verified-live onboarding gate (application floor, bitterblossom-123):
+    /// proves the configured plane isn't just installed but actually works
+    /// -- config loads, the ledger is reachable and schema-current, every
+    /// task's declared secrets/binaries preflight clean, and (best-effort,
+    /// or required with `--expect-serve`) the running `bb serve`'s `/health`
+    /// and `/` routes answer. Read-only; exits non-zero on any failing check.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+        /// Require the serve/dashboard probes to succeed instead of treating
+        /// an unreachable address as informational.
+        #[arg(long)]
+        expect_serve: bool,
+    },
     /// Inspect run artifacts without spelunking attempt directories. `list`
     /// enumerates artifact files across a run's attempts; `read` prints a
     /// safe text/JSON artifact such as REPORT.json. Binary and oversized
@@ -571,6 +585,37 @@ fn run() -> Result<()> {
         .config
         .or_else(|| std::env::var_os("BB_PLANE_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
+
+    // Doctor owns its own error handling for exactly the failures every
+    // other command would otherwise propagate as a raw anyhow bail (invalid
+    // config, unreachable ledger) -- it must run before the eager
+    // Plane::load/Ledger::open below, not through them.
+    if let Command::Doctor { json, expect_serve } = &cli.command {
+        let report = bitterblossom::doctor::run(&root, *expect_serve);
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for check in &report.checks {
+                println!("[{}] {}: {}", check.status, check.name, check.detail);
+                if let Some(remediation) = &check.remediation {
+                    println!("    remediation: {remediation}");
+                }
+            }
+            println!(
+                "{}",
+                if report.ok {
+                    "doctor: ok"
+                } else {
+                    "doctor: FAILED"
+                }
+            );
+        }
+        if !report.ok {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     let plane = Plane::load(&root)?;
     let mut ledger = Ledger::open(&plane.db_path())?;
 
@@ -1383,6 +1428,7 @@ fn run() -> Result<()> {
                 }
             }
         },
+        Command::Doctor { .. } => unreachable!("Command::Doctor returns early above"),
     }
     Ok(())
 }
