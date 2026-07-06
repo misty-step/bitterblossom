@@ -1,0 +1,26 @@
+version = 1
+role = "builder"
+harness = "pi"
+model = "deepseek/deepseek-v4-flash"
+auth = "api"
+secrets = ["OPENROUTER_API_KEY", "POWDER_API_BASE_URL", "POWDER_API_KEY"]
+# Read-only repo context; an absent token degrades the run rather than
+# dead-lettering it (backlog 925 pattern, matches canary-triager).
+optional_secrets = ["GH_TOKEN"]
+skills = [
+  "harness-kit/deliver#end-to-end-ticket-delivery",
+  "bitterblossom/operator-min",
+]
+
+[policy]
+authority = "edit"
+provider_key_name = "dispatch-ready-builder"
+provider_spend_cap_usd = 2.0
+model_allowlist = ["deepseek/deepseek-v4-flash"]
+trigger_bindings = ["manual", "webhook"]
+iteration_cap = 24
+turn_cap = 50
+tool_action_cap = 100
+output_bytes_cap = 40000
+wall_clock_minutes = 30
+side_effect_policy = "kill"

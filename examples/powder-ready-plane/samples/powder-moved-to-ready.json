@@ -1,0 +1,31 @@
+{
+  "schema_version": "powder.card_event.v1",
+  "event_id": "evt-sample-001",
+  "event_type": "moved-to-ready",
+  "occurred_at": 1783137600,
+  "actor": "operator",
+  "card": {
+    "id": "target-repo-42",
+    "title": "Example ready ticket",
+    "body": "Sample card body.",
+    "acceptance": ["do the thing"],
+    "status": "ready",
+    "priority": "p2",
+    "labels": [],
+    "assignee": null,
+    "related": [],
+    "blocks": [],
+    "blocked_by": [],
+    "repo": "example-org/target-repo",
+    "workspace_path": null,
+    "branch_name": null,
+    "source": null,
+    "claim": null,
+    "created_at": 1783137000,
+    "updated_at": 1783137600
+  },
+  "change": {
+    "previous_status": "backlog",
+    "status": "ready"
+  }
+}

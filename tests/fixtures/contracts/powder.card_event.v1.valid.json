@@ -1,0 +1,31 @@
+{
+  "schema_version": "powder.card_event.v1",
+  "event_id": "evt-fixture",
+  "event_type": "moved-to-ready",
+  "occurred_at": 1783137600,
+  "actor": "operator",
+  "card": {
+    "id": "bitterblossom-931",
+    "title": "Workflows, triggers, events, crons live in bb",
+    "body": "Ship the two pilot triggers.",
+    "acceptance": ["pilot (a) dispatches a roster agent"],
+    "status": "ready",
+    "priority": "p0",
+    "labels": [],
+    "assignee": null,
+    "related": [],
+    "blocks": [],
+    "blocked_by": [],
+    "repo": "bitterblossom",
+    "workspace_path": null,
+    "branch_name": null,
+    "source": null,
+    "claim": null,
+    "created_at": 1783137000,
+    "updated_at": 1783137600
+  },
+  "change": {
+    "previous_status": "backlog",
+    "status": "ready"
+  }
+}

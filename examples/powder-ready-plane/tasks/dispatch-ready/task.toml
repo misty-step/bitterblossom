@@ -1,0 +1,42 @@
+agent = "dispatch-ready-builder"
+substrate = "sprites"
+
+[roster_brief]
+root = "../../vendor/roster"
+agent = "builder"
+
+[workspace]
+host = "example-org/powder-ready-lane"
+repos = [
+  { url = "https://github.com/example-org/target-repo.git", ref = "main" },
+]
+
+[budget]
+timeout_minutes = 30
+max_runs_per_day = 5
+max_cost_per_run_usd = 2.0
+turn_cap = 50
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "powder-ready"
+secret_env = "BB_HOOK_POWDER_READY"
+dedupe_key = "json:/event_id"
+
+[[trigger.filter]]
+pointer = "/schema_version"
+equals = "powder.card_event.v1"
+
+[[trigger.filter]]
+pointer = "/event_type"
+any_of = ["moved-to-ready"]
+
+[[trigger.filter]]
+pointer = "/card/repo"
+# Scope to the repo(s) this plane instance dogfoods. Broadening or narrowing
+# this list is a config edit, not a code change (bitterblossom-931 "easy to
+# change" acceptance bar).
+any_of = ["example-org/target-repo"]

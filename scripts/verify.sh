@@ -94,6 +94,7 @@ cargo run --quiet -- --config examples/docs-sync-plane check
 cargo run --quiet -- --config examples/ci-audit-plane check
 cargo run --quiet -- --config examples/hygiene-plane check
 cargo run --quiet -- --config examples/moments-plane check
+cargo run --quiet -- --config examples/powder-ready-plane check
 cargo run --quiet -- --config tests/fixtures/public-plane check
 
 echo "==> local-plane zero-credential golden path (no secrets, no network)"

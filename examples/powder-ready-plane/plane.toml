@@ -1,0 +1,9 @@
+# Production-shaped template. Replace example repos, hosts, budgets, and
+# hook secrets in your runtime copy.
+db_path = ".bb/plane.db"
+
+[ingress]
+bind = "127.0.0.1:7077"
+
+[budget]
+max_cost_per_day_usd = 5.0

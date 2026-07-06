@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/misty-step/powder/blob/master/docs/schemas/powder.card_event.v1.schema.json",
+  "title": "Powder Card Event v1",
+  "description": "Signed Powder webhook body delivered to an event subscription (X-Signature-256 = sha256=hex(hmac(signing_secret, raw_body))). Consumers must treat the card snapshot as a hint and re-read the card via the powder MCP/API before acting.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "actor",
+    "card",
+    "change"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "powder.card_event.v1"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "card-created",
+        "moved-to-ready",
+        "awaiting-input",
+        "claim-expired",
+        "completed",
+        "comment-added"
+      ]
+    },
+    "occurred_at": {
+      "type": "integer"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "card": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "status",
+        "repo"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "change": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

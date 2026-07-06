@@ -421,6 +421,118 @@ fn webhook_filters_subject_only_canary_payload_without_a_run() {
     assert_eq!(ledger.ingress_event_count("canary-triage").unwrap(), 0);
 }
 
+fn make_powder_ready_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/dispatch-ready")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\nauth = \"api\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/dispatch-ready/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/dispatch-ready/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n\n\
+         [[trigger]]\nkind = \"webhook\"\nroute = \"powder-ready\"\nsecret_env = \"BB_TEST_POWDER_READY_SECRET\"\n\
+         dedupe_key = \"json:/event_id\"\n\n\
+         [[trigger.filter]]\npointer = \"/schema_version\"\nequals = \"powder.card_event.v1\"\n\
+         [[trigger.filter]]\npointer = \"/event_type\"\nany_of = [\"moved-to-ready\"]\n\
+         [[trigger.filter]]\npointer = \"/card/repo\"\nany_of = [\"bitterblossom\"]\n",
+    )
+    .unwrap();
+    Plane::load(root).unwrap()
+}
+
+/// Powder signs deliveries with only `X-Signature-256` over the raw body --
+/// no timestamp or delivery-id header (crates/powder-server/src/main.rs
+/// `compute_signature`/`send_webhook_delivery` in the powder repo). This is
+/// bb's plain-body HMAC fallback path, not the canary timestamped scheme.
+fn powder_headers(secret: &str, body: &str) -> Vec<(String, String)> {
+    vec![(
+        "X-Signature-256".to_string(),
+        sign_hmac(secret, body.as_bytes()),
+    )]
+}
+
+#[test]
+fn webhook_accepts_powder_moved_to_ready_and_dedupes_by_event_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_powder_ready_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_POWDER_READY_SECRET", "s3cret");
+
+    let body = include_str!("fixtures/contracts/powder.card_event.v1.valid.json");
+    let headers = powder_headers("s3cret", body);
+    let resp = handle_webhook(&plane, &mut ledger, "powder-ready", &headers, body).unwrap();
+    assert_eq!(resp.status, 202, "{}", resp.body);
+    assert!(!resp.body.contains("filtered"), "{}", resp.body);
+
+    let runs = ledger.list_runs(Some("dispatch-ready"), None).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        runs[0].idempotency_key.as_deref(),
+        Some("wh:powder-ready:evt-fixture")
+    );
+    assert_eq!(
+        ledger.run_payload(&runs[0].id).unwrap().as_deref(),
+        Some(body)
+    );
+
+    // Redelivery of the same event_id (Powder's own retry-until-2xx policy)
+    // must not create a second run.
+    let duplicate = handle_webhook(&plane, &mut ledger, "powder-ready", &headers, body).unwrap();
+    assert_eq!(duplicate.status, 202);
+    assert!(duplicate.body.contains("\"duplicate\":true"));
+    assert_eq!(
+        ledger
+            .list_runs(Some("dispatch-ready"), None)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn webhook_filters_powder_ready_event_from_a_different_repo_without_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_powder_ready_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_POWDER_READY_SECRET", "s3cret");
+
+    let body = r#"{"schema_version":"powder.card_event.v1","event_id":"evt-other-repo","event_type":"moved-to-ready","occurred_at":1783137600,"actor":"operator","card":{"id":"crucible-950","title":"t","status":"ready","repo":"crucible"},"change":{"previous_status":"backlog","status":"ready"}}"#;
+    let headers = powder_headers("s3cret", body);
+    let resp = handle_webhook(&plane, &mut ledger, "powder-ready", &headers, body).unwrap();
+
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert!(resp.body.contains("filtered"), "{}", resp.body);
+    assert!(resp.body.contains("/card/repo"), "{}", resp.body);
+    assert!(ledger
+        .list_runs(Some("dispatch-ready"), None)
+        .unwrap()
+        .is_empty());
+    assert_eq!(ledger.ingress_event_count("dispatch-ready").unwrap(), 0);
+}
+
+#[test]
+fn webhook_filters_powder_non_ready_event_without_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_powder_ready_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_POWDER_READY_SECRET", "s3cret");
+
+    let body = r#"{"schema_version":"powder.card_event.v1","event_id":"evt-comment","event_type":"comment-added","occurred_at":1783137600,"actor":"operator","card":{"id":"bitterblossom-931","title":"t","status":"ready","repo":"bitterblossom"},"change":{}}"#;
+    let headers = powder_headers("s3cret", body);
+    let resp = handle_webhook(&plane, &mut ledger, "powder-ready", &headers, body).unwrap();
+
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert!(resp.body.contains("filtered"), "{}", resp.body);
+    assert!(ledger
+        .list_runs(Some("dispatch-ready"), None)
+        .unwrap()
+        .is_empty());
+}
+
 #[test]
 fn webhook_unknown_route_404s_with_no_row() {
     let dir = tempfile::tempdir().unwrap();
