@@ -55,9 +55,12 @@ Its report shape is in `samples/REPORT-pr.json` (schema
 `artifacts`, `cost_usd`, and `residual_risk`.
 
 Per `docs/rollout-scorecards.md`'s doctrine, `docs-sync-pr`'s first live
-dispatch against a real repo is operator-gated: it needs a dedicated bot/app
-GitHub identity scoped to the allowlisted repo (bitterblossom-925), not the
-operator's personal `GH_TOKEN`, and explicit operator approval -- the same
-prerequisite `canary-remediate` carries. This template validates and tests
-green without live credentials; live PR-only dispatch is a separate,
-explicitly approved step.
+dispatch against a real repo needs explicit operator approval naming the
+target repo and token -- the ordinary Authority Ladder rule every level
+carries. A dedicated bot/app GitHub identity was originally floated as an
+additional prerequisite; the operator ruled that path permanently out of
+scope (2026-07-05, `bitterblossom-925`), since provisioning one requires
+web-UI actions the operator declined to perform. `GH_TOKEN` here is the
+operator's own token, scoped as narrowly as the operator chooses at
+dispatch time. This template validates and tests green without live
+credentials; live PR-only dispatch is a separate, explicitly approved step.

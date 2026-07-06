@@ -149,9 +149,22 @@ BB itself only provisions/checks out that one repo into the workspace at
 dispatch time, but the sprite harness still runs in an unrestricted remote
 shell with `GH_TOKEN` exported as an env var; the real boundary on what the
 agent can *reach* is whatever repos that token has access to. Keeping
-`GH_TOKEN` narrowly scoped to the allowlisted repo(s) is exactly why
-bitterblossom-925's bot-identity provisioning is a hard prerequisite before
-this task's first live dispatch, not an optional hardening step.
+`GH_TOKEN` narrowly scoped to the allowlisted repo(s) was the original
+concern bitterblossom-925 opened to address. **Correction (2026-07-05,
+recorded here during bitterblossom-122's evidence closeout): the operator
+ruled that path dead.** A dedicated bot/app identity requires web-UI actions
+(GitHub App manifest flow, org access-control grants) the operator declined
+to perform ("if that's going to require me, then let's not"), so
+bitterblossom-925 was rescoped to the fully agent-driven path instead:
+`GH_TOKEN` is a `required` secret where a PR genuinely cannot be opened
+without it (this task), and an `optional_secret` where it is merely
+read-only context (`canary-triage`) that can degrade gracefully without it.
+There is no bot-identity prerequisite left to satisfy. The remaining gate
+before this task's first live dispatch against a real repo is the ordinary
+Authority Ladder rule every level carries: explicit operator approval,
+naming which repo and which token (today, that means the operator's own
+`GH_TOKEN`, scoped as narrowly as the operator chooses at dispatch time) --
+not a missing mechanism.
 
 ```text
 Task family:            canary-remediate
@@ -164,8 +177,8 @@ Rollback / hold trigger: any merge/deploy/incident-mutation attempt, any PR agai
 Budget / cost cap:      per-run and daily caps from the task's budget block (3 runs/day, $1.25/run at this authority level)
 Duplicate-suppression key: agent-verified only, not plane-enforced -- the card instructs checking for an existing open PR against the allowlisted repo before branching; unlike canary-triage's ledger-level idempotency key (dedupe by delivery id at ingress), there is no BB-mechanism backing this today because no webhook trigger exists at this authority level to key off
 Required artifacts:     REPORT.json
-Bot identity / token provisioning: canary-remediator declares GH_TOKEN like canary-triager; per bitterblossom-925, provisioning a dedicated bot/app identity scoped to the allowlisted repo(s) (not the operator's personal token, and not a token with broader reach than the allowlist) is an operator-gated prerequisite before this task's first live dispatch, same as canary-triage's
-Token rotation:         follows whatever rotation policy bitterblossom-925 establishes for the shared bot identity across canary-triager/canary-remediator
+Bot identity / token provisioning: SUPERSEDED 2026-07-05 -- bot/app identity provisioning is permanently out of scope per operator ruling (bitterblossom-925 comment log); canary-remediator declares GH_TOKEN as a required secret (a PR cannot open without it), the operator's own token, scoped as narrowly as the operator chooses at dispatch time
+Token rotation:         follows whatever rotation policy the operator sets for their own token; no shared bot identity exists or is planned
 Rollback / stop conditions: any single forbidden action (merge, deploy, incident mutation, out-of-allowlist repo touch) is an immediate hold — revert this task to report-only-equivalent (no dispatch) until root-caused
 Operator approval needed for next level: yes
 ```
@@ -221,10 +234,14 @@ declares only `manual`. Scoped to a narrower repo allowlist than the
 report-only watcher (one repo, not two) -- BB itself only provisions that
 one repo into the workspace at dispatch time, but the sprite harness still
 runs in an unrestricted remote shell with `GH_TOKEN` exported as an env var,
-so the real reach boundary is whatever repos that token can access. Per
-canary-remediate's precedent, a dedicated bot/app identity scoped to the
-allowlisted repo (bitterblossom-925) is a hard prerequisite before this
-task's first live dispatch, not an optional hardening step.
+so the real reach boundary is whatever repos that token can access.
+**Correction (2026-07-05, recorded during bitterblossom-122's evidence
+closeout):** the original canary-remediate scorecard cited a bot-identity
+prerequisite here; the operator has since ruled that path permanently out
+of scope (web-UI-only provisioning, declined). There is no bot-identity
+gate before this task's first live dispatch -- the remaining gate is the
+ordinary Authority Ladder rule, explicit operator approval naming which
+repo and which token.
 
 ```text
 Task family:            docs-sync-pr
@@ -237,7 +254,7 @@ Rollback / hold trigger: any merge/deploy attempt, any PR against a non-allowlis
 Budget / cost cap:      3 runs/day, $0.75/run (examples/docs-sync-plane/tasks/docs-sync-pr/task.toml budget block)
 Duplicate-suppression key: agent-verified only, not plane-enforced -- the card instructs checking for an existing open PR against the allowlisted repo before branching (gh pr list --repo <repo> --state open --search "docs-sync"); same as canary-remediate, because no webhook trigger exists at this authority level to key a ledger-level dedupe off
 Required artifacts:     REPORT.json (schema bb.docs_sync_pr.report.v1)
-Bot identity / token provisioning: docs-sync-writer declares GH_TOKEN like docs-watcher; per bitterblossom-925, provisioning a dedicated bot/app identity scoped to the allowlisted repo (not the operator's personal token, and not a token with broader reach than the allowlist) is an operator-gated prerequisite before this task's first live dispatch, same as canary-remediate's
+Bot identity / token provisioning: SUPERSEDED 2026-07-05 -- bot/app identity provisioning is permanently out of scope per operator ruling (bitterblossom-925 comment log); docs-sync-writer declares GH_TOKEN as a required secret (a PR cannot open without it), the operator's own token, scoped as narrowly as the operator chooses at dispatch time
 Rollback / stop conditions: any single forbidden action (merge, deploy, out-of-scope file edit, out-of-allowlist repo touch) is an immediate hold -- revert this task to report-only-equivalent (no dispatch) until root-caused
 Operator approval needed for next level: yes
 ```
@@ -279,10 +296,14 @@ cron or webhook trigger is wired in `task.toml`, and `ci-hardener`'s own
 allowlist than the report-only auditor (one repo, not two). This task
 family's one absolute red line, beyond the general PR-only ladder rules: it
 must never weaken, loosen, skip, or remove an existing gate, test, or lint --
-`gates_weakened` in its report must always be an empty array. Per
-canary-remediate's and docs-sync-pr's precedent, a dedicated bot/app
-identity scoped to the allowlisted repo (bitterblossom-925) is a hard
-prerequisite before this task's first live dispatch.
+`gates_weakened` in its report must always be an empty array.
+**Correction (2026-07-05, recorded during bitterblossom-122's evidence
+closeout):** the docs-sync-pr scorecard this section modeled itself on
+cited a bot-identity prerequisite; the operator has since ruled that path
+permanently out of scope (web-UI-only provisioning, declined). There is no
+bot-identity gate before this task's first live dispatch -- the remaining
+gate is the ordinary Authority Ladder rule, explicit operator approval
+naming which repo and which token.
 
 ```text
 Task family:            ci-audit-pr
@@ -295,7 +316,7 @@ Rollback / hold trigger: any merge/deploy attempt, any gate weakened, any PR aga
 Budget / cost cap:      3 runs/day, $0.75/run (examples/ci-audit-plane/tasks/ci-audit-pr/task.toml budget block)
 Duplicate-suppression key: agent-verified only, not plane-enforced -- the card instructs checking for an existing open PR against the allowlisted repo before branching (gh pr list --repo <repo> --state open --search "ci-audit"); same as canary-remediate and docs-sync-pr, because no webhook trigger exists at this authority level to key a ledger-level dedupe off
 Required artifacts:     REPORT.json (schema bb.ci_audit_pr.report.v1)
-Bot identity / token provisioning: ci-hardener declares GH_TOKEN like ci-auditor; per bitterblossom-925, provisioning a dedicated bot/app identity scoped to the allowlisted repo (not the operator's personal token, and not a token with broader reach than the allowlist) is an operator-gated prerequisite before this task's first live dispatch, same as canary-remediate's and docs-sync-pr's
+Bot identity / token provisioning: SUPERSEDED 2026-07-05 -- bot/app identity provisioning is permanently out of scope per operator ruling (bitterblossom-925 comment log); ci-hardener declares GH_TOKEN as a required secret (a PR cannot open without it), the operator's own token, scoped as narrowly as the operator chooses at dispatch time
 Rollback / stop conditions: any single forbidden action (merge, deploy, gate weakening, out-of-scope file edit, out-of-allowlist repo touch) is an immediate hold -- revert this task to report-only-equivalent (no dispatch) until root-caused
 Operator approval needed for next level: yes
 ```
