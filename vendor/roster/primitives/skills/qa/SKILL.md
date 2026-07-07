@@ -21,7 +21,7 @@ absence is a harness gap — run the protocol below AND flag the gap to
 
 For recurring QA, unclear app shapes, eval-like agent behavior, performance
 claims, or weak pass/fail criteria, load
-`harnesses/shared/references/verification-system-first.md` and design the
+`primitives/shared/references/verification-system-first.md` and design the
 driver, grader, evidence packet, and cadence before driving the surface.
 
 ## Step 0: shape
@@ -61,21 +61,22 @@ oracles that pass on anything are the most expensive kind of green.
 Classify findings: **P0** blocks ship, **P1** fix before merge, **P2** log
 and move on.
 
-## Verdict
+## Completion Gate
 
-A pass report names: the exact surface exercised (command/URL/route/tool
-call), what was observed, the evidence artifact, what was NOT covered, and
-whether a post-ship signal exists for this behavior (if nothing would page
-or log when it breaks, say so — that's instrumentation debt, not a
-footnote). For AI-feature surfaces, a post-ship signal means behavior-level
-classifiers — hallucination, tool failure, refusal, user frustration — not
-just exception logging; stack traces don't fire when an agent confidently
-does the wrong thing. When the same agent drove the app and judges the result, have a
-fresh subagent attack the pass claim before signing off: what path would
-embarrass us in production?
-For public API, CLI, UI, performance, compatibility, migration, or operator
-workflow changes, include `harnesses/shared/references/works-critique.md` in
-that fresh pass-claim attack.
+See `primitives/shared/AGENTS.md` (Completion Evidence) for the shared core.
+`/qa` adds:
+
+- The exact surface exercised (command/URL/route/tool call), what was
+  observed, the evidence artifact, and what was NOT covered.
+- Post-ship signal: whether a page/log/alert exists for this behavior — for
+  AI-feature surfaces that means behavior-level classifiers (hallucination,
+  tool failure, refusal, user frustration), not just exception logging; stack
+  traces don't fire when an agent confidently does the wrong thing.
+- Fresh-context attack: when the same agent drove the app and judges the
+  result, a fresh subagent attacks the pass claim before sign-off — what path
+  would embarrass us in production? For public API, CLI, UI, performance,
+  compatibility, migration, or operator workflow changes, include
+  `primitives/shared/references/works-critique.md` in that attack.
 
 ## Gotchas
 
@@ -93,7 +94,7 @@ that fresh pass-claim attack.
 - **QAing a behavior-preserving refactor with no characterization tests?**
   "Tests pass" proves nothing when there are no tests pinning the current
   behavior. Reach for the live-diff pattern in
-  `harnesses/shared/references/verification-system-first.md`: diff the local
+  `primitives/shared/references/verification-system-first.md`: diff the local
   branch against the deployed/pre-refactor build over the same backing store,
   byte-for-byte, including error paths.
 - Browser tool selection and evidence conventions: `references/browser-tools.md`,

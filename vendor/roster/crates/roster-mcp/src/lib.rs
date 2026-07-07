@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use roster_core::{
-    Providers, Roster, render_bb_agent, render_brief, render_claude_agent, render_show,
+    Models, Roster, render_bb_agent, render_brief, render_claude_agent, render_show,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -114,8 +114,8 @@ fn list_agents(args: &Value) -> Result<Value, String> {
         .map(|agent| {
             json!({
                 "name": agent.role.name,
-                "preferred_model": agent.role.model_policy.preferred,
-                "reasoning": agent.role.model_policy.reasoning,
+                "preferred_model": agent.role.model_policy.preferred.model,
+                "reasoning": agent.role.model_policy.preferred.reasoning,
                 "description": agent.role.description,
             })
         })
@@ -127,8 +127,8 @@ fn list_agents(args: &Value) -> Result<Value, String> {
             format!(
                 "{}\t{}\t{}\t{}",
                 agent.role.name,
-                agent.role.model_policy.preferred,
-                agent.role.model_policy.reasoning,
+                agent.role.model_policy.preferred.model,
+                agent.role.model_policy.preferred.reasoning,
                 agent.role.description
             )
         })
@@ -176,9 +176,9 @@ fn materialize_agent(args: &Value) -> Result<Value, String> {
         .ok_or_else(|| format!("unknown agent {agent_name:?}"))?;
     let harness = required_str(args, "harness")?;
     let text = match harness {
-        "claude" => render_claude_agent(agent, &load_providers(args)?),
+        "claude" => render_claude_agent(agent, &load_models(args)?),
         "codex" => render_brief(agent, &[], &[], None),
-        "bb" => render_bb_agent(agent, &load_providers(args)?)?,
+        "bb" => render_bb_agent(agent, &load_models(args)?)?,
         other => {
             return Err(format!(
                 "unknown harness {other:?}; expected claude, codex, or bb"
@@ -195,8 +195,8 @@ fn load_roster(args: &Value) -> Result<Roster, String> {
     Roster::load(root_path(args)).map_err(|error| error.to_string())
 }
 
-fn load_providers(args: &Value) -> Result<Providers, String> {
-    Providers::load(root_path(args)).map_err(|error| error.to_string())
+fn load_models(args: &Value) -> Result<Models, String> {
+    Models::load(root_path(args)).map_err(|error| error.to_string())
 }
 
 fn root_path(args: &Value) -> PathBuf {
@@ -284,9 +284,9 @@ mod tests {
     fn mcp_tools_render_list_show_and_brief() {
         let root = workspace_root();
         let list = call_tool("list", &json!({"root": root})).unwrap();
-        assert!(text(&list).contains("orchestrator\tfable-class\tlow"));
-        // Roster::load sorts agents by name; `builder` now sorts first.
-        assert_eq!(list["structuredContent"]["agents"][0]["name"], "builder");
+        assert!(text(&list).contains("orchestrator\tclaude-fable-5\thigh"));
+        // Roster::load sorts agents by name; `ai-scout` sorts first.
+        assert_eq!(list["structuredContent"]["agents"][0]["name"], "ai-scout");
 
         let show = call_tool(
             "show",
@@ -366,9 +366,10 @@ mod tests {
 name: bad
 description: Bad fixture
 model_policy:
-  preferred: codex-class
+  preferred:
+    model: gpt-5.5
+    reasoning: high
   fallbacks: []
-  reasoning: high
 permissions:
   filesystem: read-only
   commands: read-only

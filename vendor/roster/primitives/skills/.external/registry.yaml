@@ -1,0 +1,332 @@
+# Harness Kit Registry — external skill sources, pinned.
+#
+# Skills are discovered from the filesystem (skills/*/SKILL.md). This file is
+# the provenance ledger for third-party skills:
+# `harness-kit-checks sync-external` installs each source into
+# skills/.external/<alias>/ at its pinned sha. Small, actually-loaded sets
+# are committed (vendored) for reviewable diffs; sync is the update path.
+# Editing a vendored external makes it a fork — mark it here and stop
+# syncing it.
+#
+# Schema (per source):
+#   repo:          <org>/<repo>          required. GitHub path.
+#   default:       true                  optional. Marks the local repo (skipped by sync).
+#   ref:           main | v1.2 | <sha>   default "main". Intent (branch/tag/sha).
+#   pin:           <full-sha>            optional. Locks to an immutable sha.
+#                                        Preferred. Enforced by sync unless allow_floating.
+#   skills_path:   <dir>                 default ".". Sparse path under the repo
+#                                        where SKILL.md dirs live.
+#   layout:        flat | multi-root     advisory (used by embeddings). flat = one
+#                                        SKILL.md per subdir of skills_path.
+#   skill_name:    <name>                optional. For product repos that ship a
+#                                        root-level SKILL.md at skills_path.
+#   include:       [name, name, …]       optional allowlist of skill dir names.
+#   exclude:       [name, name, …]       optional blocklist.
+#   alias_prefix:  "prefix-"             REQUIRED for non-default sources. Prepended
+#                                        to every alias to avoid cross-source
+#                                        collisions. Convention: short source tag
+#                                        (e.g. "anthropic-", "vercel-").
+#   allow_floating: true                 optional. Permit a non-immutable ref
+#                                        (main/HEAD/branch). Default: refuse.
+#   embeddings:    true | false          default true. Include in embeddings index.
+#   active:        true | false          default true. false = declared but skipped
+#                                        by sync-external. Use for "defer" sources.
+#
+# ALIAS_PREFIX DOCTRINE
+# Every non-default source MUST declare alias_prefix. External libraries have
+# heterogeneous naming conventions and silent collisions are load-bearing bugs.
+# The prefix scopes the source's namespace. Two sources may share a prefix only
+# if their skill name sets are provably disjoint (e.g. the two vercel-labs repos
+# share `vercel-`). Same prefix + same skill name = fatal at sync.
+
+sources:
+  - repo: misty-step/harness-kit
+    default: true
+    layout: flat
+    skills_path: skills
+
+  # Misty Step factory app product-owned skills. These repos own their agent
+  # contracts; Harness Kit imports the current pins as external skills so
+  # every bootstrapped harness can route work to the actual product surface.
+  - repo: misty-step/aesthetic
+    ref: 0d4cf9a4a7b50fab5e00491daab35fa8cbef93ce
+    pin: 0d4cf9a4a7b50fab5e00491daab35fa8cbef93ce
+    layout: root
+    skills_path: "."
+    skill_name: aesthetic
+    alias_prefix: "misty-"
+
+  - repo: misty-step/canary
+    ref: e9bce96a5c24654c2692ae701a6db596f5966471
+    pin: e9bce96a5c24654c2692ae701a6db596f5966471
+    layout: root
+    skills_path: "."
+    skill_name: canary
+    alias_prefix: "misty-"
+
+  - repo: misty-step/powder
+    ref: a20d4ecefcb6a16d595966177b48c47a87dfffc8
+    pin: a20d4ecefcb6a16d595966177b48c47a87dfffc8
+    layout: root
+    skills_path: "."
+    skill_name: powder
+    alias_prefix: "misty-"
+
+  - repo: misty-step/landmark
+    ref: 393e15c2f816036c1edd0985696ba4d2a64772d4
+    pin: 393e15c2f816036c1edd0985696ba4d2a64772d4
+    layout: root
+    skills_path: "."
+    skill_name: landmark
+    alias_prefix: "misty-"
+
+  - repo: misty-step/bitterblossom
+    ref: b017458d21d13d4f6f435a9e9307c575b6694b1f
+    pin: b017458d21d13d4f6f435a9e9307c575b6694b1f
+    layout: flat
+    skills_path: skills
+    alias_prefix: "misty-"
+    include: [bitterblossom]
+
+  # Anthropic official skills. frontend-design only: the /design skill points
+  # at it, and Codex/Pi consume the same primitive as Claude.
+  - repo: anthropics/skills
+    ref: main
+    pin: 57546260929473d4e0d1c1bb75297be2fdfa1949
+    layout: flat
+    skills_path: skills
+    alias_prefix: "anthropic-"
+    include: [frontend-design]
+
+  # Vercel Labs curated agent skills — React / web-design primitives.
+  - repo: vercel-labs/agent-skills
+    ref: main
+    layout: flat
+    skills_path: skills
+    pin: 4ec6f84b61cd3c931046c3e6e398f3ae7de372f7
+    alias_prefix: "vercel-"
+    include:
+      - react-best-practices
+      - web-design-guidelines
+      - react-native-skills
+      - react-view-transitions
+      - composition-patterns
+
+  # Vercel Labs agent-browser — browser automation primitives.
+  # Shares alias_prefix "vercel-" with agent-skills; skill names are disjoint.
+  - repo: vercel-labs/agent-browser
+    ref: main
+    pin: 4cc6ca40b76a590bb06d1ec5abc16d27bb7d43c0
+    layout: flat
+    skills_path: skills
+    alias_prefix: "vercel-"
+    include: [agent-browser]
+
+  # Same repo, second entry — `dogfood` skill lives under `skill-data/`, not
+  # `skills/`. sync-external only scans one path per entry, so we split.
+  - repo: vercel-labs/agent-browser
+    ref: main
+    pin: 4cc6ca40b76a590bb06d1ec5abc16d27bb7d43c0
+    layout: flat
+    skills_path: skill-data
+    alias_prefix: "vercel-"
+    include: [dogfood]
+
+  # EveryInc compound-engineering plugin — imported as source-scoped external
+  # exemplars/tools, not first-party Harness Kit orchestration. Keep the CE
+  # prefix in the upstream skill name and add "every-" for source ownership.
+  - repo: EveryInc/compound-engineering-plugin
+    ref: main
+    pin: bb0c9ab4ee596d546f2965222e0ec8c2a097ae53
+    layout: flat
+    skills_path: plugins/compound-engineering/skills
+    alias_prefix: "every-"
+    include: [ce-promote]
+
+  # JuliusBrussee/caveman — terse-output token compression ("few token do trick").
+  # Sibling skills (caveman-commit, caveman-review, compress) intentionally
+  # omitted; the base `caveman` skill is the high-leverage one. Revisit if
+  # the others accrete evidence.
+  - repo: JuliusBrussee/caveman
+    ref: main
+    pin: c2ed24b3e5d412cd0c25197b2bc9af587621fd99
+    layout: flat
+    skills_path: skills
+    alias_prefix: "julius-"
+    include: [caveman]
+
+  # cursor/plugins team kit thermo-nuclear-code-quality-review — unusually
+  # strict maintainability and abstraction-quality review. Upstream is the
+  # Cursor team-kit skill; SkillsMP and other mirrors point back to this.
+  #
+  # LICENSE CAVEAT: no LICENSE file declared upstream as of pin sha. Same
+  # reasoning as other no-license externals above — local sync cache only.
+  - repo: cursor/plugins
+    ref: main
+    pin: e46364b8be46000b7df0f260550cd712afbb8d36
+    layout: flat
+    skills_path: cursor-team-kit/skills
+    alias_prefix: "cursor-"
+    include: [thermo-nuclear-code-quality-review]
+
+  # DietrichGebert/ponytail — anti-overengineering skill. Core skill only:
+  # import the concrete YAGNI / stdlib / native / existing-dependency ladder;
+  # defer companion review/audit/debt/help skills until telemetry proves they
+  # add value beyond Harness Kit's existing review/refactor lanes.
+  - repo: DietrichGebert/ponytail
+    ref: adad50d9b393926b2dd5ed7225dcb1848b9df408
+    pin: adad50d9b393926b2dd5ed7225dcb1848b9df408
+    layout: flat
+    skills_path: skills
+    alias_prefix: "dietrich-"
+    include: [ponytail]
+
+  # jakubkrehel/make-interfaces-feel-better — design-engineering skill for UI
+  # polish. Encodes 16 specific techniques (concentric border radius, optical
+  # alignment, layered shadows, interruptible animations, scale-on-press 0.96,
+  # tabular nums, image outlines) with exact values, not hand-wavy guidance.
+  # Based on Jakub Krehel's "Details that make interfaces feel better" article.
+  #
+  # LICENSE CAVEAT: no LICENSE file declared upstream as of pin sha. GitHub
+  # public = viewable/forkable under GH terms; skills/.external/ is gitignored
+  # (local cache, not redistribution). If we ever fork content into skills/
+  # or redistribute, revisit — track a follow-up to request an upstream LICENSE.
+  - repo: jakubkrehel/make-interfaces-feel-better
+    ref: main
+    pin: 384562064fcdd99778fcbafd8729626fe6aab02f
+    layout: flat
+    skills_path: skills
+    alias_prefix: "jakub-"
+    include: [make-interfaces-feel-better]
+
+  # emilkowalski/skill — Emil Kowalski's "Agents with Taste" design-engineering
+  # skills. emil-design-eng: decision flowcharts for easing selection, duration
+  # lookup tables by element type, typography / component rules drawn from Sonner
+  # and his articles. review-animations: a DMI motion-code reviewer against the
+  # same craft bar (ten non-negotiable standards + escalation triggers, with a
+  # STANDARDS.md catalog). Build with one, review with the other. Complements
+  # jakubkrehel/make-interfaces-feel-better: Jakub names techniques, Emil
+  # supplies the when-to-use-which flowcharts. Together they form the
+  # motion-design judgment layer.
+  #
+  # LICENSE: MIT — LICENSE.txt added upstream at this pin (copyright Matt Pocock,
+  # via the `skills` packaging tool). Redistributable with attribution; the prior
+  # no-license caveat is resolved.
+  #
+  # NAMING NOTE: upstream skills are "emil-design-eng" and "review-animations";
+  # the alias_prefix yields `emil-emil-design-eng` and `emil-review-animations`
+  # (the doubled "emil" is cosmetic; prefix consistency across author-scoped
+  # sources wins over visual tidiness).
+  - repo: emilkowalski/skill
+    ref: main
+    pin: ea2cd0ddb235abbe85cdbc03f26686cd465df897
+    layout: flat
+    skills_path: skills
+    alias_prefix: "emil-"
+    include: [emil-design-eng, review-animations]
+
+  # Leonxlnx/taste-skill — high-agency frontend design family. We keep the
+  # output-enforcement helper out of the default sync because it is orthogonal
+  # to UI taste; the rest of the set is directly relevant to frontend design.
+  #
+  # LICENSE CAVEAT: no LICENSE file declared upstream as of pin sha. Same
+  # reasoning as other no-license externals above — local sync cache only.
+  - repo: Leonxlnx/taste-skill
+    ref: main
+    pin: 7f1eb201552d02e8fd4651ec05bd31b7039a048e
+    layout: flat
+    skills_path: skills
+    alias_prefix: "leon-"
+    include:
+      - brutalist-skill
+      - gpt-tasteskill
+      - images-taste-skill
+      - minimalist-skill
+      - redesign-skill
+      - soft-skill
+      - stitch-skill
+      - taste-skill
+
+  # Nutlope/hallmark — Together AI's anti-AI-slop design skill (MIT, May 2026).
+  # Macrostructure-first generation: picks a page shape for the brief, dresses
+  # it in one of twenty named themes, runs a 57-gate slop test plus pre-emit
+  # self-critique. Four verbs: build (default), `audit`, `redesign`, and
+  # `study <screenshot|URL>` — extracts the DNA of an admired design
+  # (macrostructure, type pairing, colour anchor) while refusing pixel-clones.
+  # `study` is the missing discipline our /design skill points at for
+  # reference-driven work: inspiration distillation with a no-clone gate.
+  # MIT licensed upstream; vendored set is committed for reviewable diffs.
+  - repo: Nutlope/hallmark
+    ref: main
+    pin: aeb42fb354ff4efa36ab475773a082315a3af2ce
+    layout: flat
+    skills_path: skills
+    alias_prefix: "nutlope-"
+    include: [hallmark]
+
+  # pbakaus/impeccable — design vocabulary for AI agents (Apache 2.0, 39k
+  # stars). 1 skill with 23 commands (polish, critique, audit, typeset,
+  # colorize, animate, layout, distill, harden, adapt, clarify, onboard,
+  # optimize, delight, overdrive, bolder, quieter, shape, craft, document,
+  # extract, live) and 44 deterministic detector rules. PRODUCT.md +
+  # DESIGN.md context system. Brand vs product register distinction.
+  #
+  # The /design skill already distills impeccable's anti-slop patterns into
+  # references/anti-slop.md. Vendoring the full skill makes the complete
+  # 46-pattern catalog and 23 commands available as a composed tool, not a
+  # paraphrase. The deterministic detector (`npx impeccable detect`, exit
+  # code 2 on findings) is wireable as a design completion-gate check.
+  - repo: pbakaus/impeccable
+    ref: main
+    pin: 1c897a09c86ea7ed7e5cc3affaabcbbb46a05a7d
+    layout: flat
+    skills_path: .agents/skills
+    alias_prefix: "impeccable-"
+    include: [impeccable]
+
+  # ogulcancelik/herdr — herdr's own control SKILL.md. Herdr is an agent
+  # multiplexer (the terminal workflow we run agents inside, replacing zellij);
+  # the skill teaches an agent to drive the running herdr instance over its unix
+  # socket — split panes, spawn and coordinate sibling agents, wait on output or
+  # agent status. It self-gates on HERDR_ENV=1, so it only activates inside a
+  # herdr pane (zero trigger pollution elsewhere). Herdr promotes installing it:
+  # "install that file as a skill named herdr" (herdr.dev/docs/agent-skill).
+  #
+  # Root-level SKILL.md: herdr ships SKILL.md at the repo root, not under a
+  # skills/ subdir, so this uses skill_name to install the root skill directly
+  # (alias herdr-herdr). Only the skill's own artifacts are vendored — SKILL.md
+  # and the upstream LICENSE — never the herdr app source.
+  #
+  # LICENSE: AGPL-3.0-or-later (dual-licensed; commercial available via
+  # hey@herdr.dev). This is the kit's FIRST copyleft external — every other
+  # source is MIT/Apache. Vendored verbatim at the pin with herdr's LICENSE
+  # carried alongside; never edited. The MIT kit stays MIT; the vendored skill
+  # stays AGPL.
+  - repo: ogulcancelik/herdr
+    ref: master
+    pin: 642c6ab9eac3531c04992d2b10a7a09be6d2e06b
+    layout: flat
+    skills_path: "."
+    skill_name: herdr
+    alias_prefix: "herdr-"
+
+  # NousResearch/hermes-agent — SHL0MS's `creative-ideation` skill: a routed
+  # library of 22 named ideation methods (OuLiPo, TRIZ, Oblique Strategies,
+  # biomimicry, jobs-to-be-done, lateral provocations, …). Reads the user's
+  # phase / domain / specificity, routes to the matching method, and refuses
+  # the first-N "slop" ideas. Ships a references/ subtree (method catalog,
+  # anti-slop rules, full prompt library, 22 method files) — vendored whole.
+  #
+  # FIT NOTE: creative / open-ended generation, distinct from /groom's backlog
+  # brainstorm and /shape's product framing. Optional creative lane; revisit if
+  # it over-triggers against grooming.
+  #
+  # LICENSE: MIT — repo and skill frontmatter both declare MIT; the upstream
+  # LICENSE is carried alongside the vendored skill.
+  - repo: NousResearch/hermes-agent
+    ref: main
+    pin: a6a28ce3e2174c0be494f553ab5fd79b7039190f
+    layout: flat
+    skills_path: optional-skills/creative
+    alias_prefix: "nous-"
+    include: [creative-ideation]

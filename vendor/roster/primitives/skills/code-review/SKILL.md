@@ -25,7 +25,7 @@ never ships on its own review — that is the one hard rule.
    `followed|violated <learning title> <file:line> <why>`; no file:line means
    the verdict is not anchored.
 3. **Choose the risk tier.** Use
-   `harnesses/shared/references/quality-system.md` to decide whether the diff
+   `primitives/shared/references/quality-system.md` to decide whether the diff
    needs a tiny, substantive, high-stakes, or Mode B review topology. Scale to
    the failure cost, not to habit.
 4. **Fan out in parallel, decorrelated.** Native subagents for focused
@@ -35,24 +35,25 @@ never ships on its own review — that is the one hard rule.
    large-scale background orchestration where reviewers adversarially
    cross-check each other's findings before reporting, a substantive diff
    is a natural fit — that scale costs tokens, so routine diffs don't get
-   it. Reviewers get the diff, the acceptance oracle, and a risk lens —
-   **never the author's reasoning trail.** When the delivery logged
-   deviations, hand reviewers the deviation *sites* — where the plan bent is
-   where plausible-but-wrong concentrates — but never the author's
-   justifications for them.
-   Add `harnesses/shared/references/works-critique.md` when the diff touches
+   it. Reviewers get the diff, the acceptance oracle, and one risk lens each.
+   Critics get the artifact and the oracle only — never the author's
+   reasoning trail (shared AGENTS.md: Fresh context beats self-review). When
+   the delivery logged deviations, hand reviewers the deviation *sites* —
+   where the plan bent is where plausible-but-wrong concentrates — but never
+   the author's justifications for them.
+   Add `primitives/shared/references/works-critique.md` when the diff touches
    public API, CLI, UI, performance, compatibility, migration, or operator
-   workflow. Add `harnesses/shared/references/delete-first.md` when the diff
+   workflow. Add `primitives/shared/references/delete-first.md` when the diff
    adds abstraction, automation, dependencies, modes, or optimization; pair it
    with the synced Ponytail skill
-   (`skills/.external/dietrich-ponytail/SKILL.md`) when the main risk is bloat,
+   (`primitives/skills/.external/dietrich-ponytail/SKILL.md`) when the main risk is bloat,
    boilerplate, or speculative engineering.
    Add the synced Thermo-Nuclear skill
-   (`skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md`)
+   (`primitives/skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md`)
    whenever the diff changes meaningful implementation structure, grows large
    files, adds wrappers, or risks spaghetti branching; this is the default
    harsh maintainability lens, not a last resort.
-   Add `harnesses/shared/references/verification-system-first.md` when the
+   Add `primitives/shared/references/verification-system-first.md` when the
    diff's proof story is missing, weak, eval/benchmark-shaped, or depends on
    QA/manual judgment.
 5. **Aim reviewers at production embarrassment, not nitpicks.** Tell each
@@ -87,9 +88,8 @@ runtime path) > **important** (architecture, test strength) > **advisory**
 full pass, not a spot-check. Max 3 fix-review iterations, then escalate to
 the operator with the open findings. Ship / Don't-ship is the lead's call on
 the reviewers' evidence; advisory findings never block.
-When the receipt pile is large, use `julius-caveman` compression for the
-synthesis only. Findings must stay precise; PR comments and code suggestions
-stay normal English unless the operator explicitly asks otherwise.
+julius-caveman for interim synthesis only; findings, code, commits, and final
+artifacts stay normal English.
 
 ## Gotchas
 

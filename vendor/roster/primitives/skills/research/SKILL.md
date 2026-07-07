@@ -8,10 +8,10 @@ description: |
   "introspect", "check readwise", "saved articles", "reading list",
   "what are people saying", "X search", "trending", "which model",
   "compare models", "best model for", "model selection".
-argument-hint: "[query] or [web-search|web-deep|web-news|web-docs|delegate|introspect|readwise|xai|exemplars] [args]"
+argument-hint: "[query|web-search|web-deep|web-news|web-docs|delegate|introspect|readwise|xai|exemplars] [args]"
 ---
 
-# Research
+# /research
 
 Evidence-backed research. The lead owns framing, source weighting, synthesis,
 and residual uncertainty.
@@ -65,20 +65,18 @@ dates on every claim.
 
 ## Delegation Judgment
 
-delegate on judgment per the shared Roster contract: native subagents
-by default; add cross-model critics, roster providers, or sprite lanes
-(`/sprites`) only when they answer a distinct question. See
-`harnesses/shared/AGENTS.md` (Roster).
+Delegate per the shared Roster contract (shared AGENTS.md: Roster).
 
 Local lane guidance: Use lanes with distinct sources, methods, or model families; web search and provider CLIs are evidence inputs, not substitutes for lead synthesis.
 
-## Completion Evidence
+## Completion Gate
 
-- Research objective and scope.
+See `primitives/shared/AGENTS.md` (Completion Evidence) for the shared core.
+`/research` adds:
+
 - Sources/tools queried and why.
 - Provider lanes, receipt ids, accepted/rejected outputs, and failures.
-- Claims tied to URLs, local files, commands, receipts, or artifacts.
-- Source coverage gaps, stale facts, skipped tools, and residual risk.
+- Source coverage gaps, stale facts, and skipped tools.
 
 ## Gotchas
 

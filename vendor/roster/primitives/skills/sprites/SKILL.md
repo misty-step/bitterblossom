@@ -7,7 +7,7 @@ description: |
   "remote lane", "offload to a sandbox", "dispatch to sprites", "bake a
   sprite", "sprite fleet", heavy/long-running/parallel sub-agent work that
   should not run on this machine. Trigger: /sprites, /sprite-lane.
-argument-hint: "[run|bake|status|fetch|reset] [sprite] [--repo --card]"
+argument-hint: "[run|bake|status|fetch|reset] [sprite] [--repo <repo>] [--card <file>]"
 ---
 
 # /sprites

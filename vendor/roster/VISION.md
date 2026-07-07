@@ -19,16 +19,20 @@ context they need — no more, no less.
 
 - **`agents/<name>/`** — one directory per declared agent (the Eve
   convention, without the Vercel runtime): `role.yaml` (description, model
-  policy with preferred + fallbacks + reasoning tier, permissions, skills
-  list, mcps list, subagent rights, evidence expectations) and
-  `instructions.md` (the system prompt). Optional `tools/` for bespoke
-  tooling. The declaration is data + prose, never framework code.
+  policy with a concrete preferred {model, reasoning} + fallback
+  {model, reasoning} entries, permissions, skills list, mcps list, subagent
+  rights, evidence expectations) and `instructions.md` (the system prompt).
+  Optional `tools/` for bespoke tooling. The declaration is data + prose,
+  never framework code.
 - **`primitives/`** — the curated library beneath the agents: `skills/`
   (first-party skills migrated from harness-kit over time, vendored external
   skills — Anthropic official, OpenAI official, Matt Pocock's — under
   `skills/.external/`), `mcps/` (MCP server registry: name, launch, env
   refs), `providers.yaml` (invocation tables per brain: the harness-kit
-  agents.yaml lineage — how to actually invoke codex/claude/pi/etc).
+  agents.yaml lineage — how to actually invoke codex/claude/pi/etc),
+  `models.yaml` (per-harness token translation for the handful of concrete
+  model ids that need one), `subagent-pool.yaml` (the default ad hoc
+  subagent pool every agent favors).
 - **`roster` CLI (Rust)** — the operational face: `list`, `show <agent>`,
   `materialize <agent> --harness <claude|codex|pi|bb>` (emit the
   harness-native form of a declaration), `brief <agent> [--card <id>]
@@ -53,13 +57,18 @@ every plane. Rigid schema exists only where deterministic code branches
 
 ## Model policy (operator doctrine, encoded in role.yaml)
 
-Fable-class agents are reserved for strategy, planning, review, and visual
-intelligence, typically at low reasoning, sometimes medium, rarely high —
-and spawned sparingly. Implementation lanes default to codex/GPT-5.5 at
-high/xhigh. Claude Code subagents are Sonnet 5. Cheap sweeps ride
-OpenRouter lanes. Roles declare preferred + fallback models and a reasoning
-tier; the declaration is where routing doctrine lives from now on
-(crucible's routing bench feeds it evidence over time).
+Fable (`claude-fable-5`) identities are reserved for strategy, planning,
+review, and visual intelligence, typically at low-to-medium reasoning,
+rarely high — and spawned sparingly. Implementation lanes default to
+GPT-5.5 at high/xhigh. Claude Code subagents materialize as Sonnet 5 (a
+harness-level translation, not a role choice). Cheap sweeps ride OpenRouter
+lanes. `role.yaml`'s `model_policy` carries this as a concrete preferred
+model id + reasoning, and concrete fallback ids each with their own
+reasoning — no abstract tier symbol to decode (model policy v2, roster-924
+retired the `*-class` vocabulary). Every agent may also spawn ad hoc
+subagents from the pool declared once in `primitives/subagent-pool.yaml`.
+The declaration is where routing doctrine lives from now on (crucible's
+routing bench feeds it evidence over time).
 
 ## Phases (this repo's own backlog; P0 is the founding lane)
 

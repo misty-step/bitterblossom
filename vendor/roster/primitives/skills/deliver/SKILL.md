@@ -6,7 +6,7 @@ description: |
   altitudes, semantic commits, diverse-provider review, adversarial pre-ship
   thinking. Use for "deliver this", "build this ticket", "make it
   merge-ready", "take this end to end". Trigger: /deliver.
-argument-hint: "[backlog-item | description]"
+argument-hint: "[backlog-item|description]"
 ---
 
 # /deliver
@@ -24,26 +24,26 @@ real product understanding (who uses this, what breaks if it's wrong);
 as its own commit. If the ticket has no goal or acceptance oracle, run
 `/shape` (or write the oracle yourself for small work) before building.
 For product direction, positioning, long-lived workflow, or project-identity
-changes, read root `VISION.md` when present; if direction matters and the repo
-has no credible north star, route to `/vision` before building.
+changes: read root VISION.md when present; if missing or stale, route to
+`/vision` before building.
 If the goal is still in the user's head, interrogate before shaping with the
-interrogate-first lens (`harnesses/shared/references/interrogate-first.md`); one
+interrogate-first lens (`primitives/shared/references/interrogate-first.md`); one
 good question beats a guessed plan.
 Building without an oracle yields plausible garbage. For public API, CLI, UI,
 performance, compatibility, migration, or operator workflow changes, load
-`harnesses/shared/references/works-critique.md` before pre-ship review. For
-automation, optimization, or refactor pressure, apply
-`harnesses/shared/references/delete-first.md` and the synced Ponytail skill
-(`skills/.external/dietrich-ponytail/SKILL.md`) before adding surface.
+`primitives/shared/references/works-critique.md` before pre-ship review. Before
+adding surface for automation, optimization, or refactor pressure, see
+`primitives/shared/references/delete-first.md` (Ponytail:
+`primitives/skills/.external/dietrich-ponytail/SKILL.md`).
 
 For non-trivial execution, start from the HTML plan artifact when one exists;
 otherwise author a small one directly from
-`skills/shape/templates/html-plan.html`, open it, and use the rendered page to
+`primitives/skills/shape/templates/html-plan.html`, open it, and use the rendered page to
 check clarity, sequence, risk, and proof before coding. The plan must stand
 alone for the executor: hero as the work contract, support sections for
 alternatives/tradeoffs, acceptance, verification, communication cadence, stop
 conditions, and useful adversarial review. Include the quality system from
-`harnesses/shared/references/quality-system.md`: standards, proof methods,
+`primitives/shared/references/quality-system.md`: standards, proof methods,
 critic topology, and stop rules. The point is visual planning, not a Markdown
 conversion. Skip only for trivial mechanical fixes, no-browser environments, or
 explicit operator waiver.
@@ -55,7 +55,7 @@ building it is the ticket's first milestone, not a detour; every milestone
 after ships through it. The harness-before-feature session catches the
 bugs unit tests structurally cannot. For evals, benchmarks, QA paths, agent
 behavior, performance, or unclear proof loops, load
-`harnesses/shared/references/verification-system-first.md` and name the
+`primitives/shared/references/verification-system-first.md` and name the
 claim, falsifier, driver, grader, evidence packet, and cadence before edits.
 
 ## Docs → tests → code
@@ -87,12 +87,11 @@ landing.
 
 ## QA the live thing
 
-"Tests pass" is not verification. Run the application and drive the surface
-that changed — `/qa` routes by app shape (browser, API, CLI, library, MCP).
-Run it through the verification harness you located or built in Context
-first. Leave an evidence packet — screenshots, transcripts,
-request/response pairs, a verdict — where the repo keeps its receipts, so
-the claim is checkable after you're gone.
+`/qa` routes by app shape (browser, API, CLI, library, MCP) and owns the
+"tests pass is not verification" claim. Run it through the verification
+harness you located or built in Context first. Leave an evidence packet —
+screenshots, transcripts, request/response pairs, a verdict — where the repo
+keeps its receipts, so the claim is checkable after you're gone.
 
 ## Refactor at three altitudes
 
@@ -100,7 +99,7 @@ With working code in hand, ask at each level — and act on what you find. When
 the refactor must prove it changed *nothing observable* and the target has no
 characterization tests, "unit tests pass" cannot see the seam a lift most
 often breaks — reach for the live-diff pattern in
-`harnesses/shared/references/verification-system-first.md` (diff the local
+`primitives/shared/references/verification-system-first.md` (diff the local
 branch against the deployed/pre-refactor build over the same backing store).
 
 1. **The diff.** Would we write it this way from scratch? Duplicate code to
@@ -114,10 +113,10 @@ branch against the deployed/pre-refactor build over the same backing store).
 
 For non-trivial code, add the synced
 `thermo-nuclear-code-quality-review` skill
-(`skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md`) as
-the harsh maintainability pass before declaring the diff clean. Use
-`julius-caveman` for compressed progress/review synthesis when the evidence
-is long; keep code, commits, PR text, and irreversible warnings normal.
+(`primitives/skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md`) as
+the harsh maintainability pass before declaring the diff clean. julius-caveman
+for interim synthesis only; findings, code, commits, and final artifacts stay
+normal English.
 
 ## Land it
 
@@ -139,16 +138,17 @@ is long; keep code, commits, PR text, and irreversible warnings normal.
   shipped, not just delivered. Then monitor if the repo has a post-ship
   signal, and ta-da.
 
-## Done means
+## Completion Gate
 
-State plainly: what behavior changed and how you verified it live (exact
-command/route/surface), what review found and how it was resolved, the
-deviation ledger (or "none"), what residual risk remains, and final
-`git status --short` + branch/remote state.
-A clean tree is part of done — every leftover path gets committed, ignored,
-moved out, or named as a blocker. No green-gate hand-waving: name the
-evidence, not the aggregate. If the work produced a reusable repo-technical
-lesson, offer `/compound` before the evidence goes stale.
+See `primitives/shared/AGENTS.md` (Completion Evidence) for the shared core.
+`/deliver` adds:
+
+- Deviation ledger (or "none").
+- Final `git status --short` + branch/remote state — a clean tree is part of
+  done; every leftover path gets committed, ignored, moved out, or named as a
+  blocker.
+- Offer `/compound` before the evidence goes stale if the work produced a
+  reusable repo-technical lesson.
 
 ## Gotchas
 

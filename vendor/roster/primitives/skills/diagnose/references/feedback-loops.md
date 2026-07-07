@@ -26,8 +26,7 @@ Prefer loops in this order when they fit the symptom:
 9. **Bisect harness** for regressions between known-good and known-bad states.
 10. **Differential loop** that compares old vs new version, config A vs config
    B, or two implementations on the same input.
-11. **HITL loop** only when a person must reproduce it. Add targeted logs,
-    give exact steps, read the captured output, then refine.
+11. **HITL loop** only when a person must reproduce it — full protocol below.
 
 ## Loop Quality
 
@@ -44,6 +43,9 @@ For nondeterministic bugs, raise the reproduction rate. A 50 percent flake is
 debuggable; a 1 percent flake usually needs stress, parallel repetition,
 timing injection, or better instrumentation before investigation can proceed.
 
+Before trusting a new regression test as the loop, verify it fails for the
+right reason — the bug itself, not a syntax or import error.
+
 ## Correct Seam Rule
 
 A regression test earns trust only when it exercises the bug pattern as it
@@ -51,6 +53,41 @@ appeared. If the only available test seam is too shallow, document that as the
 finding instead of writing a false-confidence test. Fix the bug when the root
 cause is proven, then fix the missing seam directly or file a ticket with a
 focused `/critique --lens ousterhout` follow-up.
+
+## Instrumented Reproduction Loop
+
+The full protocol for HITL loop 11, when you can't reproduce the bug yourself
+(auth-gated, mobile, timing-dependent, hardware-specific, user-flow-dependent):
+
+```
+INSTRUMENT → USER REPRODUCES → READ LOGS → REFINE → REPEAT
+```
+
+1. **Plan loop probes** — form 2-3 candidate observations that would
+   discriminate between possible causes. These are instrumentation targets,
+   not root-cause conclusions.
+2. **Instrument** — add targeted logging that discriminates between
+   hypotheses. Write to a log file the user can share back:
+   ```bash
+   LOG_FILE="${HOME}/Desktop/debug-$(date +%s).log"
+   ```
+   Log at decision points: function entry/exit, branch taken, values at
+   boundaries. Tag each line with the hypothesis it tests:
+   `[H1] auth token expired: ${token.exp}`.
+3. **Hand off** — tell the user: "Reproduce the bug, then say done." Give
+   exact steps if known.
+4. **Read & analyze** — when the user signals done, read the log file. For
+   each hypothesis: supported (design the next experiment), disproved
+   (eliminate it, remove its instrumentation, add a new hypothesis), or
+   insufficient data (add more targeted logging at the next layer).
+5. **Iterate** — repeat until one hypothesis survives all evidence. Max 3
+   rounds — if still ambiguous, escalate to Multi-Hypothesis Mode (agent
+   teams).
+6. **Clean up** — remove all instrumentation before fixing. Instrumentation
+   is diagnostic, not the fix.
+
+Use when: flaky tests, user-reported bugs you can't trigger, environment-
+specific issues. Skip when the bug reproduces in your own environment.
 
 ## No-Loop Stop
 

@@ -44,7 +44,7 @@ merge it into a broader reusable effort, or rewrite it until the downstream payo
 - Reduce while adding: consolidation and deletion proposals are part of the
   same strategic groom that emits new ambition.
 - Ready work names the proof loop, not just the desired outcome. For M+
-  tickets, use `harnesses/shared/references/verification-system-first.md` to
+  tickets, use `primitives/shared/references/verification-system-first.md` to
   state claim, falsifier, driver, grader, evidence packet, cadence, and gaps.
 - **The backlog describes the best version of the software**, not the next
   safe increment. Rank by impact discounted by confidence; effort barely

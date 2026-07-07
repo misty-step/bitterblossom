@@ -30,7 +30,7 @@ Two of three must show A>B for a pass; the fixtures span the obvious case
 state correctly is the failure mode), and the tangled case (where guessing
 past missing evidence is the failure mode).
 
-## Objective checks (scriptable, pass/fail, ~free — run on every `skills/orient/**` edit)
+## Objective checks (scriptable, pass/fail, ~free — run on every `primitives/skills/orient/**` edit)
 
 - [ ] No file under the repo is modified, staged, or committed by the arm —
       orient is read-only by contract.
@@ -76,7 +76,7 @@ match/mismatch here once run. **PENDING — no run yet.**
 ## Cadence
 
 - Edit-time: 1-fixture native-subagent smoke (fixture 1) on any
-  `skills/orient/**` change — cheap, and fixture 1's brevity check catches
+  `primitives/skills/orient/**` change — cheap, and fixture 1's brevity check catches
   prose bloat immediately.
 - Contract change (the routing table, the read-only boundary, or the
   punchy-beats-complete rule moves): full A/B, all 3 fixtures, decorrelated

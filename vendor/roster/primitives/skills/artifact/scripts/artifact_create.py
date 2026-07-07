@@ -218,16 +218,30 @@ def ensure_copy_button(doc: str) -> str:
     return doc
 
 
+def _resolve_op_ref(value):
+    """Resolve an `op://vault/item/field` reference via `op read`; return the
+    value unchanged if it isn't a reference. Lets callers work whether
+    ~/.secrets holds a raw value or an op:// reference (harness-kit-914)."""
+    if not value.startswith("op://"):
+        return value
+    try:
+        import subprocess
+        result = subprocess.run(["op", "read", value], capture_output=True, text=True, timeout=10)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, ImportError):
+        return ""
+
+
 def _artifacts_token():
     tok = os.environ.get("ARTIFACTS_API_TOKEN", "")
     if tok:
-        return tok
+        return _resolve_op_ref(tok)
     try:
         with open(os.path.expanduser("~/.secrets")) as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("export ARTIFACTS_API_TOKEN="):
-                    return line.split("=", 1)[1].strip().strip('"')
+                    return _resolve_op_ref(line.split("=", 1)[1].strip().strip('"'))
     except OSError:
         pass
     return ""
@@ -267,11 +281,43 @@ def load_registry(root):
         return {}
 
 
+def fetch_live_stars(base_url):
+    """GET the shelf's current starred slugs. Best-effort: a stale or
+    unreachable stars store must never block an index write, so callers
+    treat None (fetch failed) as "leave prior starred flags alone"."""
+    target = f"{base_url.rstrip('/')}/stars"
+    try:
+        with urllib.request.urlopen(target, timeout=10) as resp:
+            return set(json.load(resp).get("starred", []))
+    except Exception as e:  # noqa: BLE001 — best-effort by design
+        print(f"live stars fetch skipped ({e}); starred flags left as-is", file=sys.stderr)
+        return None
+
+
+def sync_starred(entries, base_url):
+    """Stamp entry['starred'] from the live stars store. Mutates in place so
+    callers holding the same dict objects (e.g. a registry) see the update."""
+    live = fetch_live_stars(base_url)
+    if live is None:
+        return
+    for e in entries:
+        e["starred"] = e["slug"] in live
+
+
+def pin_starred(entries):
+    """Starred first, newest-first within each group (stable two-pass sort:
+    Timsort preserves the updated-time order the starred pass groups by)."""
+    entries = sorted(entries, key=lambda x: x.get("updated", ""), reverse=True)
+    return sorted(entries, key=lambda x: x.get("starred", False), reverse=True)
+
+
 def render_index_html(entries, base_url):
+    entries = pin_starred(entries)
     rows = []
-    for e in sorted(entries, key=lambda x: x.get("updated", ""), reverse=True):
+    for e in entries:
+        star = "★ " if e.get("starred") else ""
         rows.append(
-            f'<tr><td><a href="{html.escape(base_url)}/a/{html.escape(e["slug"])}/">'
+            f'<tr><td>{star}<a href="{html.escape(base_url)}/a/{html.escape(e["slug"])}/">'
             f'{html.escape(e.get("title") or e["slug"])}</a></td>'
             f'<td>{html.escape(e.get("tag", ""))}</td>'
             f'<td>{html.escape(e.get("summary", ""))}</td>'
@@ -281,8 +327,8 @@ def render_index_html(entries, base_url):
         "<h2>Shelf index</h2>"
         "<p>Every artifact published through the house pipeline, newest first. "
         "Machine-readable twin: <a href=\"index.json\">index.json</a>.</p>"
-        "<table><thead><tr><th>Artifact</th><th>Tag</th><th>Summary</th>"
-        "<th>Updated (UTC)</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        "<div class='scroll'><table><thead><tr><th>Artifact</th><th>Tag</th><th>Summary</th>"
+        "<th>Updated (UTC)</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
     )
     return wrap("Shelf Index", "Registry", f"{len(entries)} artifacts on the shelf.", body)
 
@@ -300,6 +346,8 @@ def update_index(root, base_url, entry, local_only):
         entry["created"] = prev.get("created") or entry["updated"]
         reg[entry["slug"]] = {**prev, **entry}
         entries = [e for s, e in reg.items() if s != INDEX_SLUG]
+        sync_starred(entries, base_url)
+        entries = pin_starred(entries)
         idx_dir = os.path.join(root, "a", INDEX_SLUG)
         os.makedirs(idx_dir, exist_ok=True)
         payload = {"generated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
@@ -357,6 +405,8 @@ def reindex(root, base_url, local_only):
                      "created": mtime.isoformat(timespec="seconds"),
                      "updated": mtime.isoformat(timespec="seconds")}
     entries = [e for s, e in reg.items() if s != INDEX_SLUG]
+    sync_starred(entries, base_url)
+    entries = pin_starred(entries)
     idx_dir = os.path.join(root, "a", INDEX_SLUG)
     os.makedirs(idx_dir, exist_ok=True)
     payload = {"generated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),

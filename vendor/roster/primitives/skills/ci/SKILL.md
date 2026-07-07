@@ -3,8 +3,8 @@ name: ci
 description: |
   Audit, design, and run repo-owned CI gates. Host-agnostic by default:
   local, GitHub Actions, Azure, or another runner should call the same
-  repo-owned contract. Harness Kit's own gate is the Rust command
-  `cargo run --locked -p harness-kit-checks -- check --repo .`; consumer repos
+  repo-owned contract. Roster's own gate is fmt/clippy/test plus
+  `cargo run --locked -p roster-cli -- check`; consumer repos
   keep their own native gate. Use when: "run ci", "check ci", "fix ci",
   "audit ci", "design CI", "host-agnostic CI", "Dagger", "is ci passing",
   "run the gates", "why is ci failing", "strengthen ci", "tighten ci",
@@ -18,20 +18,24 @@ argument-hint: "[--audit-only|--run-only]"
 Confidence in correctness without turning local work into a provider or Docker
 tax.
 
-Harness Kit's canonical source-repo gate is:
+Roster's own source-repo gate is:
 
 ```sh
-cargo run --locked -p harness-kit-checks -- check --repo .
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run --locked -p roster-cli -- check
 ```
 
-The source-repo gate is implemented in Rust at
-`crates/harness-kit-checks/src/ci_check.rs`. This is Harness Kit maintenance
-plumbing, not a CI framework to project into every consumer repo.
+The Rust checks run in `.github/workflows/ci.yml`; `roster check` (deterministic
+frontmatter/path/index/conflict-marker gate over `primitives/`) is implemented
+at `crates/roster-cli/src/check.rs`. This is roster's own maintenance plumbing,
+not a CI framework to project into every consumer repo.
 
-When `/ci` runs in a consumer repo, do not assume Harness Kit's Rust gate is
+When `/ci` runs in a consumer repo, do not assume roster's Rust gate is
 installed there. Read that repo's root instructions, package manifests, CI
 workflows, hook config, and shipped scripts, then strengthen the repo-owned
-gate. Harness Kit supplies the agent judgment for CI design; the consumer repo
+gate. Roster supplies the agent judgment for CI design; the consumer repo
 owns the implementation.
 
 For CI architecture or Dagger decisions, load
@@ -56,7 +60,7 @@ full ship gate only when real provider behavior is the point. Usage details:
 https://emulate.dev/docs.
 
 What to gate on — not just where each gate runs — follows the standing quality
-floor in `harnesses/shared/references/quality-gates.md`: gate the diff not the
+floor in `primitives/shared/references/quality-gates.md`: gate the diff not the
 legacy baseline, hard-block the Goodhart-resistant behavioral set (tests,
 diff-coverage, mutation, supply-chain, secrets), ratchet structural debt
 (god-files, duplication, dead code) so legacy only improves, and keep gameable
@@ -114,28 +118,27 @@ unverified paths. CI output is agent context for the next run.
 
 ## Delegation Judgment
 
-For substantive gate-policy changes, delegate on judgment per the shared
-Roster contract: native subagents by default; when the decision is
-architectural or risky, add a cross-model critic or scoped roster lanes with
-lane handoff prompts. See `harnesses/shared/AGENTS.md` (Roster).
+Delegate per the shared Roster contract (shared AGENTS.md: Roster).
 
 Local lane guidance: Each lane states responsibilities, context boundary,
 output evidence, and lead verification. Direct work is limited to mechanical
-repair and emergency preservation. The lead owns synthesis.
+repair and emergency preservation; the lead owns synthesis.
 
 ## Audit
 
 Check the live gate surface:
 
-- Harness Kit only: root contract names
-  `cargo run --locked -p harness-kit-checks -- check --repo .`; `.githooks`
-  route through `harness-kit-checks`; `ci_check.rs` contains the source-repo
-  lane list; generated docs/index are current after skill/docs/backlog changes.
+- Roster only: root contract names
+  `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D
+  warnings && cargo test --workspace && cargo run --locked -p roster-cli --
+  check`; `.github/workflows/ci.yml` runs the Rust checks; `check.rs` contains
+  the `roster check` lane list; `skills-index.yaml` is current after
+  skill/primitive changes.
 - Secret scanning covers both committed content and metadata that never appears
   in the working tree: commit message file, outbound commit range, PR title/body,
   and release/changelog text. The report must redact matched values.
 
-For non-Harness Kit repos, replace the Harness Kit-specific bullets above with
+For non-roster repos, replace the roster-specific bullets above with
 that repo's equivalent gate contract, then apply the same security floor.
 Also check:
 
@@ -153,10 +156,13 @@ Also check:
 
 ## Run
 
-For Harness Kit, run:
+For roster, run:
 
 ```sh
-cargo run --locked -p harness-kit-checks -- check --repo .
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run --locked -p roster-cli -- check
 ```
 
 For consumer repos, run the repo-owned gate discovered in the audit. If none
@@ -171,16 +177,16 @@ If red:
 - Stop after three self-heal attempts per gate and report the exact failing
   command, file/path, and likely cause.
 
-## Output
+## Completion Gate
 
-Report:
+See `primitives/shared/AGENTS.md` (Completion Evidence) for the shared core.
+`/ci` adds:
 
 - **Audit:** gaps found, severity, substrate choice, what was strengthened,
   what was deferred.
 - **Run:** gate command, pass/fail, self-heals, escalations.
 - **Evidence:** reports/artifacts generated or missing: test, coverage,
   performance, security, build artifacts, traces/logs.
-- **Final:** green/red, residual risk, and any deferred heavyweight checks.
 
 Never claim green from a provider status alone. Name the repo-owned command,
 function, target, or artifact that proved the behavior.

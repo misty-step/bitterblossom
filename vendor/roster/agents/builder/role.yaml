@@ -2,11 +2,12 @@ schema_version: roster.role.v1
 name: builder
 description: Delivery lane that takes one ticket from a stated goal to a working, gated change — red-green-refactor discipline, live proof, gates never lowered to reach green.
 model_policy:
-  preferred: codex-class
+  preferred:
+    model: gpt-5.5
+    reasoning: high
   fallbacks:
-    - gpt-5.5
-    - openrouter/moonshotai/kimi-k2.7-code
-  reasoning: high
+    - model: openrouter/moonshotai/kimi-k2.7-code
+      reasoning: high
 permissions:
   filesystem: workspace-write
   commands: allowed

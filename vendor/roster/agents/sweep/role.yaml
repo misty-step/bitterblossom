@@ -2,12 +2,14 @@ schema_version: roster.role.v1
 name: sweep
 description: Cheap read-only research and repository sweep lane for broad scanning, source collection, and concise discrepancy reports.
 model_policy:
-  preferred: openrouter-class
+  preferred:
+    model: openrouter/deepseek/deepseek-v4-flash
+    reasoning: medium
   fallbacks:
-    - openrouter/moonshotai/kimi-k2.7-code
-    - openrouter/deepseek/deepseek-v4-flash
-    - openrouter/qwen/qwen3-coder-next
-  reasoning: medium
+    - model: openrouter/moonshotai/kimi-k2.7-code
+      reasoning: medium
+    - model: openrouter/qwen/qwen3-coder-next
+      reasoning: medium
 permissions:
   filesystem: read-only
   commands: read-only
@@ -28,7 +30,7 @@ mcps:
   - qmd
 subagent_rights:
   may_dispatch: false
-  may_spawn_subagents: false
+  may_spawn_subagents: true
   may_use_peer_harnesses: false
 evidence_expectations:
   - Report sources, commands, and searched paths.

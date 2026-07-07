@@ -1,0 +1,15 @@
+# Default ad hoc subagent pool, declared once. Every roster agent with
+# subagent_rights.may_spawn_subagents true favors this pool over inventing
+# per-agent picks -- see the "dispatch ad hoc subagents where useful, favor
+# the declared pool" line each agents/*/instructions.md carries. Operator
+# list (roster-924), extensible: add rows on capability-ledger evidence, not
+# vibes.
+schema_version: roster.subagent-pool.v1
+pool:
+  - model: claude-sonnet-5
+  - model: gpt-5.5
+    reasoning: low
+  - model: glm-5.2
+  - model: openrouter/moonshotai/kimi-k2.7-code
+  - model: minimax-3
+  - model: gemini-3.5-flash

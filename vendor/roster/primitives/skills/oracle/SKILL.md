@@ -6,7 +6,7 @@ description: |
   when stuck, debugging hard bugs, reviewing an architecture plan, or
   cross-checking a substantive diff with large file context. Never use Oracle
   API mode from Harness Kit. Trigger: /oracle, /consult.
-argument-hint: "[prompt + file globs]"
+argument-hint: "[prompt] [--file <glob>...]"
 ---
 
 # /oracle
@@ -56,8 +56,9 @@ verification, and final judgment.
 ## Good Prompts
 
 Oracle starts cold. Include the repo goal, relevant commands, exact failure,
-constraints, and desired output shape. For review, give the artifact and oracle,
-not the author's reasoning trail.
+constraints, and desired output shape. Critics get the artifact and the
+oracle only — never the author's reasoning trail (shared AGENTS.md: Fresh
+context beats self-review).
 
 Good output requests:
 

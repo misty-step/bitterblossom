@@ -67,13 +67,13 @@ questions. For important repos, add more lanes rather than fewer.
 Each lane returns:
 
 ```markdown
-## <Lane> Report
-### Top Findings
+**<Lane> Report**
+Top Findings
 1. <finding> -- Evidence: <file:line, command, URL, artifact>. Impact: high|med|low.
 2. ...
-### World-Class Delta
+World-Class Delta
 <What would have to be true for this surface to be excellent?>
-### Backlog Move
+Backlog Move
 <One epic, ticket, deletion, consolidation, or "no emission" with rationale.>
 ```
 

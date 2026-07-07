@@ -22,41 +22,40 @@ it into a world-class plan and backlog diff. A groom that only lists, lightly
 prioritizes, or emits a tiny handful of issues is incomplete unless the user
 explicitly scoped the run down.
 
-The backlog diff is the artifact. Prose exists to justify it.
-Groom is a conversation at the seams where the operator's judgment is the scarce
-input. At intake, interrogate the operator on ambition, vision deltas, and
-hidden priors so the sweep aims true — the `grill-me`-style posture in
-`harnesses/shared/references/interrogate-first.md` is the default here, not a
+The backlog diff is the artifact. Prose exists to justify it. Groom is a
+conversation at the seams where the operator's judgment is the scarce input.
+At intake, interrogate the operator on ambition, vision deltas, and hidden
+priors so the sweep aims true — the `grill-me`-style posture in
+`primitives/shared/references/interrogate-first.md` is the default here, not a
 fallback gated on whether they arrived with a backlog item. The investigation
 sweep itself stays autonomous — explore the codebase for what it can answer;
-reserve interrogation for the operator's judgment, not for facts you can read. If the groom produces a giant synthesis, use `julius-caveman`
-compression for interim summaries, not for the committed backlog text.
+reserve interrogation for the operator's judgment, not for facts you can read.
+
+julius-caveman for interim synthesis only; findings, code, commits, and final
+artifacts stay normal English.
 
 ## Project Vision
 
 Every strategic groom creates, refreshes, or explicitly validates a durable
-project vision before ranking work. Vision is the north star that makes
-brainstorming and backlog movement coherent; without it, grooming collapses
-into local cleanup.
+project vision before ranking work; without one, brainstorming and backlog
+movement collapse into local cleanup.
 
-- If a project already has a canonical vision or strategy artifact, read it
-  early and use it to judge every theme, deletion, emission, and next pickup.
-- If none exists, draft the smallest durable vision artifact the repo can own.
-  Prefer root `VISION.md` as a first-class repository artifact; use
-  `docs/product.md`, a roadmap doc, or a clearly named backlog epic only when
-  repo evidence says root vision is the wrong fit. Treat creating it as a
-  first-class groom emission.
-- Use `/vision` when creating or materially revising root `VISION.md`; groom
-  consumes the north star instead of hand-rolling a parallel strategy doc.
+Read root VISION.md when present; if missing or stale, route to /vision
+(shared AGENTS.md: Vision). Groom's delta: it drafts the smallest durable
+vision artifact itself when none exists — prefer root `VISION.md`;
+`docs/product.md`, a roadmap doc, or a named backlog epic only when repo
+evidence says root vision is the wrong fit — and treats that draft as a
+first-class groom emission rather than waiting on a separate `/vision` pass.
+
 - Keep the vision concrete: audience, job-to-be-done, category, standards,
   non-goals, strategic bets, and what excellent looks like in 6-12 months.
-- Revise the vision when live evidence contradicts it. Do not bury direction
+- Revise the vision when live evidence contradicts it; don't bury direction
   changes in chat, issue comments, or the final report only.
-- Use the vision to backchain: themes and tickets should say which part of the
-  vision they advance, de-risk, simplify, or deliberately reject.
-- A vision or moonshot artifact can carry a one-glance **system map** when the
-  relationships, scope, or sequencing are too complex for prose alone. Generate
-  it only when it earns that role: `harnesses/shared/references/image-generation.md`.
+- Backchain: themes and tickets should say which part of the vision they
+  advance, de-risk, simplify, or deliberately reject.
+- A vision or moonshot artifact can carry a one-glance system map when
+  relationships or sequencing are too complex for prose alone:
+  `primitives/shared/references/image-generation.md`.
 
 ## Tidy (mandatory, mechanical)
 
@@ -82,18 +81,16 @@ cargo run --locked -p harness-kit-checks -- backlog archive "$id"   # idempotent
 Trailer canon lives in `meta/CONTRACTS.md`. Emit trailers only via
 `git interpret-trailers`; hand-formatted variants are invisible to tooling.
 
-## Delegation Judgment
+## Delegation
 
-Delegate on judgment per the shared Roster contract: native subagents by
-default; add cross-model critics, roster providers, or sprite lanes
-(`/sprites`) only when they answer a distinct question. See
-`harnesses/shared/AGENTS.md` (Roster).
-
-Local lane guidance: strategic grooming uses swarms by default. Launch
-independent lanes for product/value, operator experience, runtime reliability,
+Delegate per the shared Roster contract (shared AGENTS.md: Roster). Strategic
+grooming is high-stakes by declaration and defaults to the swarm: independent
+lanes for product/value, operator experience, runtime reliability,
 architecture, simplification/deletion, security/privacy, docs/onboarding,
-ops/infra, testing/verification, agent readiness, and external exemplars.
-The lead keeps final prioritization.
+ops/infra, testing/verification, agent readiness, and external exemplars,
+with the lead keeping final prioritization. Routine grooming — a tidy-only
+pass, a scoped ticket check — scales the bench down to the stakes per the
+Roster contract instead of running the full swarm.
 
 ## Mega Sweep
 
@@ -154,7 +151,7 @@ decorrelate judgment, not to fill a roster.
   its deployed surfaces? A CI gate that would catch the likely failure?
   A meaningful, enforced quality floor that gates the diff and ratchets legacy
   debt, or only advisory, arbitrary gates
-  (`harnesses/shared/references/quality-gates.md`)? Security gates that catch
+  (`primitives/shared/references/quality-gates.md`)? Security gates that catch
   secret leaks in files and Git/PR metadata before publication? Stale
   AGENTS/CLAUDE prose? Product context a cold agent would need? Each gap is a
   ticket like any other.
@@ -170,63 +167,11 @@ decorrelate judgment, not to fill a roster.
   pickup) one branch at a time, recommending each — instead of dropping the
   full plan for a rubber-stamp.
 
-## Ticket Standard
+## Ticket Format
 
-`backlog.d/<nnn>-<kebab-slug>.md`, bare numeric IDs.
-
-```markdown
-# <Title as imperative sentence>
-
-Priority: P0–P3 · Status: pending|ready|blocked|in-progress|done|shipped|abandoned · Estimate: S–XL
-
-## Goal
-<one sentence — outcome, not mechanism>
-
-## Oracle
-- [ ] <mechanically verifiable; rough oracles are still oracles>
-
-## Verification System
-- Claim:
-- Falsifier:
-- Driver:
-- Grader:
-- Evidence packet:
-- Cadence:
-
-## Notes
-<constraints, prior art, open questions>
-```
-
-Epics are the default shape for strategic emissions: same file, plus a
-`## Children` section — ordered child outcomes that stay inline until
-picked up, then graduate to their own tickets. An epic still needs a Goal
-and an Oracle for the whole arc; "umbrella" files with no done criteria are
-storage, not epics.
-
-Every active ticket has Goal + Oracle; fix or demote anything that doesn't.
-For M+ work or anything promoted to `Status: ready`, add the verification
-system from `harnesses/shared/references/verification-system-first.md`.
-M+ tickets promoted to `Status: ready` follow `/shape`'s
-`references/prd-ticket-quality.md`; otherwise they stay raw ideas. When
-grooming Harness Kit itself, apply the product lens in
-`references/backlog-doctrine.md`.
-
-## Output
-
-1. **Tidy diff** — archived, flipped, flagged; by ID, no padding.
-2. **Source matrix** — swarm lanes, local commands, external research,
-   skipped/failed lanes, and what each contributed.
-3. **World-class plan** — project vision, gaps, themes, sequencing,
-   deletion/consolidation candidates, and the one best next pickup.
-4. **Emissions** — epic/ticket edits with `**Why:**` naming the evidence lane.
-   Strategic emissions should show breadth across the domain map, not just
-   the easiest implementation slice.
-5. **Residual** — open questions, blocked dependencies, unverified areas,
-   and what would make the sweep stronger.
-
-Apply non-destructive backlog edits when the user asked for grooming.
-Deletions, abandonments, and silent merges stay proposals unless explicitly
-approved.
+`backlog.d/<nnn>-<kebab-slug>.md` with Goal + Oracle always, plus a
+Verification System for M+/ready work — full template, epic shape, and
+promotion rules: `references/ticket-format.md`.
 
 ## Audit Mode
 
@@ -246,10 +191,10 @@ ordered by severity; do not auto-fix.
 - Never auto-delete or silently merge tickets.
 - Never archive a ticket whose trailer points at an unmerged branch.
 - Never let backlog size alone veto an evidenced ticket or epic.
-- Never call a strategic groom complete after a tiny issue set unless the user
-  explicitly asked for a narrow pass.
-- Never skip the swarm when subagent, peer CLI, or sprite lanes are available;
-  if all delegation is blocked, report degraded mode and do the local matrix.
+- Never skip the swarm on a strategic/mega-sweep groom when subagent, peer
+  CLI, or sprite lanes are available — it's high-stakes by declaration; if all
+  delegation is blocked, report degraded mode and do the local matrix.
+  Routine grooming may scale the bench down per the Roster contract.
 
 ## Gotchas
 
@@ -270,8 +215,25 @@ ordered by severity; do not auto-fix.
 - **Accepting the ticket's framing.** Five-whys the top items before
   re-ranking them.
 
-## Verification
+## Completion Gate
 
-`/groom audit` (above) scores skill quality; backlog mechanics are enforced
-by `harness-kit-checks backlog` subcommands. A groom run ends with a clean
-tree: archives committed, emissions written, deletions awaiting ratification.
+See `primitives/shared/AGENTS.md` (Completion Evidence, Closeout) for the
+shared core; this phase adds:
+
+1. **Tidy diff** — archived, flipped, flagged; by ID, no padding.
+2. **Source matrix** — swarm lanes, local commands, external research,
+   skipped/failed lanes, and what each contributed.
+3. **World-class plan** — vision, gaps, themes, sequencing, deletion/
+   consolidation candidates, and the one best next pickup.
+4. **Emissions** — epic/ticket edits with `**Why:**` naming the evidence
+   lane; strategic emissions show breadth across the domain map, not just
+   the easiest implementation slice.
+5. **Residual** — open questions, blocked dependencies, unverified areas,
+   and what would make the sweep stronger.
+
+`/groom audit` scores skill quality separately (see Audit Mode above);
+backlog mechanics are enforced by `harness-kit-checks backlog` subcommands.
+Apply non-destructive backlog edits when the user asked for grooming;
+deletions, abandonments, and silent merges stay proposals unless explicitly
+approved. A groom run ends with a clean tree: archives committed, emissions
+written, deletions awaiting ratification.

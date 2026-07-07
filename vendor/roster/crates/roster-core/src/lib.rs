@@ -49,29 +49,33 @@ impl Roster {
     }
 }
 
-/// Tier -> per-harness invocable model id, loaded from `primitives/
-/// tiers.yaml`. Distinct from the pre-existing `primitives/providers.yaml`
-/// (a peer-harness-CLI dispatch table migrated from harness-kit's
-/// agents.yaml at P0 -- how to invoke codex/claude/pi/etc, not consulted by
-/// this struct): two files, two concepts.
+/// Concrete model id -> per-harness invocable token, loaded from
+/// `primitives/models.yaml`. Distinct from the pre-existing
+/// `primitives/providers.yaml` (a peer-harness-CLI dispatch table migrated
+/// from harness-kit's agents.yaml at P0 -- how to invoke codex/claude/pi/etc,
+/// not consulted by this struct): two files, two concepts. Also distinct
+/// from the retired `primitives/tiers.yaml`, which resolved an ABSTRACT tier
+/// symbol (`fable-class`, `codex-class`, `openrouter-class`) per harness --
+/// model policy v2 (roster-924) made `model_policy.preferred` always a
+/// concrete, invocable id, so this table only translates that id into the
+/// token a specific harness renderer needs, never a tier.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Providers {
+pub struct Models {
     pub schema_version: String,
-    pub tiers: BTreeMap<String, TierBindings>,
+    pub models: BTreeMap<String, ModelBinding>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct TierBindings {
+pub struct ModelBinding {
     pub claude: String,
-    pub codex: String,
     pub bb: String,
 }
 
-impl Providers {
+impl Models {
     pub fn load(root: impl AsRef<Path>) -> Result<Self, RosterError> {
-        let path = root.as_ref().join("primitives/tiers.yaml");
+        let path = root.as_ref().join("primitives/models.yaml");
         let text = fs::read_to_string(&path).map_err(|source| RosterError::Io {
             path: path.clone(),
             source,
@@ -79,14 +83,46 @@ impl Providers {
         serde_yaml::from_str(&text).map_err(|source| RosterError::Yaml { path, source })
     }
 
-    fn claude_tier(&self, tier: &str) -> Option<&str> {
-        self.tiers
-            .get(tier)
-            .map(|bindings| bindings.claude.as_str())
+    fn claude_for(&self, model: &str) -> Option<&str> {
+        self.models
+            .get(model)
+            .map(|binding| binding.claude.as_str())
     }
 
-    fn bb_tier(&self, tier: &str) -> Option<&str> {
-        self.tiers.get(tier).map(|bindings| bindings.bb.as_str())
+    fn bb_for(&self, model: &str) -> Option<&str> {
+        self.models.get(model).map(|binding| binding.bb.as_str())
+    }
+}
+
+/// Default ad hoc subagent pool, loaded from `primitives/subagent-pool.yaml`.
+/// Declared once; every agent with `subagent_rights.may_spawn_subagents`
+/// true points at this file rather than each instructions.md re-listing the
+/// pool. Not consumed by any renderer today -- validated here so a typo in
+/// the pool file fails a test, not a silent drift from the instructions.md
+/// line that names it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubagentPool {
+    pub schema_version: String,
+    pub pool: Vec<PoolEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolEntry {
+    pub model: String,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+}
+
+impl SubagentPool {
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, RosterError> {
+        let path = root.as_ref().join("primitives/subagent-pool.yaml");
+        let text = fs::read_to_string(&path).map_err(|source| RosterError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        serde_yaml::from_str(&text).map_err(|source| RosterError::Yaml { path, source })
     }
 }
 
@@ -122,8 +158,14 @@ pub struct Role {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPolicy {
-    pub preferred: String,
-    pub fallbacks: Vec<String>,
+    pub preferred: ModelEntry,
+    pub fallbacks: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ModelEntry {
+    pub model: String,
     pub reasoning: String,
 }
 
@@ -179,9 +221,9 @@ pub enum RosterError {
     Validation(String),
 }
 
-pub fn render_claude_agent(agent: &Agent, providers: &Providers) -> String {
+pub fn render_claude_agent(agent: &Agent, models: &Models) -> String {
     let role = &agent.role;
-    let model = claude_model(role, providers);
+    let model = claude_model(role, models);
     let tools = claude_tools(role);
 
     format!(
@@ -200,7 +242,6 @@ tools: {tools}
 
 - Preferred: {preferred}
 - Fallbacks: {fallbacks}
-- Reasoning: {reasoning}
 
 ## Skills To Read
 
@@ -226,11 +267,10 @@ tools: {tools}
         description = role.description,
         model = model,
         tools = tools,
-        preferred = role.model_policy.preferred,
-        reasoning = role.model_policy.reasoning,
+        preferred = format_model_entry(&role.model_policy.preferred),
         skills = render_skills(&role.skills, &[]),
         instructions = agent.instructions.trim(),
-        fallbacks = role.model_policy.fallbacks.join(", "),
+        fallbacks = format_fallbacks(&role.model_policy.fallbacks),
         mcp_servers = render_mcp_servers(&role.mcps, &role.mcps_contextual, &[]),
         filesystem = role.permissions.filesystem,
         commands = role.permissions.commands,
@@ -241,19 +281,78 @@ tools: {tools}
     )
 }
 
-fn claude_model(role: &Role, providers: &Providers) -> String {
-    let preferred = &role.model_policy.preferred;
+/// Composes the single doctrine file `roster sync` points every harness's
+/// global doctrine link at: the shared operating doctrine verbatim, then
+/// `agent`'s identity (instructions, skills, MCP bindings), so any default
+/// agent session on the machine boots as the declared roster orchestrator
+/// (operator ruling 2026-07-07) rather than a bare copy of shared AGENTS.md.
+pub fn render_home_doctrine(root: &Path, agent: &Agent) -> Result<String, RosterError> {
+    let role = &agent.role;
+    let doctrine_path = root.join("primitives/shared/AGENTS.md");
+    let doctrine = fs::read_to_string(&doctrine_path).map_err(|source| RosterError::Io {
+        path: doctrine_path.clone(),
+        source,
+    })?;
 
-    if let Some(model) = providers.claude_tier(preferred) {
+    Ok(format!(
+        r#"{doctrine}
+
+# Session Identity: {name} (roster)
+
+{instructions}
+
+## Skills To Read
+
+{skills}
+
+## MCP Servers
+
+{mcp_servers}
+
+---
+This is the composed home doctrine for the roster `{name}` agent, the
+declared default orchestrator for every harness on this machine. See the
+rest of the roster with `roster list`, `roster show <agent>`, or the roster
+MCP; lane dispatch goes through `roster materialize` / `roster brief`.
+"#,
+        doctrine = doctrine.trim_end(),
+        name = role.name,
+        instructions = agent.instructions.trim(),
+        skills = render_skills(&role.skills, &[]),
+        mcp_servers = render_mcp_servers(&role.mcps, &role.mcps_contextual, &[]),
+    ))
+}
+
+fn format_model_entry(entry: &ModelEntry) -> String {
+    format!("{} (reasoning: {})", entry.model, entry.reasoning)
+}
+
+fn format_fallbacks(fallbacks: &[ModelEntry]) -> String {
+    if fallbacks.is_empty() {
+        "none".to_string()
+    } else {
+        fallbacks
+            .iter()
+            .map(format_model_entry)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn claude_model(role: &Role, models: &Models) -> String {
+    let preferred = &role.model_policy.preferred.model;
+
+    if let Some(model) = models.claude_for(preferred) {
         return model.to_string();
     }
 
-    // `preferred` isn't a known tier symbol, so treat it as a literal model
-    // id. Pass Claude subagent model names straight through; conservatively
-    // map the handful of literal Claude ids role.yaml might carry to their
-    // subagent-frontmatter short form; anything else (a codex/browser-only
-    // id, or an unrecognized string) falls back to `inherit` — the subagent
-    // runs on the session's own model — rather than guessing a wrong one.
+    // `preferred` isn't a known concrete id in primitives/models.yaml, so
+    // treat it as a literal Claude model name. Pass Claude subagent model
+    // names straight through; conservatively map the handful of literal
+    // Claude ids role.yaml might carry to their subagent-frontmatter short
+    // form; anything else (a codex/browser-only id, or an unrecognized
+    // string) falls back to `inherit` — the subagent runs on the session's
+    // own model — rather than guessing a wrong one.
     match preferred.as_str() {
         "sonnet" | "opus" | "haiku" | "inherit" => preferred.clone(),
         "claude-opus-4-8" => "opus".to_string(),
@@ -287,9 +386,9 @@ fn claude_tools(role: &Role) -> String {
 
 // bb (Bitterblossom) config has no MCP concept: `role.mcps`/`mcps_contextual`
 // are not rendered into the generated TOML at all, required or contextual.
-pub fn render_bb_agent(agent: &Agent, providers: &Providers) -> Result<String, String> {
+pub fn render_bb_agent(agent: &Agent, models: &Models) -> Result<String, String> {
     let role = &agent.role;
-    let model = bb_model(role, providers)?;
+    let model = bb_model(role, models)?;
     let skills = toml_array(
         &role
             .skills
@@ -323,8 +422,8 @@ wall_clock_minutes = 30
 side_effect_policy = "kill"
 "#,
         name = toml_escape(&role.name),
-        preferred = toml_escape(&role.model_policy.preferred),
-        reasoning = toml_escape(&role.model_policy.reasoning),
+        preferred = toml_escape(&role.model_policy.preferred.model),
+        reasoning = toml_escape(&role.model_policy.preferred.reasoning),
         model = toml_escape(&model),
         skills = skills,
     ))
@@ -348,7 +447,6 @@ pub fn render_brief(
 
 - Preferred: {preferred}
 - Fallbacks: {fallbacks}
-- Reasoning: {reasoning}
 
 ## Instructions
 
@@ -384,9 +482,8 @@ Read: {instruction_path}
 "#,
         name = role.name,
         description = role.description,
-        preferred = role.model_policy.preferred,
-        fallbacks = role.model_policy.fallbacks.join(", "),
-        reasoning = role.model_policy.reasoning,
+        preferred = format_model_entry(&role.model_policy.preferred),
+        fallbacks = format_fallbacks(&role.model_policy.fallbacks),
         instruction_path = agent.instruction_path().display(),
         instructions = agent.instructions.trim(),
         skills = render_skills(&role.skills, add_skills),
@@ -421,33 +518,34 @@ Read: {instruction_path}
     output
 }
 
-fn bb_model(role: &Role, providers: &Providers) -> Result<String, String> {
-    if let Some(model) = openrouter_model(&role.model_policy.preferred) {
+fn bb_model(role: &Role, models: &Models) -> Result<String, String> {
+    if let Some(model) = openrouter_model(&role.model_policy.preferred.model) {
         return Ok(model.to_string());
     }
     if let Some(model) = role
         .model_policy
         .fallbacks
         .iter()
-        .find_map(|fallback| openrouter_model(fallback))
+        .find_map(|fallback| openrouter_model(&fallback.model))
     {
         return Ok(model.to_string());
     }
 
     // Neither `preferred` nor any fallback is a literal `openrouter/`-prefixed
-    // model id. Resolve `preferred` as a tier symbol through providers.yaml
-    // instead of ever falling back to the bare tier string (that string is
-    // not an invocable model, so a bb config carrying it would silently fail
-    // at dispatch time rather than at render time).
-    providers
-        .bb_tier(&role.model_policy.preferred)
+    // model id. Resolve `preferred` through primitives/models.yaml instead of
+    // ever emitting the bare concrete id as-is (a codex-only id like
+    // `gpt-5.5` is not an invocable OpenRouter model, so a bb config carrying
+    // it verbatim would silently fail at dispatch time rather than at render
+    // time).
+    models
+        .bb_for(&role.model_policy.preferred.model)
         .map(|model| openrouter_model(model).unwrap_or(model).to_string())
         .ok_or_else(|| {
             format!(
                 "cannot resolve bb model for agent {:?}: preferred {:?} is not an \
                  openrouter/-prefixed literal, has no openrouter/-prefixed fallback, \
-                 and is not a known tier in primitives/tiers.yaml",
-                role.name, role.model_policy.preferred
+                 and is not a known model in primitives/models.yaml",
+                role.name, role.model_policy.preferred.model
             )
         })
 }
@@ -467,7 +565,6 @@ pub fn render_show(agent: &Agent) -> String {
 - Instructions: {instruction_path}
 - Preferred model: {preferred}
 - Fallbacks: {fallbacks}
-- Reasoning: {reasoning}
 - Skills: {skill_count}
 - MCPs: {mcps}
 - Contextual MCPs: {mcps_contextual}
@@ -480,9 +577,8 @@ pub fn render_show(agent: &Agent) -> String {
         description = role.description,
         directory = agent.directory.display(),
         instruction_path = agent.instruction_path().display(),
-        preferred = role.model_policy.preferred,
-        fallbacks = role.model_policy.fallbacks.join(", "),
-        reasoning = role.model_policy.reasoning,
+        preferred = format_model_entry(&role.model_policy.preferred),
+        fallbacks = format_fallbacks(&role.model_policy.fallbacks),
         skill_count = role.skills.len(),
         mcps = if role.mcps.is_empty() {
             "none".to_string()
@@ -555,15 +651,27 @@ fn validate_agent(directory: &Path, role: &Role, instructions: &str) -> Result<(
     require_non_empty(&role.name, "name", directory)?;
     require_non_empty(&role.description, "description", directory)?;
     require_non_empty(
-        &role.model_policy.preferred,
-        "model_policy.preferred",
+        &role.model_policy.preferred.model,
+        "model_policy.preferred.model",
         directory,
     )?;
     require_non_empty(
-        &role.model_policy.reasoning,
-        "model_policy.reasoning",
+        &role.model_policy.preferred.reasoning,
+        "model_policy.preferred.reasoning",
         directory,
     )?;
+    for (index, fallback) in role.model_policy.fallbacks.iter().enumerate() {
+        require_non_empty(
+            &fallback.model,
+            &format!("model_policy.fallbacks[{index}].model"),
+            directory,
+        )?;
+        require_non_empty(
+            &fallback.reasoning,
+            &format!("model_policy.fallbacks[{index}].reasoning"),
+            directory,
+        )?;
+    }
     require_non_empty(
         &role.permissions.filesystem,
         "permissions.filesystem",

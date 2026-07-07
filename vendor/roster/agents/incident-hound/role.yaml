@@ -2,11 +2,12 @@ schema_version: roster.role.v1
 name: incident-hound
 description: Live-system incident root cause — production failures, not diff review.
 model_policy:
-  preferred: codex-class
+  preferred:
+    model: gpt-5.5
+    reasoning: xhigh
   fallbacks:
-    - gpt-5.5
-    - claude-sonnet-5
-  reasoning: xhigh
+    - model: claude-sonnet-5
+      reasoning: xhigh
 permissions:
   filesystem: read-only
   commands: verification-only
@@ -21,7 +22,7 @@ skills:
     path: /Users/phaedrus/Development/roster/primitives/skills/qa/SKILL.md
     reason: reproduce the failure against the live surface, not just logs
   - name: factory-apps
-    path: /Users/phaedrus/Development/harness-kit/skills/factory-apps/SKILL.md
+    path: /Users/phaedrus/Development/roster/primitives/skills/factory-apps/SKILL.md
     reason: routing to Canary/Landmark/Bitterblossom observability surfaces; not yet migrated to primitives/skills (roster-919 phase-1 addendum, see skills-index.yaml note)
 mcps: []
 subagent_rights:

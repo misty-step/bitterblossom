@@ -8,7 +8,7 @@ description: |
   "show this off", "demo video", "case study", "portfolio piece",
   "consulting asset", "launch page", "sales demo". Trigger: /showcase,
   /productize, /demoability.
-argument-hint: "[audit|plan|site|video|case-study|polish] <repo-or-product>"
+argument-hint: "[audit|plan|site|video|case-study|polish] [repo-or-product]"
 ---
 
 # /showcase
@@ -76,7 +76,8 @@ prospect clicked, ran, or asked for proof?
 
 ## Delegation Judgment
 
-Delegate per the shared Roster contract in `harnesses/shared/AGENTS.md`.
+Delegate per the shared Roster contract (shared AGENTS.md: Roster).
+
 Useful lanes:
 
 - Product critic: find the weakest public promise.
@@ -85,8 +86,9 @@ Useful lanes:
   accessibility, and generic AI tells.
 - Copy critic: remove hype, process leakage, and unsupported assertions.
 
-Critics get the artifact plus the evidence map. They do not get the author's
-intent trail.
+Critics get the artifact and the oracle only — never the author's reasoning
+trail (shared AGENTS.md: Fresh context beats self-review); here the artifact
+includes the evidence map.
 
 ## Gotchas
 
@@ -108,7 +110,7 @@ intent trail.
 
 ## Completion Gate
 
-See `harnesses/shared/AGENTS.md` (Completion Evidence) for the shared evidence
+See `primitives/shared/AGENTS.md` (Completion Evidence) for the shared evidence
 core. Showcase adds:
 
 ```markdown

@@ -47,21 +47,21 @@ For each check in the domain checklist:
 ### 3. Output Report
 
 ```markdown
-## {Domain} Audit
+**{Domain} Audit**
 
-### P0: Critical
+P0: Critical
 - [finding]: [detail]
 
-### P1: Essential
+P1: Essential
 - [finding]: [detail]
 
-### P2: Important
+P2: Important
 - [finding]: [detail]
 
-### P3: Nice to Have
+P3: Nice to Have
 - [finding]: [detail]
 
-## Summary
+**Summary**
 - P0: N | P1: N | P2: N | P3: N
 - Recommendation: [top action]
 ```

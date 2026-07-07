@@ -1,0 +1,49 @@
+use axum::{Json, Router, routing::get};
+use serde::Serialize;
+use {{crate_prefix}}_core::WorkItem;
+
+mod config;
+
+pub use config::{RuntimeEnvError, ServerProcessConfig};
+
+pub fn router() -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/items", get(list_items).post(create_item))
+}
+
+#[derive(Debug, Serialize)]
+struct Healthz {
+    status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct Readyz {
+    status: &'static str,
+    database: &'static str,
+    supervisor: &'static str,
+}
+
+async fn healthz() -> Json<Healthz> {
+    Json(Healthz { status: "ok" })
+}
+
+async fn readyz() -> Json<Readyz> {
+    // Replace this placeholder with a live store probe in the first persisted slice.
+    Json(Readyz {
+        status: "ready",
+        database: "not_wired",
+        supervisor: "ok",
+    })
+}
+
+async fn list_items() -> Json<Vec<WorkItem>> {
+    // Wire to {{crate_prefix}}_shell::Service in the first real slice.
+    Json(Vec::new())
+}
+
+async fn create_item(Json(item): Json<WorkItem>) -> Json<WorkItem> {
+    // Parse transport here; product policy belongs in core/shell.
+    Json(item)
+}

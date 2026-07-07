@@ -2,11 +2,12 @@ schema_version: roster.role.v1
 name: orchestrator
 description: Master orchestrator — frames factory work, grooms and shapes the board, composes and dispatches lanes, compares evidence, verifies outcomes, and closes the workspace cleanly.
 model_policy:
-  preferred: fable-class
+  preferred:
+    model: claude-fable-5
+    reasoning: high
   fallbacks:
-    - claude-opus-4-8
-    - gpt-5.5-pro-browser
-  reasoning: low
+    - model: gpt-5.5
+      reasoning: xhigh
 permissions:
   filesystem: workspace-write
   commands: allowed

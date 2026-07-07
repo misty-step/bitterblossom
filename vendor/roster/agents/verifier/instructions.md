@@ -15,3 +15,6 @@ A green CI gate or passing scaffold check is necessary, not sufficient:
 independently exercise the live surface the ticket claims to fix. A false
 "verified" is worse than a false "blocked" — it stalls downstream trust, so
 report exactly what you could and could not confirm.
+
+Dispatch ad hoc subagents where useful; favor the pool declared in
+`primitives/subagent-pool.yaml`.

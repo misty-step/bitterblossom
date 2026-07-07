@@ -27,7 +27,7 @@ Two of three must show A>B for a pass; the fixtures span a pure external
 lookup, a discourse/social scan, and a repo-grounded question that should
 start with local evidence per the skill's own contract.
 
-## Objective checks (scriptable, pass/fail, ~free — run on every `skills/research/**` edit)
+## Objective checks (scriptable, pass/fail, ~free — run on every `primitives/skills/research/**` edit)
 
 - [ ] Every load-bearing factual claim carries a citation (URL, file path, or
       command output) — no bare assertion.
@@ -71,7 +71,7 @@ verdict and match/mismatch here once run. **PENDING — no run yet.**
 ## Cadence
 
 - Edit-time: 1-fixture native-subagent smoke (fixture 1) on any
-  `skills/research/**` change.
+  `primitives/skills/research/**` change.
 - Contract change (the source-ordering rule, the fan-out defaults, or the
   residual-uncertainty requirement moves): full A/B, all 3 fixtures,
   decorrelated families.

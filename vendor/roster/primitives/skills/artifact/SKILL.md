@@ -7,9 +7,10 @@ description: |
   looks and behaves the same. Use when: "make an HTML artifact/report", "serve
   this over tailscale", "write up a brief/report/dashboard as a page", or any time
   you'd otherwise dump a long analysis into chat. Trigger: /artifact.
+argument-hint: "[--title <t> --slug <s> --body-file <f>|--html-file <f>] [--local-only]"
 ---
 
-# artifact
+# /artifact
 
 The operator reads reports as HTML pages over Tailscale, not as chat walls. This
 skill is the single source of truth for how those pages look and what they can do.

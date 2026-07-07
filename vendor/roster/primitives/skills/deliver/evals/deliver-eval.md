@@ -10,7 +10,7 @@ This is a `mode-eval` A/B run, not a directory shape. Arms: A = `/deliver`
 installed and invoked; B = raw same-model ("implement this ticket end to end
 and make it mergeable", no skill); C = n/a (no credible alternative primitive
 covers the full arc). Grade blind, objective checks first, judge a different
-model family than the workers. Protocol: `skills/skill-eval/references/run-recipe.md`.
+model family than the workers. Protocol: `primitives/skills/skill-eval/references/run-recipe.md`.
 
 ## Fixtures
 
@@ -27,7 +27,7 @@ Two of three must show A>B for a pass; the fixtures span a clean feature, a
 regression fix requiring TDD, and an underspecified ticket that should trigger
 the "no oracle, no delivery" gate.
 
-## Objective checks (scriptable, pass/fail, ~free — run on every `skills/deliver/**` edit)
+## Objective checks (scriptable, pass/fail, ~free — run on every `primitives/skills/deliver/**` edit)
 
 - [ ] A failing test existed before the fix/feature landed (visible in commit
       history: test commit precedes or is paired with the implementation commit).
@@ -73,7 +73,7 @@ agent grader here once run. **PENDING — no run yet.**
 ## Cadence
 
 - Edit-time: 1-fixture native-subagent smoke (fixture 1) on any
-  `skills/deliver/**` change.
+  `primitives/skills/deliver/**` change.
 - Contract change (the docs→tests→code loop, the review-loop rule, or the
   closeout bar moves): full A/B, all 3 fixtures, decorrelated families.
 - Major model release: re-audit — a stronger bare model may already default to

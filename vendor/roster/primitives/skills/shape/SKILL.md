@@ -32,20 +32,20 @@ an architecture choice needs the full treatment.
   `rg -n --glob '*.md' '^(title|tags|applies_when):|<product-term>|<failure-mode-term>' docs/solutions`.
   Open likely matches and state applies / does-not-apply in the packet.
 - **Vision-aware when strategic.** For product direction, positioning,
-  long-lived workflow, or project-identity choices, read root `VISION.md` when
-  present. If the shape depends on a missing or stale north star, route to
-  `/vision` or carry an explicit waiver.
+  long-lived workflow, or project-identity choices: read root VISION.md when
+  present; if missing or stale, route to `/vision` or carry an explicit
+  waiver.
 - **Alternatives genuinely explored.** Real alternatives fail differently —
   include the boring/manual path and one that inverts a load-bearing
   assumption. Same idea in three outfits is one option. To break out of that,
   `nous-creative-ideation` is a routed library of named methods (TRIZ for
   parameter conflicts, premortem-and-inversion, first-principles) that
   generate options which actually fail differently. Kill the losers on
-  the record and **recommend one**; a menu is not a shape. For automation or
-  refactor-heavy ideas, apply `harnesses/shared/references/delete-first.md`
-  and the synced Ponytail skill (`skills/.external/dietrich-ponytail/SKILL.md`)
-  before choosing the build path; the lazy viable path must be a real
-  alternative, not a throwaway paragraph.
+  the record and **recommend one**; a menu is not a shape. See
+  `primitives/shared/references/delete-first.md` (Ponytail:
+  `primitives/skills/.external/dietrich-ponytail/SKILL.md`) before choosing
+  the build path; the lazy viable path must be a real alternative, not a
+  throwaway paragraph.
 - **Perceptual criteria prototyped.** When acceptance is taste — design,
   copy, feel, layout — prose alternatives are the wrong artifact; the
   operator can't evaluate what they haven't seen. Route through `/design`
@@ -62,12 +62,12 @@ an architecture choice needs the full treatment.
   legal oracle ("figure out how to measure X, then hit it") — and the
   builder never grades its own work: acceptance is a fresh context pointed
   at the real output, told to prove it fails
-  (`harnesses/shared/references/prompting-frontier.md`).
+  (`primitives/shared/references/prompting-frontier.md`).
 - **Verification harness named.** The packet states which live-verification
   harness will prove the work (the repo's one-command evidence loop) — and
   when none exists, the packet's first milestone is building it
   (verification system first, shared AGENTS.md Layer 1), not the feature.
-  Load `harnesses/shared/references/verification-system-first.md` for
+  Load `primitives/shared/references/verification-system-first.md` for
   evals, benchmarks, QA paths, performance claims, agent-behavior claims, or
   any surface whose proof loop is not already obvious.
 - **Deliverable visible up front.** Code, research, docs, or decision — a
@@ -80,10 +80,10 @@ an architecture choice needs the full treatment.
   improvised around.
 - **"Works" has product dimensions.** For public API, CLI, UI, performance,
   compatibility, migration, or operator-workflow packets, load
-  `harnesses/shared/references/works-critique.md` and include the likely
+  `primitives/shared/references/works-critique.md` and include the likely
   review focus.
 - **Loops cross the Mode A/Mode B boundary.** For recurring or unattended
-  workflow ideas, load `harnesses/shared/references/loop-readiness.md` and
+  workflow ideas, load `primitives/shared/references/loop-readiness.md` and
   shape a handoff instead of a Harness Kit scheduler.
 - **Premise source named.** The packet cites the artifact that explains why
   this shape exists (`Premise Source: sha256:<digest> <path-or-url>`) or
@@ -112,7 +112,7 @@ an architecture choice needs the full treatment.
   grids, diagrams, callouts, and links to repo anchors. Generate diagram images
   only for complex or contested plans where a labeled architecture / sequence /
   system map carries information HTML, mermaid, or ASCII cannot; keep mermaid
-  for precise call-graphs (`harnesses/shared/references/image-generation.md`).
+  for precise call-graphs (`primitives/shared/references/image-generation.md`).
   Prefer the Misty Step aesthetic kit when the artifact is visual and local
   review can load it; keep any local CSS as thin plan-specific glue. This is not Markdown exported to
   HTML; the HTML is the planning medium. Skip only for trivial shapes,
@@ -121,7 +121,7 @@ an architecture choice needs the full treatment.
 Interrogate before you design, and lock product direction before technical
 design. For any substantial or contestable shape the default is a
 `grill-me`-style interview: load
-`harnesses/shared/references/interrogate-first.md` and walk the operator down
+`primitives/shared/references/interrogate-first.md` and walk the operator down
 the decision tree one question at a time, each with your recommended answer and
 what breaks if it's wrong, until the load-bearing product and architecture
 choices are pinned. Explore the repo, vision, and commands to resolve what you
@@ -136,19 +136,19 @@ PRD shape in `references/prd-ticket-quality.md`; for CLI surfaces, include
 the block from `references/cli-design.md`.
 
 ```markdown
-# Context Packet: <title>
+  # Context Packet: <title>
 
-## Goal            — one sentence, outcome not mechanism
-## Non-Goals       — scope that stays out, even if tempting
-## Constraints     — invariants that must remain true
-## Repo Anchors    — the 3–10 files whose patterns must be followed
-## Alternatives    — what was considered, how each fails, verdicts
-## Design          — chosen shape, surfaces touched, data/control flow,
-                     rejected alternatives and why, ADR decision if any
-## Oracle          — executable definition of done
-## Premise Source  — sha256 + artifact, or explicit waiver
-## HTML Plan       — Sanctum shelf URL attached to the Powder card, or explicit waiver
-## Risks + Rollout — how it fails, how to undo it
+  ## Goal            — one sentence, outcome not mechanism
+  ## Non-Goals       — scope that stays out, even if tempting
+  ## Constraints     — invariants that must remain true
+  ## Repo Anchors    — the 3–10 files whose patterns must be followed
+  ## Alternatives    — what was considered, how each fails, verdicts
+  ## Design          — chosen shape, surfaces touched, data/control flow,
+                       rejected alternatives and why, ADR decision if any
+  ## Oracle          — executable definition of done
+  ## Premise Source  — sha256 + artifact, or explicit waiver
+  ## HTML Plan       — Sanctum shelf URL attached to the Powder card, or explicit waiver
+  ## Risks + Rollout — how it fails, how to undo it
 ```
 
 When the oracle depends on an acceptance artifact (fixture, golden file,
@@ -160,10 +160,7 @@ the packet for `/deliver` and `/qa` rather than inflating the packet itself.
 
 ## Delegation Judgment
 
-Delegate on judgment per the shared Roster contract: native subagents by
-default; add cross-model critics, roster providers, or sprite lanes
-(`/sprites`) only when they answer a distinct question. See
-`harnesses/shared/AGENTS.md` (Roster).
+Delegate per the shared Roster contract (shared AGENTS.md: Roster).
 
 Local lane guidance: one lane to map repo constraints, one for prior art or
 premise challenge; fresh-context critique of the draft packet when the
@@ -172,10 +169,11 @@ design is contestable.
 ## Critique
 
 Your own design read is not a review. When the design is contestable, hand
-the draft packet — artifact only, not your reasoning trail — to adversarial
-fresh-context critique, preferably a different model family, and ask for the
-production failure that would embarrass us. Lens prompts live in
-`references/critique-personas.md`. Skip for trivial shapes.
+the draft packet to adversarial fresh-context critique, preferably a
+different model family. Critics get the artifact and the oracle only — never
+the author's reasoning trail (shared AGENTS.md: Fresh context beats
+self-review); ask for the production failure that would embarrass us. Lens
+prompts live in `references/critique-personas.md`. Skip for trivial shapes.
 
 ## Gotchas
 
@@ -195,22 +193,22 @@ production failure that would embarrass us. Lens prompts live in
 ## Verification
 
 For non-trivial packets, include the verification-system block from
-`harnesses/shared/references/verification-system-first.md`: claim, falsifier,
+`primitives/shared/references/verification-system-first.md`: claim, falsifier,
 driver, grader, evidence packet, cadence, and gaps/waiver.
 
-Premise-source discipline is enforced by the Rust grader:
-
-```sh
-cargo run --locked -p harness-kit-checks -- premise-source validate <packet>
-cargo run --locked -p harness-kit-checks -- premise-source self-test
-```
+Premise-source discipline splits by seam: the deterministic slice — do the
+files a packet cites actually exist? — is covered by `roster check`'s
+referenced-path gate (`cargo run --locked -p roster-cli -- check`); whether
+those cited premises actually support the packet's claims is semantic
+soundness judgment, not a linter's job — that's critic/reviewer work at the
+milestone gate.
 
 HTML plan artifact:
 
 ```sh
-cp skills/shape/templates/html-plan.html /tmp/<card-id>-plan.html
+cp primitives/skills/shape/templates/html-plan.html /tmp/<card-id>-plan.html
 # fill it, then publish + attach (never `open` it):
-python3 ~/Development/harness-kit/skills/artifact/scripts/artifact_create.py \
+python3 ~/Development/roster/primitives/skills/artifact/scripts/artifact_create.py \
   --title "<title>" --slug <card-id> --tag "Plan" --html-file /tmp/<card-id>-plan.html
 # attach the printed URL to the Powder card (add_link MCP tool or a comment)
 curl -s -o /dev/null -w '%{http_code}' <printed-url>   # expect 200

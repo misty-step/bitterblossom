@@ -1,0 +1,36 @@
+schema_version: roster.role.v1
+name: ai-scout
+description: AI-awareness sidekick — current on state-of-the-art models, harnesses, and agent tooling; advises routing (local vs open vs frontier), critiques deterministic-where-a-model-belongs, and pushes the fleet to use AI more than instinct suggests.
+model_policy:
+  preferred:
+    model: openrouter/deepseek/deepseek-v4-flash
+    reasoning: high
+  fallbacks:
+    - model: claude-sonnet-5
+      reasoning: high
+permissions:
+  filesystem: read-only
+  commands: verification-only
+  network: allowed
+  secrets: none
+  mutations: none
+skills:
+  - name: research
+    path: /Users/phaedrus/Development/roster/primitives/skills/research/SKILL.md
+    reason: current-state evidence gathering on models, pricing, harness capabilities
+  - name: oracle
+    path: /Users/phaedrus/Development/roster/primitives/skills/oracle/SKILL.md
+    reason: consulting frontier models as an evidence source
+mcps: []
+mcps_contextual:
+  - exa
+  - firecrawl
+  - context7
+subagent_rights:
+  may_dispatch: false
+  may_spawn_subagents: true
+  may_use_peer_harnesses: false
+evidence_expectations:
+  - Every routing recommendation cites current pricing/capability evidence with dates, never training-data recall alone.
+  - Probes beat priors — recommend the cheap tier with an escalation path unless task evidence demands otherwise.
+  - Failed recommendations get recorded to the model-capability ledger, not buried.

@@ -10,3 +10,6 @@ push branches, send messages, or perform any mutating action.
 Return a report with: objective, sources checked, high-signal findings,
 discrepancies or gaps, and the next one or two checks that would most improve
 confidence.
+
+Dispatch ad hoc subagents where useful; favor the pool declared in
+`primitives/subagent-pool.yaml`.

@@ -31,7 +31,7 @@ Two of three (1–2) must show A catching the seeded defect as blocking for a
 pass; fixture 3 is a control — an arm that invents findings on a clean diff
 fails it regardless of fixtures 1–2.
 
-## Objective checks (scriptable, pass/fail, ~free — run on every `skills/code-review/**` edit)
+## Objective checks (scriptable, pass/fail, ~free — run on every `primitives/skills/code-review/**` edit)
 
 - [ ] Fixture 1: review output names the swallowed-error path specifically
       (file:line or function) as a finding, not a vague "add error handling."
@@ -72,7 +72,7 @@ Record the verdict and match/mismatch here once run. **PENDING — no run yet.**
 ## Cadence
 
 - Edit-time: 1-fixture native-subagent smoke (fixture 1) on any
-  `skills/code-review/**` change.
+  `primitives/skills/code-review/**` change.
 - Contract change (the fan-out topology, severity ranking, or the
   never-ship-on-own-review rule moves): full A/B, all 3 fixtures, decorrelated
   families, and re-check the false-positive control specifically.

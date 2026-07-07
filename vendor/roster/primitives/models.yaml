@@ -1,0 +1,42 @@
+# Concrete model id -> per-harness invocable token translation.
+#
+# Distinct concern from primitives/providers.yaml (that file is "how to
+# invoke a peer harness CLI" -- dispatch command, flags, a model already
+# baked in, migrated from harness-kit's agents.yaml at P0). This file is
+# "how a concrete model_policy.preferred id renders when ROSTER materializes
+# one of its OWN agent declarations for a specific harness". Two files, two
+# concepts -- do not merge them.
+#
+# Retires primitives/tiers.yaml (roster-909..919), which resolved an
+# ABSTRACT tier symbol (fable-class/codex-class/openrouter-class) per
+# harness. Model policy v2 (roster-924) made role.yaml's
+# model_policy.preferred always a CONCRETE, invocable id -- most ids already
+# ARE the harness token they need (openrouter/-prefixed ids for bb; sonnet,
+# opus, haiku, inherit for claude) and never consult this table. It only
+# carries the handful of ids that need real translation:
+#
+# - claude-fable-5: this machine's own session brain. A Claude Code subagent
+#   inherits the session model rather than re-selecting Fable explicitly;
+#   fable itself has no OpenRouter form, so bb falls back to the strongest
+#   OpenRouter-rail peer.
+# - gpt-5.5: Claude Code subagents run this identity as Sonnet 5 (roster
+#   operating doctrine); GPT-5.5 has no OpenRouter form either, same bb
+#   fallback.
+# - openrouter/deepseek/deepseek-v4-flash: already its own bb token; still
+#   needs a claude translation for agents whose preferred model is this id.
+#
+# Consumed by `roster_core::Models::load`, consulted only for
+# `model_policy.preferred` -- never fallbacks (see claude_model/bb_model in
+# roster-core/src/lib.rs). A per-agent literal already in the target
+# harness's own vocabulary bypasses this table entirely.
+schema_version: roster.models.v1
+models:
+  claude-fable-5:
+    claude: inherit
+    bb: openrouter/moonshotai/kimi-k2.7-code
+  gpt-5.5:
+    claude: sonnet
+    bb: openrouter/moonshotai/kimi-k2.7-code
+  openrouter/deepseek/deepseek-v4-flash:
+    claude: haiku
+    bb: openrouter/deepseek/deepseek-v4-flash

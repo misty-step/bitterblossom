@@ -73,9 +73,13 @@ fn list_prints_seed_agents() {
         .arg("list")
         .assert()
         .success()
-        .stdout(predicate::str::contains("cerberus\tcodex-class\txhigh"))
-        .stdout(predicate::str::contains("orchestrator\tfable-class\tlow"))
-        .stdout(predicate::str::contains("sweep\topenrouter-class\tmedium"));
+        .stdout(predicate::str::contains("cerberus\tgpt-5.5\txhigh"))
+        .stdout(predicate::str::contains(
+            "orchestrator\tclaude-fable-5\thigh",
+        ))
+        .stdout(predicate::str::contains(
+            "sweep\topenrouter/deepseek/deepseek-v4-flash\tmedium",
+        ));
 }
 
 #[test]
@@ -85,7 +89,9 @@ fn show_prints_agent_detail() {
         .assert()
         .success()
         .stdout(predicate::str::contains("# orchestrator"))
-        .stdout(predicate::str::contains("Preferred model: fable-class"))
+        .stdout(predicate::str::contains(
+            "Preferred model: claude-fable-5 (reasoning: high)",
+        ))
         .stdout(predicate::str::contains("MCPs: powder"))
         .stdout(predicate::str::contains(
             "Contextual MCPs: qmd, todoist, bitterblossom, glass",
@@ -124,10 +130,10 @@ fn materialize_bb_prints_agent_binding() {
 
 #[test]
 fn materialize_claude_prints_native_subagent_frontmatter() {
-    // Expected models come from primitives/tiers.yaml's `tiers` table:
-    // orchestrator's tier is fable-class (claude: inherit), cerberus's is
-    // codex-class (claude: sonnet) -- resolved through the table, not
-    // hardcoded per agent.
+    // Expected models come from primitives/models.yaml's `models` table:
+    // orchestrator's preferred concrete id is claude-fable-5 (claude:
+    // inherit), cerberus's is gpt-5.5 (claude: sonnet) -- resolved through
+    // the table, not hardcoded per agent.
     for (agent, expected_tools, expected_model) in [
         (
             "orchestrator",
@@ -340,8 +346,8 @@ fn sync_installs_orchestrator_and_curated_primitives_without_touching_harness_ki
 
     let claude_agent = read(home.path().join(".claude/agents/orchestrator.md"));
     assert!(claude_agent.contains("<!-- roster-sync:orchestrator:v1 -->"));
-    // orchestrator's tier is fable-class; tiers.yaml resolves that to
-    // `inherit` for the claude harness, not the old hardcoded `sonnet`.
+    // orchestrator's preferred concrete id is claude-fable-5; models.yaml
+    // resolves that to `inherit` for the claude harness, not `sonnet`.
     assert!(claude_agent.contains("model: inherit"));
     assert!(claude_agent.contains("tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch"));
 
@@ -376,7 +382,70 @@ fn sync_installs_orchestrator_and_curated_primitives_without_touching_harness_ki
 
     let rollback = read(home.path().join(".roster/orchestrator/ROLLBACK.md"));
     assert!(rollback.contains("roster sync --disable"));
-    assert!(rollback.contains("leaves harness-kit bootstrap files untouched"));
+    assert!(rollback.contains("It leaves anything roster sync"));
+    assert!(rollback.contains("declined to touch"));
+}
+
+#[test]
+fn home_doctrine_composes_shared_doctrine_identity_skills_and_mcps() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    // Doctrine links point at the composed home doctrine, not the bare
+    // shared AGENTS.md — every default agent session should boot as the
+    // declared orchestrator, not a copy of the undifferentiated doctrine.
+    let home_doctrine_path = home.path().join(".roster/orchestrator/home-doctrine.md");
+    assert_eq!(
+        fs::read_link(home.path().join(".claude/CLAUDE.md")).unwrap(),
+        home_doctrine_path
+    );
+    assert_eq!(
+        fs::read_link(home.path().join(".codex/AGENTS.md")).unwrap(),
+        home_doctrine_path
+    );
+
+    let doctrine = read(home.path().join(".roster/orchestrator/home-doctrine.md"));
+    let shared_doctrine = read(workspace_root().join("primitives/shared/AGENTS.md"));
+
+    // (a) the full shared operating doctrine, verbatim.
+    assert!(doctrine.contains(shared_doctrine.trim()));
+    // (b) a clearly-marked identity section carrying the orchestrator's
+    // instructions.md verbatim.
+    assert!(doctrine.contains("# Session Identity: orchestrator (roster)"));
+    let orchestrator_instructions =
+        read(workspace_root().join("agents/orchestrator/instructions.md"));
+    assert!(doctrine.contains(orchestrator_instructions.trim()));
+    // (c) the Skills To Read block, same rendering as the claude materializer.
+    assert!(doctrine.contains("## Skills To Read"));
+    assert!(doctrine.contains("- orient:"));
+    // (d) MCP bindings as prose.
+    assert!(doctrine.contains("## MCP Servers"));
+    assert!(doctrine.contains("### Required"));
+    assert!(doctrine.contains("- powder"));
+    assert!(doctrine.contains("### Contextual"));
+    assert!(doctrine.contains("- qmd"));
+    // (e) a footer pointing at the rest of the roster and lane dispatch.
+    assert!(doctrine.contains("roster list"));
+    assert!(doctrine.contains("roster show"));
+    assert!(doctrine.contains("roster materialize"));
+    assert!(doctrine.contains("roster brief"));
+
+    // The identity section must come after the shared doctrine, and skills
+    // after identity, and MCPs after skills — composition order (a)-(e).
+    let doctrine_end = doctrine
+        .find(shared_doctrine.trim().lines().last().unwrap())
+        .unwrap();
+    let identity_pos = doctrine.find("# Session Identity").unwrap();
+    let skills_pos = doctrine.find("## Skills To Read").unwrap();
+    let mcp_pos = doctrine.find("## MCP Servers").unwrap();
+    assert!(doctrine_end < identity_pos);
+    assert!(identity_pos < skills_pos);
+    assert!(skills_pos < mcp_pos);
 }
 
 #[test]
@@ -433,6 +502,299 @@ fn sync_disable_without_manifest_is_a_noop() {
         ));
 }
 
+#[test]
+fn sync_full_catalog_links_first_party_and_external_skills() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    let claude_skill = home.path().join(".claude/skills/artifact");
+    let codex_skill = home.path().join(".codex/skills/artifact");
+    assert!(fs::symlink_metadata(&claude_skill).unwrap().is_symlink());
+    assert_eq!(
+        fs::read_link(&claude_skill).unwrap(),
+        workspace_root().join("primitives/skills/artifact")
+    );
+    assert!(fs::symlink_metadata(&codex_skill).unwrap().is_symlink());
+
+    // .external/* entries link by their own directory name, matching the
+    // harness-kit farm convention.
+    let external_skill = home.path().join(".claude/skills/leon-brutalist-skill");
+    assert!(fs::symlink_metadata(&external_skill).unwrap().is_symlink());
+    assert_eq!(
+        fs::read_link(&external_skill).unwrap(),
+        workspace_root().join("primitives/skills/.external/leon-brutalist-skill")
+    );
+
+    // pi is absent from this sandbox home, so its skills dir is never created.
+    assert!(!home.path().join(".pi/skills").exists());
+}
+
+#[test]
+fn sync_curated_catalog_only_links_orchestrators_skills() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .args(["--catalog", "curated"])
+        .assert()
+        .success();
+
+    assert!(
+        home.path()
+            .join(".claude/skills/orient")
+            .symlink_metadata()
+            .is_ok()
+    );
+    // "deliver" is not in the orchestrator's role.yaml skills list.
+    assert!(!home.path().join(".claude/skills/deliver").exists());
+}
+
+#[test]
+fn sync_replaces_harness_kit_symlink_but_refuses_real_unmanaged_file() {
+    let home = tempfile::tempdir().expect("temp home");
+    let claude_claude_md = home.path().join(".claude/CLAUDE.md");
+    let codex_agents_md = home.path().join(".codex/AGENTS.md");
+
+    // Simulate a pre-existing harness-kit-owned symlink (the real cutover
+    // target) plus a genuine unmanaged real file (operator-authored, never
+    // touched by any sync).
+    fs::create_dir_all(claude_claude_md.parent().unwrap()).unwrap();
+    let fake_harness_kit = home.path().join("fake-harness-kit/shared/AGENTS.md");
+    fs::create_dir_all(fake_harness_kit.parent().unwrap()).unwrap();
+    fs::write(&fake_harness_kit, "harness-kit doctrine").unwrap();
+    std::os::unix::fs::symlink(&fake_harness_kit, &claude_claude_md).unwrap();
+    write_file(&codex_agents_md, "operator-owned codex AGENTS.md");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".codex/AGENTS.md"));
+
+    assert!(
+        fs::symlink_metadata(&claude_claude_md)
+            .unwrap()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read_link(&claude_claude_md).unwrap(),
+        home.path().join(".roster/orchestrator/home-doctrine.md")
+    );
+    assert_eq!(
+        fs::read_to_string(&codex_agents_md).unwrap(),
+        "operator-owned codex AGENTS.md"
+    );
+}
+
+#[test]
+fn sync_is_idempotent_on_second_run() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    let first_output = roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let first_target = fs::read_link(home.path().join(".claude/skills/orient")).unwrap();
+    let first_doctrine = read(home.path().join(".roster/orchestrator/home-doctrine.md"));
+    let first_doctrine_link = fs::read_link(home.path().join(".claude/CLAUDE.md")).unwrap();
+
+    let second_output = roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let second_target = fs::read_link(home.path().join(".claude/skills/orient")).unwrap();
+    let second_doctrine = read(home.path().join(".roster/orchestrator/home-doctrine.md"));
+    let second_doctrine_link = fs::read_link(home.path().join(".claude/CLAUDE.md")).unwrap();
+
+    assert_eq!(first_target, second_target);
+    assert_eq!(first_doctrine, second_doctrine);
+    assert_eq!(first_doctrine_link, second_doctrine_link);
+    // The reported entry count must not grow between runs -- a growing
+    // count on an unchanged catalog means some run is mistaking its own
+    // prior side effect for new state to link (see the pi-skills
+    // regression test above).
+    assert_eq!(first_output, second_output);
+}
+
+#[test]
+fn sync_disable_removes_skill_farm_and_doctrine_symlinks() {
+    let home = tempfile::tempdir().expect("temp home");
+    // Present pi and opencode so this run also plants their doctrine links,
+    // proving disable tears down every presence-gated link, not just the
+    // always-on claude/codex pair.
+    write_file(&home.path().join(".pi/settings.json"), "{}");
+    write_file(&home.path().join(".config/opencode/opencode.json"), "{}");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+    assert!(home.path().join(".claude/skills/orient").exists());
+    assert!(home.path().join(".claude/CLAUDE.md").exists());
+    assert!(
+        home.path()
+            .join(".roster/orchestrator/home-doctrine.md")
+            .exists()
+    );
+    assert!(home.path().join(".pi/agent/AGENTS.md").exists());
+    assert!(home.path().join(".config/opencode/AGENTS.md").exists());
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .arg("--disable")
+        .assert()
+        .success();
+
+    assert!(!home.path().join(".claude/skills/orient").exists());
+    assert!(!home.path().join(".claude/CLAUDE.md").exists());
+    assert!(
+        !home
+            .path()
+            .join(".roster/orchestrator/home-doctrine.md")
+            .exists()
+    );
+    assert!(!home.path().join(".pi/agent/AGENTS.md").exists());
+    assert!(!home.path().join(".config/opencode/AGENTS.md").exists());
+    // opencode's own config file is not roster-managed; disable must not
+    // touch it.
+    assert!(home.path().join(".config/opencode/opencode.json").exists());
+}
+
+#[test]
+fn sync_all_agents_materializes_every_agent() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .arg("--all-agents")
+        .assert()
+        .success();
+
+    let cerberus_claude = read(home.path().join(".claude/agents/cerberus.md"));
+    assert!(cerberus_claude.contains("<!-- roster-sync:orchestrator:v1 -->"));
+    let cerberus_codex = read(home.path().join(".codex/agents/cerberus.md"));
+    assert!(cerberus_codex.contains("# Roster Brief: cerberus"));
+}
+
+#[test]
+fn sync_links_pi_skills_only_when_pi_is_present() {
+    let home = tempfile::tempdir().expect("temp home");
+    // `.pi/settings.json` is pi's own native config file — a marker
+    // roster sync never writes itself, unlike `.pi/agents/orchestrator.md`
+    // which it always materializes regardless of pi presence.
+    write_file(&home.path().join(".pi/settings.json"), "{}");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    assert!(
+        home.path()
+            .join(".pi/skills/orient")
+            .symlink_metadata()
+            .is_ok()
+    );
+    assert_eq!(
+        fs::read_link(home.path().join(".pi/agent/AGENTS.md")).unwrap(),
+        home.path().join(".roster/orchestrator/home-doctrine.md")
+    );
+}
+
+#[test]
+fn sync_does_not_link_pi_doctrine_when_pi_is_absent() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    assert!(!home.path().join(".pi/agent/AGENTS.md").exists());
+}
+
+#[test]
+fn sync_links_opencode_doctrine_only_when_opencode_is_present() {
+    let home = tempfile::tempdir().expect("temp home");
+    // `~/.config/opencode/opencode.json` is opencode's own native config
+    // file, never written by roster sync — its presence means opencode
+    // genuinely runs on this machine.
+    write_file(&home.path().join(".config/opencode/opencode.json"), "{}");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_link(home.path().join(".config/opencode/AGENTS.md")).unwrap(),
+        home.path().join(".roster/orchestrator/home-doctrine.md")
+    );
+    // The real opencode config file is untouched.
+    assert_eq!(
+        fs::read_to_string(home.path().join(".config/opencode/opencode.json")).unwrap(),
+        "{}"
+    );
+}
+
+#[test]
+fn sync_does_not_link_opencode_doctrine_when_opencode_is_absent() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    assert!(!home.path().join(".config/opencode/AGENTS.md").exists());
+}
+
+#[test]
+fn sync_does_not_link_pi_skills_from_its_own_orchestrator_agent_side_effect() {
+    // Regression test: `.pi/agents/orchestrator.md` is written unconditionally
+    // on every sync (matching claude/codex), which creates `.pi/` itself.
+    // A second run must not mistake that self-inflicted directory for a
+    // genuine pi installation and start linking `.pi/skills/*`.
+    let home = tempfile::tempdir().expect("temp home");
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+    assert!(home.path().join(".pi/agents/orchestrator.md").exists());
+    assert!(!home.path().join(".pi/skills").exists());
+
+    roster_cmd()
+        .args(["sync", "--home"])
+        .arg(home.path())
+        .assert()
+        .success();
+    assert!(!home.path().join(".pi/skills").exists());
+}
+
 fn write_file(path: &std::path::Path, contents: &str) {
     fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
     fs::write(path, contents).expect("write file");
@@ -440,4 +802,31 @@ fn write_file(path: &std::path::Path, contents: &str) {
 
 fn read(path: impl AsRef<std::path::Path>) -> String {
     fs::read_to_string(path).expect("read file")
+}
+
+#[test]
+fn synced_agent_files_keep_frontmatter_at_byte_zero() {
+    // Claude Code silently ignores an agent file whose frontmatter is not the
+    // first bytes — the sync marker must land AFTER the frontmatter block.
+    let home = tempfile::tempdir().expect("home");
+    let root = workspace_root();
+    Command::cargo_bin("roster")
+        .expect("roster binary")
+        .current_dir(&root)
+        .args([
+            "sync",
+            "--home",
+            home.path().to_str().expect("utf8"),
+            "--all-agents",
+        ])
+        .assert()
+        .success();
+    let agent = std::fs::read_to_string(home.path().join(".claude/agents/ai-scout.md"))
+        .expect("ai-scout installed");
+    assert!(
+        agent.starts_with("---\n"),
+        "agent file must start with frontmatter, got: {}",
+        &agent[..40.min(agent.len())]
+    );
+    assert!(agent.contains("roster-sync:orchestrator:v1"));
 }

@@ -1,17 +1,7 @@
 Repository: misty-step/roster
-Commit: 4f27fe53773f40cdf844491445def4c30963a058
+Commit: d496b19d40d26ff1fea938f684eb4d02d38b54ac
 Ref: origin/main
-Archive command: git -C ../roster archive --format=tar 4f27fe53773f40cdf844491445def4c30963a058 Cargo.toml Cargo.lock crates agents primitives README.md VISION.md AGENTS.md | tar -x -C vendor/roster
+Archive command: git -C ../roster archive --format=tar d496b19d40d26ff1fea938f684eb4d02d38b54ac Cargo.toml Cargo.lock crates agents primitives README.md VISION.md AGENTS.md | tar -x -C vendor/roster
 Local scrub: .git metadata, target output, and workflow noise omitted. Build and declaration source is unchanged.
 Purpose: P1 roster integration proof. Bitterblossom shells out to the pinned roster CLI to materialize the cerberus role and render roster briefs without copying role prompts into bb config. This pin includes the practical bb output byte cap required for Pi JSONL review runs.
-Refresh (2026-07-06, bitterblossom-929): re-pinned past the orchestrator rename (roster-907: agents/lead -> agents/orchestrator) plus four new agents added since the prior pin (oracle roster-908, builder+verifier roster-911, designer+incident-hound roster-919 -- scribe deferred) and the tier-resolution table (primitives/tiers.yaml, roster-909). Previous pin: 24388d64dc572518a3bfae3143d5b45ee355263b.
-
-Local downstream patch (reapply on every refresh, not upstream in misty-step/roster):
-`agents/cerberus/role.yaml` and `agents/cerberus/instructions.md` carry a
-bb-only addition wiring the Thermo-Nuclear maintainability lens into Cerberus
-(backlog 088 / bitterblossom PR #967) — a `thermo-nuclear-maintainability`
-skill entry pointing at this repo's own `vendor/skills/` copy, plus an
-"## Maintainability lens" instructions section. `tests/skill_artifacts.rs`
-(`thermo_nuclear_lens_is_vendored_with_provenance_and_wired_into_cerberus`)
-enforces this survives a re-vendor; see bitterblossom commit 0b2d40fb for the
-original patch text to diff against on the next refresh.
+Refresh (2026-07-06, roster-921): re-pinned past the Thermo-Nuclear maintainability lens landing natively upstream (roster-921: `agents/cerberus/role.yaml`/`instructions.md` now carry the lens directly, wired to roster's own vendored copy at `primitives/skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md`). This retires the bb-only downstream patch previously reapplied on every refresh — the vendored copy below is now a clean mechanical archive with zero hand edits; bb's own waiver-mechanics text (`bb submit waive`) lives solely in bb's own workflow surfaces (`examples/review-factory-plane/tasks/review/card.md`), never in the vendored identity. Previous pin: 4f27fe53773f40cdf844491445def4c30963a058 (bitterblossom-929).

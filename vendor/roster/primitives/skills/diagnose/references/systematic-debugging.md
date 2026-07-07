@@ -20,6 +20,11 @@ Use ESPECIALLY when:
 
 ## Phase 1: Root Cause Investigation (Detail)
 
+### Check Recent Changes First
+
+Before deep tracing: `git diff`, `git log --oneline -10`, new deps, config
+changes. Often the fastest signal.
+
 ### Multi-Component Evidence Gathering
 
 WHEN system has multiple components (CI -> build -> signing, API -> service -> database):
@@ -46,6 +51,20 @@ WHEN error is deep in call stack:
 - What called this with bad value?
 - Keep tracing up until you find the source
 - Fix at source, not at symptom
+
+### Minimize the Repro
+
+Reduce the loop to the smallest input or path that still fails before moving
+to hypothesis testing.
+
+## Pattern Analysis
+
+Compare against a working example in the same codebase:
+
+1. Find similar working code.
+2. Read the reference implementation fully — don't skim.
+3. Identify every difference, however small.
+4. Understand dependencies: settings, config, environment, assumptions.
 
 ## Phase 4.5: Architecture Check (After 3+ Failed Fixes)
 
@@ -75,7 +94,10 @@ hypothesis -- this is a wrong architecture.
 
 ## The Scientific Method (One Experiment at a Time)
 
-Debugging is empirical science. Apply the method rigorously:
+Debugging is empirical science. Apply the method rigorously. When the cause
+isn't obvious, rank 3-5 hypotheses before testing any of them — and never
+skip justification: "just try X" without being able to say what it would
+prove means you don't understand the problem yet.
 
 1. **Examine** what you know about the software's behavior, construct a hypothesis
    about what might cause it.
@@ -92,18 +114,9 @@ know which fixed it — and the other change may introduce a new bug later.
 
 ## Instrumented Reproduction
 
-When the bug requires human reproduction (can't trigger programmatically):
-
-```
-Agent instruments → User reproduces → Agent reads logs → Refine → Repeat
-```
-
-Key rules:
-- Tag log lines with the hypothesis they test: `[H1]`, `[H2]`
-- Log at decision points, not everywhere (targeted, not shotgun)
-- Write to a single file the user can find easily (`~/Desktop/debug-*.log`)
-- Max 3 instrumentation rounds — if still ambiguous, escalate
-- ALWAYS clean up instrumentation after diagnosis
+When the bug requires human reproduction (can't trigger programmatically),
+see the full Instrumented Reproduction Loop protocol in
+`references/feedback-loops.md`.
 
 ## Supporting Techniques
 

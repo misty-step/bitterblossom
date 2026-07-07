@@ -23,17 +23,17 @@ list contains: an oblique angle, a borrowed discipline, an inverted premise.
 Every investigator returns this exact shape:
 
 ```markdown
-## [Investigator Name] Report
+**[Investigator Name] Report**
 
-### Top 3 Findings
+Top 3 Findings
 1. [finding] — Evidence: [file:line / commit / metric]. Impact: high/med/low.
 2. [finding] — Evidence: [...]. Impact: high/med/low.
 3. [finding] — Evidence: [...]. Impact: high/med/low.
 
-### Strategic Theme
+Strategic Theme
 [One sentence: the overarching theme these findings point to]
 
-### Single Recommendation
+Single Recommendation
 [One concrete action at the most ambitious scope the evidence defends — an epic when the findings warrant it. Not a list. Not "consider." A specific thing to build, fix, or change.]
 ```
 
@@ -222,17 +222,17 @@ Every investigator returns this exact shape:
 ### Bad (vague, generic, no evidence)
 
 ```markdown
-## Archaeologist Report
+Archaeologist Report
 
-### Top 3 Findings
+Top 3 Findings
 1. The codebase could use better test coverage. Impact: medium.
 2. Some files are quite large. Impact: low.
 3. There's some tech debt that should be addressed. Impact: medium.
 
-### Strategic Theme
+Strategic Theme
 The codebase needs cleanup and better testing.
 
-### Single Recommendation
+Single Recommendation
 Improve test coverage and reduce file sizes.
 ```
 
@@ -241,17 +241,17 @@ Improve test coverage and reduce file sizes.
 ### Good (specific, evidenced, opinionated)
 
 ```markdown
-## Archaeologist Report
+Archaeologist Report
 
-### Top 3 Findings
+Top 3 Findings
 1. `src/main/index.ts` (286 LOC) orchestrates 15 imports and wires 8 subsystems inline — it's the coupling nexus. Any change to startup order risks cascading breakage. Evidence: lines 1-36 (imports), 191-267 (app.ready handler). Impact: high.
 2. `src/main/calendar.ts` and `src/main/supabase.ts` have no integration test coverage — only unit tests with mocked Supabase clients. The submit→calendar sync path is tested in isolation but never end-to-end. Evidence: `calendar.test.ts` mocks `getSupabaseClient()` throughout. Impact: high.
 3. Single TODO in codebase (`supabase.ts:265`) signals a known UX gap: calendar re-auth failures are swallowed silently. Impact: medium.
 
-### Strategic Theme
+Strategic Theme
 The app's reliability boundary is at the Supabase integration seam — the most critical user path (submit + calendar) has the weakest test coverage.
 
-### Single Recommendation
+Single Recommendation
 Add integration tests for the submit→Supabase→calendar pipeline using a test Supabase instance, covering the re-auth failure path.
 ```
 

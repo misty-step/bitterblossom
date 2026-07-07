@@ -36,7 +36,7 @@ Skip findings that match existing backlog items (by title similarity).
 For each new finding, create a file `backlog.d/NNN-{slug}.md` with the standard format:
 
 ```markdown
-# [P{0-3}] {finding description}
+[P{0-3}] {finding description}
 
 Priority: {p0|p1|p2|p3}
 Status: ready

@@ -46,7 +46,7 @@ scope, keep its section and label the status. Do not silently collapse failed
 lanes into synthesis.
 
 Capability lanes do not replace the roster floor. For substantive research,
-also dispatch the provider lanes required by `harnesses/shared/AGENTS.md`
+also dispatch the provider lanes required by `primitives/shared/AGENTS.md`
 (Roster) unless a documented waiver applies.
 
 ## Capability Routing

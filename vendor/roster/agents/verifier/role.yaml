@@ -2,11 +2,12 @@ schema_version: roster.role.v1
 name: verifier
 description: Adversarial verification lane that reproduces a claim live before trusting it — read-only, findings-only, never fixes what it verifies.
 model_policy:
-  preferred: codex-class
+  preferred:
+    model: gpt-5.5
+    reasoning: high
   fallbacks:
-    - gpt-5.5
-    - openrouter/moonshotai/kimi-k2.7-code
-  reasoning: high
+    - model: openrouter/moonshotai/kimi-k2.7-code
+      reasoning: high
 permissions:
   filesystem: read-only
   commands: verification-only

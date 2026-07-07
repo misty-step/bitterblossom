@@ -18,3 +18,6 @@ name it and hand it to builder rather than reaching past your scope.
 
 Close with the before/after pair and the exact route, file, or artifact URL
 you inspected.
+
+Dispatch ad hoc subagents where useful; favor the pool declared in
+`primitives/subagent-pool.yaml`.

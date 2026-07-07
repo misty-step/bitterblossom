@@ -29,11 +29,11 @@ fn loads_seed_agents_from_repo() {
     assert_eq!(
         names,
         [
+            "ai-scout",
             "builder",
             "cerberus",
             "designer",
             "incident-hound",
-            "oracle",
             "orchestrator",
             "sweep",
             "verifier"
@@ -41,14 +41,15 @@ fn loads_seed_agents_from_repo() {
     );
 
     let builder = roster.agent("builder").expect("builder exists");
-    assert_eq!(builder.role.model_policy.preferred, "codex-class");
+    assert_eq!(builder.role.model_policy.preferred.model, "gpt-5.5");
     assert_eq!(builder.role.permissions.filesystem, "workspace-write");
     assert_eq!(builder.role.mcps, ["powder"]);
+    assert!(builder.instructions.contains("favor the pool declared in"));
 
     let cerberus = roster.agent("cerberus").expect("cerberus exists");
     assert!(cerberus.role.description.contains("Code-review master"));
-    assert_eq!(cerberus.role.model_policy.preferred, "codex-class");
-    assert_eq!(cerberus.role.model_policy.reasoning, "xhigh");
+    assert_eq!(cerberus.role.model_policy.preferred.model, "gpt-5.5");
+    assert_eq!(cerberus.role.model_policy.preferred.reasoning, "xhigh");
     assert!(
         cerberus
             .instructions
@@ -57,20 +58,24 @@ fn loads_seed_agents_from_repo() {
     assert!(cerberus.role.mcps_contextual.is_empty());
 
     let designer = roster.agent("designer").expect("designer exists");
-    assert_eq!(designer.role.model_policy.preferred, "fable-class");
+    assert_eq!(designer.role.model_policy.preferred.model, "claude-fable-5");
     assert_eq!(designer.role.permissions.filesystem, "workspace-write");
     assert_eq!(
         designer.role.permissions.mutations,
         "styling-and-markup-scope"
     );
     assert!(!designer.role.subagent_rights.may_dispatch);
+    assert!(designer.role.subagent_rights.may_spawn_subagents);
     assert!(designer.instructions.contains("true viewport"));
 
     let incident_hound = roster
         .agent("incident-hound")
         .expect("incident-hound exists");
-    assert_eq!(incident_hound.role.model_policy.preferred, "codex-class");
-    assert_eq!(incident_hound.role.model_policy.reasoning, "xhigh");
+    assert_eq!(incident_hound.role.model_policy.preferred.model, "gpt-5.5");
+    assert_eq!(
+        incident_hound.role.model_policy.preferred.reasoning,
+        "xhigh"
+    );
     assert_eq!(incident_hound.role.permissions.filesystem, "read-only");
     assert!(!incident_hound.role.subagent_rights.may_dispatch);
     assert!(incident_hound.role.subagent_rights.may_spawn_subagents);
@@ -91,17 +96,35 @@ fn loads_seed_agents_from_repo() {
         orchestrator.role.mcps_contextual,
         ["qmd", "todoist", "bitterblossom", "glass"]
     );
-
-    let oracle = roster.agent("oracle").expect("oracle exists");
-    assert_eq!(oracle.role.model_policy.preferred, "openrouter-class");
-    assert_eq!(oracle.role.model_policy.reasoning, "high");
-    assert!(oracle.role.mcps.is_empty());
     assert_eq!(
-        oracle.role.mcps_contextual,
+        orchestrator.role.model_policy.preferred.model,
+        "claude-fable-5"
+    );
+    assert_eq!(orchestrator.role.model_policy.preferred.reasoning, "high");
+    assert_eq!(orchestrator.role.model_policy.fallbacks.len(), 1);
+    assert_eq!(orchestrator.role.model_policy.fallbacks[0].model, "gpt-5.5");
+    assert_eq!(
+        orchestrator.role.model_policy.fallbacks[0].reasoning,
+        "xhigh"
+    );
+
+    let ai_scout = roster.agent("ai-scout").expect("ai-scout exists");
+    assert_eq!(
+        ai_scout.role.model_policy.preferred.model,
+        "openrouter/deepseek/deepseek-v4-flash"
+    );
+    assert_eq!(ai_scout.role.model_policy.preferred.reasoning, "high");
+    assert!(ai_scout.role.mcps.is_empty());
+    assert_eq!(
+        ai_scout.role.mcps_contextual,
         ["exa", "firecrawl", "context7"]
     );
-    assert!(!oracle.role.subagent_rights.may_dispatch);
-    assert!(oracle.instructions.contains("probe the cheap tier"));
+    assert!(!ai_scout.role.subagent_rights.may_dispatch);
+    assert!(ai_scout.role.subagent_rights.may_spawn_subagents);
+    assert!(ai_scout.instructions.contains("probe the cheap tier"));
+
+    let sweep = roster.agent("sweep").expect("sweep exists");
+    assert!(sweep.role.subagent_rights.may_spawn_subagents);
 
     let verifier = roster.agent("verifier").expect("verifier exists");
     assert_eq!(verifier.role.permissions.filesystem, "read-only");
@@ -122,9 +145,10 @@ fn unknown_role_fields_are_rejected() {
 name: bad
 description: Bad fixture
 model_policy:
-  preferred: codex-class
+  preferred:
+    model: gpt-5.5
+    reasoning: high
   fallbacks: []
-  reasoning: high
 permissions:
   filesystem: read-only
   commands: read-only
@@ -158,9 +182,10 @@ fn missing_instructions_are_rejected() {
 name: bad
 description: Bad fixture
 model_policy:
-  preferred: codex-class
+  preferred:
+    model: gpt-5.5
+    reasoning: high
   fallbacks: []
-  reasoning: high
 permissions:
   filesystem: read-only
   commands: read-only

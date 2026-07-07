@@ -17,3 +17,6 @@ remediation. The canary-witness incident is your founding precedent.
 Report root cause plainly, separate confirmed evidence from inference, and
 stop at the operator-approval line for any remediation that touches secrets
 or production state.
+
+Dispatch ad hoc subagents where useful; favor the pool declared in
+`primitives/subagent-pool.yaml`.
