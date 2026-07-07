@@ -322,6 +322,13 @@ pub struct TaskSpec {
     /// artifact transport is generalized.
     #[serde(default)]
     pub required_artifacts: Vec<String>,
+    /// Declared operator intent (bitterblossom-934): a stale one-off task
+    /// stays loadable and valid, but the dashboard/API hide it from the
+    /// default task list so a growing task count stays findable. Purely
+    /// declarative -- the plane holds no judgment about what counts as
+    /// stale, an operator or agent sets this explicitly.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 fn default_substrate() -> String {
@@ -839,6 +846,8 @@ struct RepoOwnedTaskSpec {
     pub verdict: Option<String>,
     #[serde(default)]
     pub required_artifacts: Vec<String>,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 fn load_workload_repo_tasks(
@@ -1004,6 +1013,7 @@ fn repo_task_spec(
         verdict: raw.verdict,
         roster_brief: None,
         required_artifacts: raw.required_artifacts,
+        archived: raw.archived,
     })
 }
 

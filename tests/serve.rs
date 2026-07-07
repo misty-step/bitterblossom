@@ -867,6 +867,131 @@ fn tasks_view_reports_trigger_details() {
 }
 
 #[test]
+fn tasks_view_reports_archived_flag_default_false() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    assert_eq!(rows[0]["archived"], false);
+}
+
+#[test]
+fn tasks_view_reports_archived_flag_when_declared() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    fs::write(
+        dir.path().join("tasks/demo/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\narchived = true\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let rows = bitterblossom::serve::tasks_view(&plane, &ledger).unwrap();
+    assert_eq!(rows[0]["archived"], true);
+}
+
+/// bitterblossom-934: the operator's own words ("I do not see anything
+/// anywhere that defines an agent... there's no way to click in or see
+/// what's really going on") -- every configured agent, its declared
+/// contract (harness/model/secrets/skills/policy), where it came from
+/// (roster-materialized vs inline), and which tasks bind it.
+#[test]
+fn agents_view_reports_inline_agent_contract_and_bound_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    // A second task bound to the same agent proves bound-task aggregation,
+    // not just a one-to-one echo of tasks_view.
+    fs::create_dir_all(dir.path().join("tasks/demo2")).unwrap();
+    fs::write(dir.path().join("tasks/demo2/card.md"), "demo2\n").unwrap();
+    fs::write(
+        dir.path().join("tasks/demo2/task.toml"),
+        "agent = \"stub\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let plane = Plane::load(dir.path()).unwrap();
+
+    let rows = bitterblossom::serve::agents_view(&plane).unwrap();
+    let stub = rows
+        .iter()
+        .find(|a| a["agent"] == "stub")
+        .expect("stub agent present");
+    assert_eq!(stub["harness"], "command");
+    assert_eq!(stub["roster"], serde_json::Value::Null);
+    let mut bound = stub["bound_tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    bound.sort();
+    assert_eq!(bound, vec!["demo", "demo2"]);
+}
+
+#[test]
+fn agents_view_reports_roster_provenance_sha_from_vendored_source_file() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("agents")).unwrap();
+    fs::create_dir_all(dir.path().join("tasks/review")).unwrap();
+    fs::create_dir_all(dir.path().join("vendor/roster")).unwrap();
+    fs::write(dir.path().join("plane.toml"), "dev = true\n").unwrap();
+    fs::write(
+        dir.path().join("vendor/roster/SOURCE"),
+        "Repository: misty-step/roster\nCommit: deadbeefcafe1234567890abcdef1234567890ab\nRef: origin/main\n",
+    )
+    .unwrap();
+
+    use std::os::unix::fs::PermissionsExt;
+    let agent_bin = dir.path().join("agent.sh");
+    fs::write(
+        &agent_bin,
+        "#!/bin/sh\ncat >/dev/null\nprintf '{\"schema_version\":\"bb.command_result.v1\",\"result\":\"ok\",\"turns\":1,\"cost_usd\":0.01}\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&agent_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let roster_bin = dir.path().join("roster-stub.sh");
+    fs::write(
+        &roster_bin,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *\"materialize cerberus --harness bb\"*)\n    cat <<TOML\nversion = 3\nharness = \"command\"\nmodel = \"\"\nrole = \"cerberus\"\nauth = \"api\"\nbin = \"{agent}\"\nTOML\n    ;;\n  *)\n    echo unexpected >&2; exit 7 ;;\nesac\n",
+            agent = agent_bin.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&roster_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+    fs::write(
+        dir.path().join("agents/cerberus.toml"),
+        format!(
+            "[roster]\nroot = \"vendor/roster\"\nagent = \"cerberus\"\nbin = \"{roster}\"\n",
+            roster = roster_bin.display()
+        ),
+    )
+    .unwrap();
+    fs::write(dir.path().join("tasks/review/card.md"), "review\n").unwrap();
+    fs::write(
+        dir.path().join("tasks/review/task.toml"),
+        "agent = \"cerberus\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+
+    let plane = Plane::load(dir.path()).unwrap();
+    let rows = bitterblossom::serve::agents_view(&plane).unwrap();
+    let cerberus = rows
+        .iter()
+        .find(|a| a["agent"] == "cerberus")
+        .expect("cerberus agent present");
+    assert_eq!(
+        cerberus["roster"]["sha"],
+        "deadbeefcafe1234567890abcdef1234567890ab"
+    );
+    assert_eq!(cerberus["roster"]["agent"], "cerberus");
+}
+
+#[test]
 fn operator_html_escapes_trigger_labels_before_inserting_task_rows() {
     let html = include_str!("../src/operator.html");
 
@@ -969,6 +1094,32 @@ fn operator_html_surfaces_provider_key_status_per_task() {
     assert!(html.contains("task.provider_key"));
 }
 
+/// bitterblossom-934: the operator's own ask -- an Agents view, task->agent
+/// click-through, and task list filter/group so a growing task count stays
+/// findable.
+#[test]
+fn operator_html_ships_agents_view_with_click_through_and_task_filtering() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains(r#"data-view-button="agents""#));
+    assert!(html.contains(r#"data-view="agents""#));
+    assert!(html.contains("function renderAgents("));
+    assert!(html.contains("agentRows"));
+    assert!(
+        html.contains("data-agent-link") || html.contains("openAgent("),
+        "task rows must click through to the agent they bind"
+    );
+    assert!(html.contains(r#"id="taskFilter""#), "{html}");
+    assert!(
+        html.contains(r#"id="taskGroupBy""#),
+        "task list needs a group-by control"
+    );
+    assert!(
+        html.contains(r#"id="taskShowArchived""#),
+        "task list needs an archive toggle"
+    );
+}
+
 #[test]
 fn operator_html_distinguishes_external_runs_from_native_rows() {
     let html = include_str!("../src/operator.html");
@@ -1008,6 +1159,7 @@ fn read_api_exposes_dashboard_observability_routes() {
     for route in [
         "/api/status",
         "/api/tasks",
+        "/api/agents",
         "/api/runs",
         "/api/notify",
         "/api/leases",

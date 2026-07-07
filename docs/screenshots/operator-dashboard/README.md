@@ -14,6 +14,19 @@ captures -- scroll past the first screen for `stale`/`populated`.
 | stale | `stale-1440.png` | `stale-390.png` | Runs view, with the `stale_executing` freshness badge (bitterblossom-118) on a run frozen 40 minutes without progress. |
 | populated | `populated-1440.png` | `populated-390.png` | Full fixture: DLQ, lease, running + completed runs, budget, triggers, safe next action. |
 
+## Agents view + task->agent click-through (bitterblossom-934)
+
+Four more PNGs, same recipe, against `examples/roster-cerberus-plane` (a
+real roster-materialized agent so the provenance/sha cell has something to
+show): `tasks-1440.png`/`tasks-390.png` (Tasks view with the new filter,
+group-by, and show-archived controls) and
+`agents-clickthrough-1440.png`/`agents-clickthrough-390.png` (result of
+clicking the `cerberus@v1` link in the Tasks table -- switches to the
+Agents view with the filter pre-set to `cerberus`, showing role,
+harness/model, roster provenance with the vendored commit sha, secrets,
+and bound tasks). Verified against the real CI gate
+(`node scripts/dashboard-smoke.mjs`), zero console errors both widths.
+
 ## Bug fixed while producing this proof
 
 Before this card, a stored-but-still-valid token combined with a **non-auth**

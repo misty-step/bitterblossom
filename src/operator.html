@@ -276,6 +276,48 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   color: var(--muted);
   font: 13px/1.6 var(--mono);
 }
+.task-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .7rem;
+  margin-bottom: .8rem;
+  font: 13px/1.4 var(--mono);
+}
+.task-controls input[type="search"] {
+  flex: 1 1 14rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  padding: .35rem .55rem;
+  font: inherit;
+  color: inherit;
+}
+.task-controls select {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: .3rem .4rem;
+  font: inherit;
+  color: inherit;
+}
+.task-controls label { display: inline-flex; align-items: center; gap: .35em; }
+.group-row td {
+  background: var(--wash);
+  color: var(--muted);
+  font-weight: 550;
+  letter-spacing: .04em;
+}
+.agent-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: .22em;
+  font: inherit;
+  cursor: pointer;
+}
+.agent-link:hover { color: var(--accent); text-decoration-color: currentColor; }
 .table-wrap { overflow-x: auto; }
 table {
   width: 100%;
@@ -464,6 +506,7 @@ tbody tr:first-child td { border-top: 0; }
     <button class="is-active" data-view-button="overview">overview</button>
     <button data-view-button="runs">runs</button>
     <button data-view-button="tasks">tasks</button>
+    <button data-view-button="agents">agents</button>
     <button data-view-button="submissions">submissions</button>
     <button data-view-button="health">health</button>
     <div class="rail-foot">
@@ -547,9 +590,31 @@ tbody tr:first-child td { border-top: 0; }
     <section class="view" data-view="tasks">
       <article class="plate">
         <h2>Configured Tasks</h2>
+        <form id="taskControls" class="task-controls" autocomplete="off">
+          <input id="taskFilter" type="search" placeholder="filter by task, agent, substrate...">
+          <label class="chrome" for="taskGroupBy">group by</label>
+          <select id="taskGroupBy">
+            <option value="none">none</option>
+            <option value="source">source repo</option>
+          </select>
+          <label class="chrome"><input id="taskShowArchived" type="checkbox"> show archived</label>
+        </form>
         <div class="table-wrap"><table>
           <thead><tr><th>task</th><th>agent</th><th>substrate</th><th>triggers</th><th>budget</th><th>key</th><th>state</th></tr></thead>
           <tbody id="taskRows"></tbody>
+        </table></div>
+      </article>
+    </section>
+
+    <section class="view" data-view="agents">
+      <article class="plate">
+        <h2>Agents</h2>
+        <form id="agentControls" class="task-controls" autocomplete="off">
+          <input id="agentFilter" type="search" placeholder="filter by agent, role, harness...">
+        </form>
+        <div class="table-wrap"><table>
+          <thead><tr><th>agent</th><th>role</th><th>harness / model</th><th>provenance</th><th>secrets</th><th>tasks</th></tr></thead>
+          <tbody id="agentRows"></tbody>
         </table></div>
       </article>
     </section>
@@ -675,9 +740,10 @@ async function load() {
   $("error").classList.remove("is-visible");
   $("railStatus").textContent = "loading";
   try {
-    const [status, tasks, runs, dlq, leases, ingress, notify, submissions, exportedText] = await Promise.all([
+    const [status, tasks, agents, runs, dlq, leases, ingress, notify, submissions, exportedText] = await Promise.all([
       fetchJson("/api/status"),
       fetchJson("/api/tasks"),
+      fetchJson("/api/agents"),
       fetchJson("/api/runs"),
       fetchJson("/api/dlq"),
       fetchJson("/api/leases"),
@@ -686,7 +752,7 @@ async function load() {
       fetchJson("/api/submissions?limit=50"),
       fetchText("/api/export")
     ]);
-    state.data = { status, tasks, runs, dlq, leases, ingress, notify, submissions, exported: parseExport(exportedText) };
+    state.data = { status, tasks, agents, runs, dlq, leases, ingress, notify, submissions, exported: parseExport(exportedText) };
     showDashboard();
     render();
     $("railStatus").textContent = "live";
@@ -733,6 +799,7 @@ function render() {
   renderActions();
   renderRuns();
   renderTasks();
+  renderAgents();
   renderSubmissions();
   renderHealth();
 }
@@ -941,25 +1008,98 @@ function evidenceCell(run) {
   return `<a href="/api/runs/${encodeURIComponent(run.id)}">${esc(short(run.id))}</a>`;
 }
 
+// Task source (bitterblossom-934: group by repo) -- native tasks have
+// task.source == null; workload-repo tasks are namespaced "<repo>/<name>".
+function taskSourceLabel(task) {
+  const slash = task.task.indexOf("/");
+  return slash > -1 ? task.task.slice(0, slash) : "native";
+}
+
+function filteredTasks() {
+  const query = ($("taskFilter")?.value || "").trim().toLowerCase();
+  const showArchived = Boolean($("taskShowArchived")?.checked);
+  return state.data.tasks.filter((task) => {
+    if (!showArchived && task.archived) return false;
+    if (!query) return true;
+    return [task.task, task.agent, task.substrate, task.harness, task.model]
+      .some((field) => String(field ?? "").toLowerCase().includes(query));
+  });
+}
+
+function taskRowHtml(task) {
+  const triggers = (task.trigger_details || []).map(triggerLabel).join("<br>");
+  const budget = [
+    task.max_runs_per_day == null ? null : `${task.runs_today}/${task.max_runs_per_day} runs`,
+    task.max_cost_per_run_usd == null ? null : `${fmtMoney(task.max_cost_per_run_usd)} per run`,
+    task.timeout_minutes == null ? null : `${task.timeout_minutes}m timeout`
+  ].filter(Boolean).join("<br>") || "-";
+  const parked = task.parked ? `<span class="warn">parked</span><br><span class="muted">${esc(task.parked)}</span>` : `<span class="ok">active</span>`;
+  const agentName = String(task.agent || "").split("@")[0];
+  return `<tr>
+    <td class="item">${esc(task.task)}${task.archived ? ` <span class="faint">archived</span>` : ""}</td>
+    <td><button class="agent-link" type="button" data-agent-link="${esc(agentName)}">${esc(task.agent)}</button><br><span class="muted">${esc(task.harness)} ${esc(task.model)}</span></td>
+    <td>${esc(task.substrate)}</td>
+    <td>${triggers || "-"}</td>
+    <td>${budget}</td>
+    <td>${providerKeyCell(task.provider_key)}</td>
+    <td>${parked}</td>
+  </tr>`;
+}
+
 function renderTasks() {
-  $("taskRows").innerHTML = state.data.tasks.map((task) => {
-    const triggers = (task.trigger_details || []).map(triggerLabel).join("<br>");
-    const budget = [
-      task.max_runs_per_day == null ? null : `${task.runs_today}/${task.max_runs_per_day} runs`,
-      task.max_cost_per_run_usd == null ? null : `${fmtMoney(task.max_cost_per_run_usd)} per run`,
-      task.timeout_minutes == null ? null : `${task.timeout_minutes}m timeout`
-    ].filter(Boolean).join("<br>") || "-";
-    const parked = task.parked ? `<span class="warn">parked</span><br><span class="muted">${esc(task.parked)}</span>` : `<span class="ok">active</span>`;
-    return `<tr>
-      <td class="item">${esc(task.task)}</td>
-      <td>${esc(task.agent)}<br><span class="muted">${esc(task.harness)} ${esc(task.model)}</span></td>
-      <td>${esc(task.substrate)}</td>
-      <td>${triggers || "-"}</td>
-      <td>${budget}</td>
-      <td>${providerKeyCell(task.provider_key)}</td>
-      <td>${parked}</td>
-    </tr>`;
-  }).join("") || `<tr><td colspan="7" class="empty">no tasks configured</td></tr>`;
+  const rows = filteredTasks();
+  const groupBy = $("taskGroupBy")?.value || "none";
+  if (groupBy === "source") {
+    const groups = new Map();
+    for (const task of rows) {
+      const key = taskSourceLabel(task);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(task);
+    }
+    const html = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([source, tasks]) =>
+      `<tr class="group-row"><td colspan="7">${esc(source)} (${tasks.length})</td></tr>` +
+      tasks.map(taskRowHtml).join("")
+    ).join("");
+    $("taskRows").innerHTML = html || `<tr><td colspan="7" class="empty">no tasks match</td></tr>`;
+    return;
+  }
+  $("taskRows").innerHTML = rows.map(taskRowHtml).join("") || `<tr><td colspan="7" class="empty">no tasks match</td></tr>`;
+}
+
+// bitterblossom-934: task -> agent click-through. Switches to the Agents
+// view and narrows it to the clicked task's agent -- the operator's own
+// ask ("no way to click in or see what's really going on").
+function openAgent(name) {
+  switchView("agents");
+  if ($("agentFilter")) {
+    $("agentFilter").value = name;
+    renderAgents();
+  }
+}
+
+function agentProvenanceCell(agent) {
+  if (!agent.roster) return `<span class="muted">inline</span>`;
+  const sha = agent.roster.sha ? short(agent.roster.sha, 10) : "unpinned";
+  return `<span class="accent">roster</span><br><span class="muted">${esc(agent.roster.agent)} @ ${esc(sha)}</span>`;
+}
+
+function filteredAgents() {
+  const query = ($("agentFilter")?.value || "").trim().toLowerCase();
+  if (!query) return state.data.agents;
+  return state.data.agents.filter((agent) =>
+    [agent.agent, agent.role, agent.harness, agent.model]
+      .some((field) => String(field ?? "").toLowerCase().includes(query)));
+}
+
+function renderAgents() {
+  $("agentRows").innerHTML = filteredAgents().map((agent) => `<tr>
+    <td class="item">${esc(agent.agent)}<br><span class="muted">v${esc(agent.version)}</span></td>
+    <td>${esc(agent.role) || `<span class="faint">-</span>`}</td>
+    <td>${esc(agent.harness)}<br><span class="muted">${esc(agent.model) || "-"}</span></td>
+    <td>${agentProvenanceCell(agent)}</td>
+    <td>${(agent.secrets || []).map(esc).join("<br>") || `<span class="faint">-</span>`}</td>
+    <td>${(agent.bound_tasks || []).map(esc).join("<br>") || `<span class="faint">unbound</span>`}</td>
+  </tr>`).join("") || `<tr><td colspan="6" class="empty">no agents configured</td></tr>`;
 }
 
 function providerKeyCell(key) {
@@ -1046,6 +1186,14 @@ function switchView(view) {
 document.querySelectorAll("[data-view-button]").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.viewButton));
 });
+document.body.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-agent-link]");
+  if (link) openAgent(link.dataset.agentLink);
+});
+$("taskFilter").addEventListener("input", renderTasks);
+$("taskGroupBy").addEventListener("change", renderTasks);
+$("taskShowArchived").addEventListener("change", renderTasks);
+$("agentFilter").addEventListener("input", renderAgents);
 $("refresh").addEventListener("click", load);
 $("tokenToggle").addEventListener("click", () => $("tokenForm").classList.toggle("is-visible"));
 $("tokenForm").addEventListener("submit", (event) => {

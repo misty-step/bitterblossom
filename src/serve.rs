@@ -13,7 +13,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use crate::ingress;
 use crate::ledger::{ExternalRunCreate, IngressRequest, Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
-use crate::spec::{Plane, TriggerSpec};
+use crate::spec::{AuthClass, Plane, TriggerSpec};
 use crate::{canary, dispatch, notify, progress};
 
 const DISPATCH_POLL: Duration = Duration::from_millis(500);
@@ -923,6 +923,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 ))
             }
             "/api/tasks" => Ok((200, serde_json::to_string(&tasks_view(&plane, &ledger)?)?)),
+            "/api/agents" => Ok((200, serde_json::to_string(&agents_view(&plane)?)?)),
             _ => {
                 if let Some(id) = path.strip_prefix("/api/runs/") {
                     Ok((200, run_view(&ledger, id)?.to_string()))
@@ -1115,9 +1116,68 @@ pub fn tasks_view(plane: &Plane, ledger: &Ledger) -> Result<Vec<serde_json::Valu
             "output_bytes_cap": task.spec.budget.output_bytes_cap,
             "policy": serde_json::to_value(&task.agent.policy)?,
             "provider_key": crate::provider_keys::local_status_for_task(plane, task)?,
+            "archived": task.spec.archived,
         }));
     }
     Ok(out)
+}
+
+/// Every configured agent's declared contract (bitterblossom-934): harness,
+/// model, secrets, skills, policy caps, where it came from (roster-
+/// materialized vs inline agents/<name>.toml, with the vendored roster
+/// commit sha when applicable), and which tasks bind it. Read-only
+/// projection over already-loaded config, same shape for `/api/agents`,
+/// `bb task list`, and any future MCP tool -- no new judgment, only exposing
+/// what `Plane::load` already resolved.
+pub fn agents_view(plane: &Plane) -> Result<Vec<serde_json::Value>> {
+    let mut bound_tasks: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for task in plane.tasks.values() {
+        bound_tasks
+            .entry(task.agent_name.as_str())
+            .or_default()
+            .push(task.name.as_str());
+    }
+    let mut out = Vec::new();
+    for (name, agent) in &plane.agents {
+        out.push(serde_json::json!({
+            "agent": name,
+            "version": agent.version,
+            "role": agent.role,
+            "harness": agent.harness,
+            "model": agent.model,
+            "provider": agent.provider(),
+            "auth": agent.auth_class().ok().map(|a| match a {
+                AuthClass::Subscription => "subscription",
+                AuthClass::Api => "api",
+            }),
+            "secrets": agent.secrets,
+            "optional_secrets": agent.optional_secrets,
+            "skills": agent.skills,
+            "policy": serde_json::to_value(&agent.policy)?,
+            "roster": agent.roster.as_ref().map(|source| roster_provenance_view(plane, source)),
+            "bound_tasks": bound_tasks.get(name.as_str()).cloned().unwrap_or_default(),
+        }));
+    }
+    out.sort_by(|a, b| a["agent"].as_str().cmp(&b["agent"].as_str()));
+    Ok(out)
+}
+
+/// The vendored roster commit sha (`vendor/roster/SOURCE`'s `Commit:` line)
+/// alongside the declared roster agent identity -- the operator's own ask:
+/// "from which roster identity (vendored provenance sha)".
+fn roster_provenance_view(plane: &Plane, source: &crate::spec::RosterSource) -> serde_json::Value {
+    let sha = std::fs::read_to_string(plane.root.join(&source.root).join("SOURCE"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("Commit:").map(|s| s.trim().to_string()))
+        });
+    serde_json::json!({
+        "root": source.root,
+        "agent": source.agent,
+        "sha": sha,
+    })
 }
 fn trigger_view(trigger: &TriggerSpec) -> serde_json::Value {
     match trigger {

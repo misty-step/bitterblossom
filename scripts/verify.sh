@@ -249,7 +249,15 @@ rm -rf "$self_drill_tmp"
 # exact same file and shape as the existing four (build a command, parse
 # final JSONL output, parse partial/streaming stats), no new module, no
 # new subsystem. This is dispatch mechanism, not workload judgment.
-SPINE_LOC_CAP=14500
+# bitterblossom-934: 14500 -> 14600 for agents_view()/roster_provenance_view()
+# in serve.rs (~65 lines, same shape as the existing tasks_view() a few
+# lines above it: a read-only JSON projection over already-loaded plane
+# config for a new dashboard API route) plus a declarative `archived: bool`
+# field on TaskSpec in spec.rs (~10 lines, mirrors existing optional task
+# fields like `verdict`). No new module, no new subsystem, no workload
+# judgment -- the plane still holds none: archived is an operator-declared
+# flag the dashboard reads, not a decision bb makes.
+SPINE_LOC_CAP=14600
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
