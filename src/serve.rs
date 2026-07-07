@@ -960,7 +960,14 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
             };
             return match ledger.create_external_run(input) {
-                Ok(row) => Ok((201, serde_json::to_string(&row)?)),
+                Ok(row) => {
+                    // bitterblossom-956: an interactive/register-through run is
+                    // now visible on the glass live stage the moment it
+                    // registers -- same lifecycle floor a dispatched run gets,
+                    // zero extra agent cooperation. Best-effort by construction.
+                    crate::glass::post_external_registered(&plane, &ledger, &row);
+                    Ok((201, serde_json::to_string(&row)?))
+                }
                 Err(err) => Ok((400, json_error(err.to_string()))),
             };
         }
@@ -975,7 +982,19 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
         };
         return match ledger.update_external_run(id, &patch.status, patch.completed_at.as_deref()) {
-            Ok(row) => Ok((200, serde_json::to_string(&row)?)),
+            Ok(row) => {
+                // bitterblossom-956: close the external run's glass session on
+                // done/failed, reusing the session opened at registration so
+                // the interactive lane reads as one continuous feed. A bare
+                // `running` heartbeat patch re-announces liveness on the same
+                // session. Best-effort; never fails the request.
+                if row.status == "done" || row.status == "failed" {
+                    crate::glass::post_external_completed(&plane, &ledger, &row);
+                } else {
+                    crate::glass::post_external_registered(&plane, &ledger, &row);
+                }
+                Ok((200, serde_json::to_string(&row)?))
+            }
             Err(err) => {
                 let status = if err.to_string().contains("not found") {
                     404

@@ -3,6 +3,13 @@
 //! at existing dispatch/serve seams, with zero agent cooperation required.
 //! Agent-authored posts remain the rich layer on top; this is the floor.
 //!
+//! bitterblossom-956: the same floor extends to external (register-through)
+//! runs -- an interactive/local session that announces itself via
+//! `POST /api/external-runs` gets `registered` and `done/failed` posts from
+//! serve.rs's external-run handlers, keyed on the external run's own id
+//! (external runs never chain a parent). This is what makes an interactive
+//! lead session visible on the glass live stage, not just a ledger row.
+//!
 //! Mirrors notify.rs's shape deliberately: shells to curl (no HTTP client
 //! dependency, matching canary.rs/notify.rs/ask.rs), a missing
 //! `[glass].base_url` is a no-op, and delivery is best-effort -- a glass
@@ -20,7 +27,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::ledger::Ledger;
+use crate::ledger::{ExternalRunRow, Ledger};
 use crate::spec::Plane;
 
 const REQUEST_TIMEOUT_SECONDS: u64 = 10;
@@ -145,6 +152,61 @@ pub fn post_resumed(
     );
 }
 
+/// bitterblossom-956: an external (register-through) run enters the plane
+/// through a bare `POST /api/external-runs` -- it has no dispatch seam, so
+/// its lifecycle posts are emitted from serve.rs's external-run handlers
+/// instead of dispatch.rs. `source`/`role` carry the discriminator the
+/// operator reads to tell an interactive lead session (registered) apart
+/// from a bb-dispatched reflex run.
+pub fn post_external_registered(plane: &Plane, ledger: &Ledger, run: &ExternalRunRow) {
+    let status_line = run
+        .status_url
+        .as_deref()
+        .map(|u| format!("\n- status: {u}"))
+        .unwrap_or_default();
+    let receipt_line = run
+        .receipt_path
+        .as_deref()
+        .map(|p| format!("\n- receipt: `{p}`"))
+        .unwrap_or_default();
+    publish_external(
+        plane,
+        ledger,
+        run,
+        &format!("{} registered ({})", run.agent, run.repo),
+        serde_json::json!([
+            {"kind": "markdown", "markdown": format!(
+                "**{}** registered through the plane\n\n- run: `{}`\n- source: `{}`\n- role: `{}`\n- repo: `{}`\n- plane: `{}`{status_line}{receipt_line}",
+                run.agent, run.id, run.source, run.role, run.repo, run.plane
+            )},
+            {"kind": "metric", "label": "state", "value": "running"},
+            {"kind": "metric", "label": "source", "value": run.source.clone()},
+        ]),
+    );
+}
+
+pub fn post_external_completed(plane: &Plane, ledger: &Ledger, run: &ExternalRunRow) {
+    let receipt_line = run
+        .receipt_path
+        .as_deref()
+        .map(|p| format!("\n- receipt: `{p}`"))
+        .unwrap_or_default();
+    let completed = run.completed_at.as_deref().unwrap_or("-");
+    publish_external(
+        plane,
+        ledger,
+        run,
+        &format!("{} {}", run.agent, run.status),
+        serde_json::json!([
+            {"kind": "markdown", "markdown": format!(
+                "**{}** {}\n\n- run: `{}`\n- started: {}\n- completed: {completed}{receipt_line}",
+                run.agent, run.status, run.id, run.started_at
+            )},
+            {"kind": "metric", "label": "state", "value": run.status.clone()},
+        ]),
+    );
+}
+
 /// Resolve (or create) the glass session for `run_id`'s lineage, publish one
 /// post into it, and persist a freshly created session id so later posts in
 /// the same lineage reuse it. Entirely best-effort: any failure logs to
@@ -163,29 +225,77 @@ fn publish(
     };
     let root = lineage_root(ledger, run_id);
     let existing_session = ledger.run_glass_session(&root).ok().flatten();
+    if let Some(created) = deliver_post(
+        base_url,
+        agent,
+        title,
+        surfaces,
+        existing_session.as_deref(),
+    ) {
+        let _ = ledger.set_run_glass_session(&root, &created);
+    }
+}
 
+/// The external-run analogue of `publish`: the session lineage key is the
+/// external run's own id (external runs never chain a parent), and the
+/// session is stored on `external_runs.glass_session_id`.
+fn publish_external(
+    plane: &Plane,
+    ledger: &Ledger,
+    run: &ExternalRunRow,
+    title: &str,
+    surfaces: serde_json::Value,
+) {
+    let Some(base_url) = &plane.spec.glass.base_url else {
+        return;
+    };
+    let existing_session = ledger.external_run_glass_session(&run.id).ok().flatten();
+    if let Some(created) = deliver_post(
+        base_url,
+        &run.agent,
+        title,
+        surfaces,
+        existing_session.as_deref(),
+    ) {
+        let _ = ledger.set_external_run_glass_session(&run.id, &created);
+    }
+}
+
+/// POST one post to glass, reusing `existing_session` if present. Returns the
+/// glass-assigned session id to persist when this post created a new session
+/// (i.e. none was supplied), and `None` when a session was reused or delivery
+/// failed. Best-effort: a failure logs to stderr and returns `None`, never
+/// propagates -- the run plane must never depend on glass being reachable.
+fn deliver_post(
+    base_url: &str,
+    agent: &str,
+    title: &str,
+    surfaces: serde_json::Value,
+    existing_session: Option<&str>,
+) -> Option<String> {
     let mut body = serde_json::json!({
         "agent": agent,
         "title": title,
         "surfaces": surfaces,
     });
-    if let Some(session) = &existing_session {
-        body["session_id"] = serde_json::Value::String(session.clone());
+    if let Some(session) = existing_session {
+        body["session_id"] = serde_json::Value::String(session.to_string());
     }
-
     match deliver(base_url, &body.to_string()) {
         Ok(response) => {
-            if existing_session.is_none() {
-                if let Some(session) = response
-                    .get("post")
-                    .and_then(|p| p.get("session_id"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    let _ = ledger.set_run_glass_session(&root, session);
-                }
+            if existing_session.is_some() {
+                return None;
             }
+            response
+                .get("post")
+                .and_then(|p| p.get("session_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
         }
-        Err(e) => eprintln!("glass: post failed: {e}"),
+        Err(e) => {
+            eprintln!("glass: post failed: {e}");
+            None
+        }
     }
 }
 

@@ -315,3 +315,39 @@ rto_seconds = 1800
     assert_eq!(doc["backup"]["status"], "stale");
     assert_eq!(doc["backup"]["healthy"], false);
 }
+
+#[test]
+fn external_run_accepts_a_campaign_plane_label() {
+    // bitterblossom-922: register-through's `plane` field is a descriptive
+    // label (which logical/campaign plane the externally-owned run belongs to),
+    // not a substrate lease. The documented campaign plane value must be
+    // accepted, not rejected -- that rejection blocked campaign lanes from
+    // registering at all. Empty is still rejected (the field is required).
+    let dir = tempfile::tempdir().unwrap();
+    write_plane(dir.path());
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let mk = |plane_label: &str| ExternalRunCreate {
+        agent: "bb-everything-2026-07-07".into(),
+        role: "interactive-lead".into(),
+        repo: "bitterblossom".into(),
+        brief_hash: "focus-2026-07-07".into(),
+        plane: plane_label.into(),
+        status_url: None,
+        receipt_path: None,
+        started_at: "2026-07-07T12:00:00Z".into(),
+    };
+
+    // The exact value the 2026-07-04 campaign contract documented and that the
+    // endpoint used to reject with HTTP 400.
+    let row = ledger
+        .create_external_run(mk("campaign-2026-07-07-focus"))
+        .expect("campaign plane label must be accepted");
+    assert_eq!(row.plane, "campaign-2026-07-07-focus");
+    assert_eq!(row.source, "external");
+
+    // "local" still works, and an empty label is still a hard error.
+    assert!(ledger.create_external_run(mk("local")).is_ok());
+    assert!(ledger.create_external_run(mk("   ")).is_err());
+}

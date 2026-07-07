@@ -297,6 +297,11 @@ impl Ledger {
         // session ids; bb cannot invent its own -- verified live, an
         // unrecognized session_id is a 404, not an auto-create).
         ensure_column(&conn, "runs", "glass_session_id", "TEXT")?;
+        // bitterblossom-956: same glass session lineage key for external
+        // (register-through) runs -- an interactive session's registration
+        // and its done/failed patch cohere into one glass session, exactly
+        // like a dispatched run's lifecycle does.
+        ensure_column(&conn, "external_runs", "glass_session_id", "TEXT")?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",
@@ -808,6 +813,26 @@ impl Ledger {
             .query_row(
                 "SELECT glass_session_id FROM runs WHERE id = ?1",
                 params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_external_run_glass_session(&self, id: &str, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE external_runs SET glass_session_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, session_id, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn external_run_glass_session(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT glass_session_id FROM external_runs WHERE id = ?1",
+                params![id],
                 |r| r.get(0),
             )
             .optional()?
@@ -1587,10 +1612,16 @@ fn validate_external_create(input: &ExternalRunCreate) -> Result<()> {
     required_external_field("role", &input.role)?;
     required_external_field("repo", &input.repo)?;
     required_external_field("brief_hash", &input.brief_hash)?;
+    // bitterblossom-922: `plane` on an external run is a descriptive LABEL --
+    // which logical/campaign plane the externally-owned run belongs to (e.g.
+    // "campaign-2026-07-07-focus") -- not a substrate lease. External runs
+    // never lease, dispatch, or execute through the plane (that is the native
+    // `runs` table), and `source:"external"` is the discriminator, so an
+    // arbitrary label here cannot be confused with a bb-dispatched run. It
+    // must be present; it need not be "local". The prior "must be 'local'"
+    // check rejected the documented campaign plane value and blocked campaign
+    // lanes from registering at all -- pure friction guarding nothing.
     required_external_field("plane", &input.plane)?;
-    if input.plane.trim() != "local" {
-        bail!("external run plane must be 'local' in register-through mode");
-    }
     validate_rfc3339("started_at", input.started_at.trim())?;
     Ok(())
 }

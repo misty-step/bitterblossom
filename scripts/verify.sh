@@ -266,7 +266,19 @@ rm -rf "$self_drill_tmp"
 # plane's existing dead-letter/replay mechanism rather than inventing a
 # new parking state (see docs/spine.md "Substrate contract"). This is
 # dispatch mechanism, not workload judgment.
-SPINE_LOC_CAP=14900
+# bitterblossom-956: 14900 -> 15100 for glass visibility of external
+# (register-through) runs -- the exact same observability floor bb-933
+# already gives dispatched runs, extended to the interactive/local sessions
+# that register via POST /api/external-runs. src/glass.rs gains
+# post_external_registered/post_external_completed plus a shared deliver_post
+# helper the existing publish() now also routes through (net emitter growth
+# ~85 lines); ledger.rs gains an external_runs.glass_session_id column and
+# two get/set helpers mirroring the runs.glass_session_id pair (~25 lines);
+# serve.rs wires the two emitter calls into the existing external-run
+# POST/PATCH handlers (~15 lines). No new module, no new subsystem, no
+# workload judgment -- observability of a run the plane already records,
+# not a decision the plane makes. See docs/spine.md "Glass lifecycle emitter".
+SPINE_LOC_CAP=15100
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

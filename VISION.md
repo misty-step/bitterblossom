@@ -15,6 +15,17 @@ triage, doc sync, CI audit, and ad-hoc repo work. The product must make
 execution cheap and observable while keeping judgment in specialist agents and
 human/frontier review loops.
 
+Direction lock, 2026-07-07: every agent run the operator starts anywhere —
+including interactive, supervised lead sessions on a local machine — should be
+visible through the plane: a ledger row, a trace, receipts, and a glass feed.
+The plane does not have to *execute* an interactive session to make it
+bb-native; it is enough that the session registers and streams its lifecycle so
+the operator sees all fleet activity in one place. Registration is observation,
+not a new authority the plane holds over the session (see "Registration is
+observation, not authority" and the refusal it qualifies). This lock is why an
+interactive lead session, a local codex lane, and a webhook reflex all cohere
+into one observable fleet without collapsing into one authority model.
+
 Bitterblossom is the event plane for recurring agent workloads. It lets an
 operator define a task, bind an agent, attach a trigger, and then watch the work
 run durably on isolated infrastructure with cost, budget, queue, trace, and
@@ -75,6 +86,14 @@ authority, artifacts, and recovery evidence.
 
 - **Run truth precedes external acknowledgement.** Webhooks, cron ticks, and
   manual dispatch all converge on a ledger row before acceptance is claimed.
+- **Registration is observation, not authority.** A run that originates outside
+  the plane — an interactive lead session, a local codex lane, a herdr pane —
+  may register itself (`POST /api/external-runs`) to earn a ledger row and a
+  glass feed. The plane records and observes such a run; it does not execute,
+  lease, budget, or gain authority over it. Visibility through the plane is the
+  product; control over an externally-owned session is explicitly not. This is
+  the seam that lets "every agent run is bb-visible" grow without every run
+  becoming a bb-*dispatched* run.
 - **Unattended work fails visibly.** Every non-terminal run and submission needs
   a freshness contract, durable escalation path, and operator-visible next
   action. A state that can go stale without notification is a product bug, not
@@ -139,7 +158,11 @@ authority, artifacts, and recovery evidence.
 - **No hidden authority escalation.** Reflex agents should report, recommend, or
   post within an explicit task contract. Merging, unpark decisions, production
   mutations, and broad rollout remain deliberate operator authority until a
-  future vision revision says otherwise.
+  future vision revision says otherwise. Registering an externally-owned run
+  (see "Registration is observation, not authority") is not an exception and not
+  a loosening: it grants the plane visibility, never control, so an interactive
+  lead session becomes fully bb-observable without the plane acquiring any
+  standing always-on presence or new escalation power over it.
 - **No substrate lock-in disguised as architecture.** Sprites is valuable
   because it currently fits the remote-workspace problem, not because
   Bitterblossom is a Fly product. Cloudflare, E2B, Modal, Daytona, or another

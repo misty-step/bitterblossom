@@ -468,12 +468,22 @@ already execute, but they fire a lightweight receipt into the plane so the
 ledger and dashboard are still the operator's single pane.
 
 - Create: `POST /api/external-runs` with bearer auth and
-  `{agent, role, repo, brief_hash, plane:"local", status_url?, receipt_path?,
+  `{agent, role, repo, brief_hash, plane, status_url?, receipt_path?,
   started_at}`. The plane returns an `id` and records the row with
-  `source:"external"` and `status:"running"`.
+  `source:"external"` and `status:"running"`. `plane` is a descriptive label
+  for which logical/campaign plane the run belongs to (e.g.
+  `campaign-2026-07-07-focus`, or `local` for an unlabelled local run) --
+  not a substrate lease; external runs never lease or execute through the
+  plane (bitterblossom-922).
 - Transition: `PATCH /api/external-runs/<id>` with
   `{status:"running"|"done"|"failed", completed_at?}`. Terminal statuses require
   `completed_at`.
+- Glass: create and terminal PATCH emit glass lifecycle posts automatically
+  (bitterblossom-956) -- `registered` at create, `done`/`failed` at close,
+  keyed on the external run's own id so both cohere into one glass session.
+  This is what makes an interactive lead session (register-through's first
+  user) visible on the glass live stage, not just a ledger row. Requires
+  `[glass].base_url`; absent, it is a no-op like every other glass post.
 - Read: `GET /api/status` exposes `external_runs.recent`,
   `external_runs.by_status`, `summary.external_runs`, and
   `summary.external_running`; the dashboard renders these rows beside native
@@ -483,10 +493,39 @@ ledger and dashboard are still the operator's single pane.
   `scripts/bb-register.sh done <id>` or `scripts/bb-register.sh failed <id>`
   after work. The shim reads `BB_URL`, `BB_API_TOKEN`,
   `BB_REGISTER_AGENT`, `BB_REGISTER_ROLE`, `BB_REGISTER_REPO`,
-  `BB_REGISTER_BRIEF_HASH`, and optional status/receipt timestamps from the
-  environment, sends the bearer header through `curl --config -`, and exits 0
-  without output when the plane URL/token is unset or unreachable. Registration
-  must never block the dispatch itself.
+  `BB_REGISTER_BRIEF_HASH`, `BB_REGISTER_PLANE` (the campaign/logical label),
+  and optional status/receipt timestamps from the
+  environment, sends the bearer header through `curl --config -`, prints the
+  created run id on stdout (so the closing `done <id>` has a target), and exits
+  0 without output when the plane URL/token is unset or unreachable.
+  Registration must never block the dispatch itself.
+
+#### Interactive lead sessions are the default origin
+
+The register-through path's first-class user is the **interactive lead
+session** (a Claude Code / codex session the operator drives). Making bb the
+default origin for campaign/groom/chew lanes is a two-line habit, not new
+machinery:
+
+```sh
+# at session start -- announce yourself, capture the run id
+export BB_URL=https://bitterblossom-plane.fly.dev BB_API_TOKEN=…   # from mint/op at point of use
+id=$(BB_REGISTER_AGENT=<lane> BB_REGISTER_ROLE=interactive-lead \
+     BB_REGISTER_REPO=<repo> BB_REGISTER_BRIEF_HASH=<campaign> \
+     BB_REGISTER_PLANE=<campaign-label> \
+     BB_REGISTER_RECEIPT_PATH=<report-path> \
+     scripts/bb-register.sh start)
+# … do the work …
+scripts/bb-register.sh done "$id"     # or: failed "$id"
+```
+
+The session now has a ledger row (`GET /api/external-runs`), a live glass feed
+(register + done posts under one session), and a receipt link -- fully visible
+in bb and glass with zero change to how the session actually executes. When the
+plane has `[glass].base_url` set, every registered lane appears on the glass
+live stage automatically. This is the growth path for "every agent run goes
+through bitterblossom": it accrues on reps, one lane at a time, without any lane
+being *dispatched* by bb.
 
 Route-through is a later design: the plane will eventually own dispatch
 admission and execution for more local roles, but that authority waits for the
@@ -513,6 +552,16 @@ cooperation required. Configure `[glass].base_url` in `plane.toml`; absent,
 this is a no-op, exactly like `[notify]`. Delivery is best-effort (shells to
 curl, matching canary.rs/notify.rs/ask.rs); a glass outage never affects
 dispatch.
+
+External (register-through) runs get the same floor (bitterblossom-956):
+`post_external_registered` fires from the `POST /api/external-runs` handler and
+`post_external_completed` from the terminal `PATCH`. Because an external run
+never chains a parent, its glass session is keyed on its own id
+(`external_runs.glass_session_id`) rather than a lineage root. This is the seam
+that makes an interactive lead session -- not just bb-*dispatched* runs --
+visible on the live stage. Proven live 2026-07-07: a registered interactive
+session produced `registered` + `done` posts sharing one session on the real
+glass instance (`serenity:9040`), zero agent cooperation.
 
 Glass assigns session ids itself -- `POST /api/posts` with an unrecognized
 `session_id` is a 404, not an auto-create (verified against the live

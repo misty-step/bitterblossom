@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use bitterblossom::dispatch;
-use bitterblossom::ledger::{IngressRequest, Ledger};
+use bitterblossom::ledger::{ExternalRunCreate, IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
 
 static GLASS_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -194,6 +194,64 @@ fn a_resumed_run_reuses_its_parked_parents_glass_session() {
 
     // Reused, not overwritten: the root run's stored session is unchanged.
     assert_eq!(ledger.run_glass_session(&run_id).unwrap(), Some(session));
+}
+
+#[test]
+fn external_run_registration_posts_registered_and_completed_reusing_one_glass_session() {
+    // bitterblossom-956: an interactive/register-through run (this is how an
+    // interactive lead session announces itself to the plane) must show up on
+    // glass at registration and again at done -- the same lifecycle floor a
+    // dispatched run gets, keyed on the external run's own id so the two posts
+    // cohere into one glass session.
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path(), Some("http://glass.invalid"));
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let row = ledger
+        .create_external_run(ExternalRunCreate {
+            agent: "fable-lead".into(),
+            role: "interactive-lead".into(),
+            repo: "bitterblossom".into(),
+            brief_hash: "abc123".into(),
+            plane: "local".into(),
+            status_url: None,
+            receipt_path: Some("/tmp/report.md".into()),
+            started_at: "2026-07-07T12:00:00Z".into(),
+        })
+        .unwrap();
+
+    let (_, log) = with_glass_stub(dir.path(), || {
+        bitterblossom::glass::post_external_registered(&plane, &ledger, &row);
+        let done = ledger
+            .update_external_run(&row.id, "done", Some("2026-07-07T13:00:00Z"))
+            .unwrap();
+        bitterblossom::glass::post_external_completed(&plane, &ledger, &done);
+    });
+
+    assert!(log.contains("registered"), "{log}");
+    assert!(log.contains(&row.id), "{log}");
+    assert!(log.contains("\"agent\":\"fable-lead\""), "{log}");
+    assert!(log.contains("interactive-lead"), "{log}");
+
+    let requests: Vec<&str> = log.split("---").filter(|s| !s.trim().is_empty()).collect();
+    assert_eq!(requests.len(), 2, "expected registered + completed: {log}");
+    assert!(
+        !requests[0].contains("session_id"),
+        "first post must omit session_id so glass creates one: {}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("\"session_id\":\"ses-stub-"),
+        "second post must reuse the created session: {}",
+        requests[1]
+    );
+
+    let stored = ledger.external_run_glass_session(&row.id).unwrap();
+    assert!(
+        stored.is_some(),
+        "external glass_session_id was never persisted"
+    );
+    assert!(requests[1].contains(stored.as_deref().unwrap()));
 }
 
 #[test]
