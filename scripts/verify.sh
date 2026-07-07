@@ -257,7 +257,16 @@ rm -rf "$self_drill_tmp"
 # fields like `verdict`). No new module, no new subsystem, no workload
 # judgment -- the plane still holds none: archived is an operator-declared
 # flag the dashboard reads, not a decision bb makes.
-SPINE_LOC_CAP=14600
+# bitterblossom-938: 14600 -> 14900 for src/substrate/tailnet.rs (~300
+# non-blank lines) -- a third Substrate/Session implementation alongside
+# local.rs/sprites.rs, same shape as sprites.rs (remote exec, workspace
+# dir, marker/pidfile probe) but ssh transport instead of the Fly-specific
+# sprite CLI, registered through the existing `for_task()` factory with no
+# new abstraction. Edge-case policy for an unreachable host reuses the
+# plane's existing dead-letter/replay mechanism rather than inventing a
+# new parking state (see docs/spine.md "Substrate contract"). This is
+# dispatch mechanism, not workload judgment.
+SPINE_LOC_CAP=14900
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

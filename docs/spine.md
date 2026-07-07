@@ -305,7 +305,39 @@ adapter owns every environment-specific choice behind that plan:
 
 `local` keeps a workspace under the attempt directory for dev/test planes.
 `sprites` maps the workspace name onto its remote overlay and handles the
-sprite CLI transport entirely inside `src/substrate/sprites.rs`.
+sprite CLI transport entirely inside `src/substrate/sprites.rs`. `tailnet`
+(bitterblossom-938) dispatches to any machine reachable over the
+operator's Tailscale network -- `host` is the MagicDNS name (or any
+address `ssh` accepts), transport is plain `ssh` (`BB_SSH_BIN` overrides
+the binary for tests), and the remote workspace lives under the
+connecting account's resolved `$HOME/.bb-tailnet/<name>` (resolved once
+per session via `printf %s "$HOME"`, never assumed as `~` -- single-quoted
+shell arguments never expand `~`, so every path is threaded as an
+already-resolved absolute string). No checkpoint/restore concept: tailnet
+hosts are long-lived machines, not disposable sprites.
+
+**Pre-dispatch health.** `acquire()` on every remote substrate
+(`sprites`, `tailnet`) runs a live reachability check (a trivial remote
+exec) before returning a session, and fails with a plain-language reason
+naming the host (`"tailnet host 'x' unreachable: <ssh stderr>"`) rather
+than a raw exec error. `probe()` is the separate, marker/pidfile-based
+liveness check used for boot recovery and future monitoring, not
+pre-dispatch gating -- it answers "is a *specific attempt* still running
+on this host", not "is this host up".
+
+**Edge-case policy: no reachable host.** This is the plane's existing
+dead-letter mechanism, not a new parking state: a substrate-unreachable
+acquire failure is `phase_executed: false`, so it gets the same bounded
+mechanical retry (`MAX_RETRIES`) as any other pre-execute failure, then
+dead-letters with the plain-language reason attached
+(`dead_letter:<id> tailnet host 'x' unreachable: ...`). "Queue for later"
+is `bb dlq replay <id>` once the host is confirmed reachable again --
+operator- or agent-initiated, not automatic. Automatic fallback to a
+*different* declared substrate is deliberately out of scope: choosing a
+fallback is a decision about which environment is an acceptable
+substitute, and the plane holds no judgment about that (see "What the
+plane refuses to know" below) -- it belongs in the task's own retry/
+escalation policy, not in `src/substrate/`.
 
 ## Environment Contract
 

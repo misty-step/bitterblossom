@@ -2,8 +2,9 @@
 
 The event plane for agent workloads. Define a **task**, bind an **agent**,
 attach a **trigger** — all as files — and the plane runs it durably on a
-remote substrate (Fly Sprites today) with cost, budget, and trace visible
-from the CLI.
+remote substrate (Fly Sprites, or any Tailscale-reachable machine via the
+`tailnet` substrate, bitterblossom-938) with cost, budget, and trace
+visible from the CLI.
 
 Two kinds of work, named so we can talk about them:
 

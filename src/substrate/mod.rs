@@ -1,5 +1,6 @@
 pub mod local;
 pub mod sprites;
+pub mod tailnet;
 
 use std::path::Path;
 use std::time::Duration;
@@ -103,6 +104,7 @@ pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
     match kind {
         "local" => Ok(Box::new(local::LocalSubstrate)),
         "sprites" => Ok(Box::new(sprites::SpritesSubstrate)),
-        other => anyhow::bail!("unknown substrate '{other}' (known: local, sprites)"),
+        "tailnet" => Ok(Box::new(tailnet::TailnetSubstrate)),
+        other => anyhow::bail!("unknown substrate '{other}' (known: local, sprites, tailnet)"),
     }
 }
