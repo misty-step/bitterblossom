@@ -35,17 +35,20 @@ fn thermo_nuclear_lens_is_vendored_with_provenance_and_wired_into_cerberus() {
     assert!(skill.contains("1000 lines"));
     assert!(skill.contains("code judo"));
 
+    // roster-921: the lens now ships natively upstream, wired to roster's
+    // own vendored copy of the same skill — the vendored role/instructions
+    // here are a clean mechanical copy, not a bb-only hand patch.
     let role = fs::read_to_string(root.join("vendor/roster/agents/cerberus/role.yaml")).unwrap();
     assert!(role.contains("name: thermo-nuclear-maintainability"));
-    assert!(role.contains("vendor/skills/thermo-nuclear-code-quality-review/SKILL.md"));
-    assert!(role.contains("backlog 088"));
+    assert!(role.contains(
+        "primitives/skills/.external/cursor-thermo-nuclear-code-quality-review/SKILL.md"
+    ));
 
     let instructions =
         fs::read_to_string(root.join("vendor/roster/agents/cerberus/instructions.md")).unwrap();
     assert!(instructions.contains("Maintainability lens"));
     assert!(instructions.contains("severity: \"blocking\""));
-    assert!(instructions.contains("risk-tier"));
-    assert!(instructions.contains("bb submit waive"));
+    assert!(instructions.contains("risk tier"));
 
     let roster_card =
         fs::read_to_string(root.join("examples/roster-cerberus-plane/tasks/review/card.md"))
@@ -56,11 +59,15 @@ fn thermo_nuclear_lens_is_vendored_with_provenance_and_wired_into_cerberus() {
         fs::read_to_string(root.join("examples/review-factory-plane/agents/reviewer.toml"))
             .unwrap();
     assert!(factory_agent.contains("cursor-thermo-nuclear-code-quality-review"));
+    // The waiver mechanics (`bb submit waive`) are bb's own workflow surface
+    // (per roster-921's composition-free ruling), never part of the
+    // upstream identity — asserted only against bb's own task card.
     let factory_card =
         fs::read_to_string(root.join("examples/review-factory-plane/tasks/review/card.md"))
             .unwrap();
     assert!(factory_card.contains("Thermo-Nuclear maintainability lens"));
     assert!(factory_card.contains("risk-tier:<tier>"));
+    assert!(factory_card.contains("bb submit waive"));
 }
 
 #[test]
