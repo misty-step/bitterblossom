@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bitterblossom — get started</title>
+    <meta
+      name="description"
+      content="Install Bitterblossom, run the zero-credential quick start, and end at bb doctor — verified live, not just configured."
+    />
+    <script>
+      try {
+        var m = localStorage.getItem('ae-mode');
+        if (m === 'dark' || m === 'light') {
+          document.documentElement.classList.add(m);
+          document.documentElement.style.colorScheme = m;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="aesthetic.css" />
+    <link rel="stylesheet" href="marketing.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" width="0" height="0" style="position: absolute">
+      <symbol id="i-flower" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path
+          d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"
+        />
+        <path d="M12 7.5V9" />
+        <path d="M7.5 12H9" />
+        <path d="M16.5 12H15" />
+        <path d="M12 16.5V15" />
+        <path d="m8 8 1.88 1.88" />
+        <path d="M14.12 9.88 16 8" />
+        <path d="m8 16 1.88-1.88" />
+        <path d="M14.12 14.12 16 16" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-github" viewBox="0 0 24 24">
+        <path
+          d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"
+        />
+        <path d="M9 18c-4.51 2-5-2-7-2" />
+      </symbol>
+    </svg>
+
+    <div class="ae-screen ae-wide">
+      <header class="ae-bar msk-bar">
+        <a class="ae-logo" href="./" aria-label="Bitterblossom home">
+          <span class="ae-app-mark" aria-hidden="true">
+            <svg class="ae-icon" data-lucide="flower">
+              <use href="#i-flower" />
+            </svg>
+          </span>
+          <span class="ae-name">Bitterblossom</span>
+        </a>
+        <nav class="ae-chrome msk-nav" aria-label="Site">
+          <a href="features.html">features</a>
+          <a href="get-started.html" aria-current="page">get started</a>
+          <a href="changelog.html">changelog</a>
+          <a href="https://github.com/misty-step/bitterblossom">github</a>
+        </nav>
+      </header>
+
+      <main class="ae-stage ae-stage-scroll">
+        <article class="ae-doc msk-page" aria-labelledby="get-started-title">
+          <h1 id="get-started-title">Get started</h1>
+          <p class="ae-lede">
+            The one-minute, zero-credential golden path: no secrets, no
+            remote substrate, no network. It validates the plane, dispatches
+            a task, records a run, exposes status, reads the run bundle, and
+            ends at <code>bb doctor</code> — onboarding isn't done at
+            build/install, it's done when doctor proves the plane is
+            actually live.
+          </p>
+
+          <section class="msk-release">
+            <p class="ae-chrome">Install</p>
+            <h2>Build from source</h2>
+            <p>
+              Bitterblossom's Rust rewrite hasn't cut a tagged release yet
+              (<code>Cargo.toml</code> is still <code>0.1.0</code>; the tags
+              you'll see on GitHub back through <code>v1.79.0</code> belong
+              to the retired Elixir/Python conductor, not this binary — see
+              the <a href="changelog.html">release notes</a> for the
+              discontinuity). Until a v3 tag exists, build from a clone:
+            </p>
+            <pre><code>git clone https://github.com/misty-step/bitterblossom.git
+cd bitterblossom
+cargo build</code></pre>
+            <p>
+              Once a pinned release is cut, the tracked-release path will be:
+            </p>
+            <pre><code>cargo install --git https://github.com/misty-step/bitterblossom --tag v&lt;version&gt; --locked</code></pre>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">Quick start</p>
+            <h2>Run the zero-credential local plane</h2>
+            <p>
+              <code>examples/local-plane/</code> is a zero-credential local
+              plane: a <code>command</code>-harness agent whose inline script
+              writes a small <code>REPORT.json</code>. Validate the config,
+              dispatch a task, and read the run back:
+            </p>
+            <pre><code>./target/debug/bb --config examples/local-plane check --json
+./target/debug/bb --config examples/local-plane preflight hello --json
+./target/debug/bb --config examples/local-plane run hello --payload '{"ok":true}' --json
+./target/debug/bb --config examples/local-plane status --json
+./target/debug/bb --config examples/local-plane runs show &lt;run-id&gt; --json
+./target/debug/bb --config examples/local-plane artifacts read &lt;run-id&gt; REPORT.json --json</code></pre>
+            <p>
+              <code>&lt;run-id&gt;</code> comes from the <code>run --json</code>
+              output above.
+            </p>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">Verified live</p>
+            <h2><code>bb doctor</code>: onboarding ends here</h2>
+            <pre><code>./target/debug/bb --config examples/local-plane doctor --json
+./target/debug/bb --config examples/local-plane serve
+./target/debug/bb --config examples/local-plane doctor --expect-serve --json</code></pre>
+            <p>
+              <code>bb doctor</code> composes every check above into one
+              pass/fail verdict: config loads, the ledger is reachable and
+              schema-current, every task's declared secrets and
+              command-harness binaries preflight clean, and — with
+              <code>--expect-serve</code>, run from a second terminal once
+              <code>bb serve</code> for this config is actually running —
+              its unauthenticated
+              <code>/health</code> and <code>/</code> routes answer. Each
+              failing check names concrete remediation; the command exits
+              non-zero if anything fails.
+            </p>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">Beyond the local plane</p>
+            <h2>Copyable workload templates</h2>
+            <p>
+              <code>examples/demo-plane/</code> is a complete commented
+              production-shaped config dispatching to a remote substrate: a
+              <a href="https://sprites.dev">Fly Sprite</a> restores
+              checkpoints, syncs repos, and executes the harness over
+              WebSocket exec.
+            </p>
+            <pre><code>./target/debug/bb --config examples/demo-plane check
+./target/debug/bb --config examples/demo-plane run demo</code></pre>
+            <p>
+              Credential-free-to-validate templates for real workloads live
+              under <code>examples/</code>: a pull-request review factory
+              (<code>review-factory-plane</code>), a Roster Cerberus role
+              materializer (<code>roster-cerberus-plane</code>), a
+              Canary-style incident responder
+              (<code>canary-responder-plane</code>), and a docs-drift watcher
+              (<code>docs-sync-plane</code>) — each with sample payloads and
+              a local validation recipe. Copy one when the trigger shape and
+              report contract already match your workload; author a custom
+              task when they don't. New workloads should stay config only:
+              plane/task/agent files plus lane cards, never Rust changes.
+            </p>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">For agents</p>
+            <h2>The portable operator skill</h2>
+            <p>
+              Agents that need to operate Bitterblossom can load the
+              portable skill folder at
+              <code>skills/bitterblossom/</code> — copy or symlink the whole
+              folder (not just <code>SKILL.md</code>) into a harness skill
+              root; the recipes and UI metadata are part of the interface.
+            </p>
+            <p>
+              Read <a href="https://github.com/misty-step/bitterblossom/blob/master/AGENTS.md">AGENTS.md</a>
+              for the full spine contract, or browse
+              <a href="https://github.com/misty-step/bitterblossom/tree/master/docs">docs/</a>
+              for the vision, ADRs, and design plans behind it.
+            </p>
+          </section>
+        </article>
+      </main>
+
+      <footer class="ae-bar msk-footer">
+        <button class="ae-mode" aria-label="toggle color mode">
+          <svg class="ae-icon ae-sun"><use href="#i-sun" /></svg>
+          <svg class="ae-icon ae-moon"><use href="#i-moon" /></svg>
+        </button>
+        <p class="ae-chrome msk-credit">
+          a <a href="https://mistystep.io">Misty Step</a> project
+          <a
+            class="msk-credit-gh"
+            href="https://github.com/misty-step/bitterblossom"
+            aria-label="Bitterblossom on GitHub"
+          >
+            <svg class="ae-icon" aria-hidden="true"><use href="#i-github" /></svg>
+          </a>
+        </p>
+      </footer>
+    </div>
+
+    <script src="mode.js"></script>
+  </body>
+</html>

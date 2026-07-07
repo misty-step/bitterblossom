@@ -26,6 +26,22 @@ second design system.
 
 `Bitterblossom runs recurring agent workloads as durable, budgeted jobs — with a real dead-letter queue, a review gate that blocks bad merges, and a fleet heartbeat, instead of a cron job you have to trust blindly.`
 
+## Fleet Marketing Lock
+
+Operator lock-in: 2026-07-07, `misty-step-936`.
+
+- Homepage H1/tagline: `The event plane for agent workflows.`
+- Layout: Mural — one viewport, no scroll, lower-left frosted panel.
+- Hero image: `site/assets/hero.jpg`, copied from the fleet production image
+  `bitterblossom-hero.jpg`; generated with `gpt-image-1` in the Misty Step
+  fresco language.
+- Image opacity: `0.22`.
+- Footer: mode toggle on the left; right side reads
+  `a Misty Step project` with `Misty Step` linked to `https://mistystep.io`
+  and an inline GitHub glyph linked to
+  `https://github.com/misty-step/bitterblossom`. No Weave link, bare URL,
+  email, or copyright line.
+
 ## Lucide Mark
 
 - Icon: `flower`
@@ -68,8 +84,6 @@ against the kept plane) — not mockups:
 
 - Misty Step: `https://mistystep.io`
 - GitHub: `https://github.com/misty-step/bitterblossom`
-- Weave: `https://misty-step.github.io/weave/` — Bitterblossom is the Weave
-  execution plane per `VISION.md`'s 2026-07-01 direction lock.
 
 ## Release Notes Rule
 
