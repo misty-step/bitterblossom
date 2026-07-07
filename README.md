@@ -171,8 +171,13 @@ payloads, not Rust changes.
   operator's subscription auth only (`ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY` are rejected as agent secrets), reflex triggers
   (webhook/cron) bind only `auth = "api"` agents — cheap open-weight
-  models via OpenRouter on open harnesses (pi/omp). Api-auth execs are
-  hermetic: scrubbed env, workspace-local HOME, declared secrets only.
+  models via OpenRouter on open harnesses (opencode/pi/omp). Api-auth execs
+  are hermetic: scrubbed env, workspace-local HOME, declared secrets only.
+  **`opencode` is the default open harness (bitterblossom-935); flip to
+  `pi` only when the workload needs `turn_cap`/`tool_action_cap`/
+  `iteration_cap` enforcement — opencode has no CLI flag for any of the
+  three yet, so `build_command` refuses to dispatch a capped opencode
+  agent** (see `docs/harness-audit.md` for the full disposition table).
 - Every `harness = "pi"` dispatch (and `scripts/incident-triage-wrapper.sh`'s
   own `pi` invocation) passes `--no-extensions` by default
   (bitterblossom-918): a global pi extension can register a recurring

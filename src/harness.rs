@@ -16,7 +16,7 @@ pub struct PartialProgress {
     pub tool_actions: Option<i64>,
 }
 
-pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "omp", "command"];
+pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "omp", "command", "opencode"];
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
     if effective_tool_action_cap(agent, budget).is_some()
         && !supports_tool_action_cap(&agent.harness)
@@ -108,6 +108,21 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
             ));
             return Ok(filtered_jsonl_command(inner));
         }
+        "opencode" => {
+            let mut inner = vec![
+                bin,
+                "run".into(),
+                format!(
+                    "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it."
+                ),
+                "--format".into(),
+                "json".into(),
+                "--model".into(),
+                format!("{}/{}", agent.provider(), agent.model),
+            ];
+            inner.extend(agent.args.iter().cloned());
+            return Ok(inner);
+        }
         other => bail!(
             "unknown harness '{other}' (known: {})",
             HARNESSES.join(", ")
@@ -149,6 +164,7 @@ pub fn parse_output(harness: &str, stdout: &str) -> Result<ParsedOutput> {
         "codex" => parse_codex(stdout),
         "pi" | "omp" => parse_agent_jsonl(harness, stdout),
         "command" => parse_command(stdout),
+        "opencode" => parse_opencode(stdout),
         other => bail!("unknown harness '{other}'"),
     }
 }
@@ -159,6 +175,7 @@ pub fn parse_partial_stats(harness: &str, stdout: &str) -> AttemptStats {
         "claude" => partial_claude_stats(stdout),
         "codex" => partial_codex_stats(stdout),
         "command" => partial_command_stats(stdout),
+        "opencode" => partial_opencode_stats(stdout),
         _ => AttemptStats::default(),
     }
 }
@@ -167,7 +184,7 @@ pub fn parse_partial_progress(harness: &str, stdout: &str) -> PartialProgress {
     PartialProgress {
         stats: parse_partial_stats(harness, stdout),
         tool_actions: match harness {
-            "codex" | "pi" | "omp" => partial_tool_actions_jsonl(stdout),
+            "codex" | "pi" | "omp" | "opencode" => partial_tool_actions_jsonl(stdout),
             "claude" | "command" => partial_tool_actions_last_json(stdout),
             _ => None,
         },
@@ -311,6 +328,80 @@ fn partial_command_stats(stdout: &str) -> AttemptStats {
         turns: v.get("turns").and_then(Value::as_i64),
         cost_usd: v.get("cost_usd").and_then(Value::as_f64),
     }
+}
+
+/// `opencode run --format json` emits one JSON object per line, each with a
+/// `part` payload: `step-start`/`step-finish` bracket a model turn (cost and
+/// per-turn token usage live on `step-finish`), `tool` records a completed
+/// tool call, `text` carries assistant text. Unlike pi/omp there is no
+/// streaming delta noise to filter — every line is a discrete, complete event.
+fn opencode_step_finish_usage(stdout: &str) -> (i64, i64, i64, f64, bool) {
+    let (mut turns, mut tokens_in, mut tokens_out) = (0i64, 0i64, 0i64);
+    let mut cost = 0f64;
+    let mut saw_usage = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(part) = v.get("part") else { continue };
+        if part.get("type").and_then(Value::as_str) != Some("step-finish") {
+            continue;
+        }
+        turns += 1;
+        cost += part.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
+        if let Some(tokens) = part.get("tokens") {
+            saw_usage = true;
+            tokens_in += tokens.get("input").and_then(Value::as_i64).unwrap_or(0);
+            tokens_out += tokens.get("output").and_then(Value::as_i64).unwrap_or(0);
+        }
+    }
+    (turns, tokens_in, tokens_out, cost, saw_usage)
+}
+
+fn partial_opencode_stats(stdout: &str) -> AttemptStats {
+    let (turns, tokens_in, tokens_out, cost, saw_usage) = opencode_step_finish_usage(stdout);
+    AttemptStats {
+        tokens_in: saw_usage.then_some(tokens_in),
+        tokens_out: saw_usage.then_some(tokens_out),
+        turns: (turns > 0).then_some(turns),
+        cost_usd: saw_usage.then_some(cost),
+    }
+}
+
+fn parse_opencode(stdout: &str) -> Result<ParsedOutput> {
+    let mut result = String::new();
+    let mut saw_event = false;
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        saw_event = true;
+        let Some(part) = v.get("part") else { continue };
+        if part.get("type").and_then(Value::as_str) != Some("text") {
+            continue;
+        }
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                result = text.trim().to_string();
+            }
+        }
+    }
+    if !saw_event {
+        bail!("opencode output: no JSONL events found");
+    }
+    if result.is_empty() {
+        bail!("opencode output: no assistant text content — incomplete run");
+    }
+    let (turns, tokens_in, tokens_out, cost, saw_usage) = opencode_step_finish_usage(stdout);
+    Ok(ParsedOutput {
+        result,
+        stats: AttemptStats {
+            tokens_in: saw_usage.then_some(tokens_in),
+            tokens_out: saw_usage.then_some(tokens_out),
+            turns: (turns > 0).then_some(turns),
+            cost_usd: saw_usage.then_some(cost),
+        },
+    })
 }
 
 fn parse_command(stdout: &str) -> Result<ParsedOutput> {

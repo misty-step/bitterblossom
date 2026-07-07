@@ -243,7 +243,13 @@ rm -rf "$self_drill_tmp"
 # No module ballooned. This is the observability floor the card asks for --
 # "a small emitter at existing lifecycle seams, not a new subsystem" -- not
 # workload judgment.
-SPINE_LOC_CAP=14450
+# bitterblossom-935: 14450 -> 14500 for the opencode harness backend in
+# harness.rs (build_command arm + parse_opencode/partial_opencode_stats,
+# ~95 lines) -- a fifth harness class alongside claude/codex/pi/omp in the
+# exact same file and shape as the existing four (build a command, parse
+# final JSONL output, parse partial/streaming stats), no new module, no
+# new subsystem. This is dispatch mechanism, not workload judgment.
+SPINE_LOC_CAP=14500
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

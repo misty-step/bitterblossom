@@ -1,4 +1,4 @@
-agent = "pi"               # reflex triggers require an api-auth agent
+agent = "opencode"           # default open harness (bitterblossom-935); reflex triggers require an api-auth agent
 substrate = "sprites"        # local | sprites
 
 [workspace]

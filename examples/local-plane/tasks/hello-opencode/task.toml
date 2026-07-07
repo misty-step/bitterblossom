@@ -1,0 +1,10 @@
+agent = "opencode-hello"     # the default open-harness agent (bitterblossom-935)
+substrate = "local"          # local substrate: dev/test machinery (plane sets dev = true)
+
+[budget]
+timeout_minutes = 2          # enforced: wall-clock kill
+max_runs_per_day = 20        # enforced pre-dispatch; generous for a demo
+max_cost_per_run_usd = 0.05
+
+[[trigger]]
+kind = "manual"              # bb run hello-opencode

@@ -219,6 +219,94 @@ fn parse_omp_jsonl_events_sums_usage_and_keeps_last_text() {
 }
 
 #[test]
+fn opencode_command_carries_provider_slash_model_and_reads_lane_card() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "opencode"
+model = "deepseek/deepseek-v4-flash"
+args = ["--variant", "high"]
+"#,
+    )
+    .unwrap();
+    let cmd = build_command(&agent, &bitterblossom::spec::TaskBudget::default()).unwrap();
+    let joined = cmd.join(" ");
+    assert_eq!(cmd[0], "opencode");
+    assert!(joined.contains("run"), "{joined}");
+    assert!(joined.contains("LANE_CARD.md"), "{joined}");
+    assert!(joined.contains("--format"), "{joined}");
+    assert!(joined.contains("json"), "{joined}");
+    assert!(joined.contains("--model"), "{joined}");
+    assert!(
+        joined.contains("openrouter/deepseek/deepseek-v4-flash"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("--variant' 'high") || joined.contains("--variant high"),
+        "{joined}"
+    );
+}
+
+/// opencode has no CLI flag for turn/iteration/tool-action caps today, so a
+/// budget or policy that requests one must fail before command construction
+/// rather than silently dispatching an unbounded run.
+#[test]
+fn opencode_command_rejects_turn_cap_before_build() {
+    let agent: bitterblossom::spec::AgentSpec = toml::from_str(
+        r#"
+harness = "opencode"
+model = "deepseek/deepseek-v4-flash"
+[policy]
+turn_cap = 5
+"#,
+    )
+    .unwrap();
+    let err = build_command(&agent, &TaskBudget::default()).unwrap_err();
+    assert!(format!("{err:#}").contains("turn_cap/iteration_cap is not enforceable"));
+}
+
+#[test]
+fn parse_opencode_events_sums_usage_and_keeps_last_text() {
+    let out = concat!(
+        r#"{"type":"step_start","part":{"type":"step-start"}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}"#,
+        "\n",
+        r#"{"type":"step_finish","part":{"type":"step-finish","cost":0.002,"tokens":{"input":100,"output":10}}}"#,
+        "\n",
+        r#"{"type":"step_start","part":{"type":"step-start"}}"#,
+        "\n",
+        r#"{"type":"text","part":{"type":"text","text":"BB-OC-OK"}}"#,
+        "\n",
+        r#"{"type":"step_finish","part":{"type":"step-finish","cost":0.0005,"tokens":{"input":20,"output":3}}}"#
+    );
+    let parsed = parse_output("opencode", out).unwrap();
+    assert_eq!(parsed.result, "BB-OC-OK");
+    assert_eq!(parsed.stats.tokens_in, Some(120));
+    assert_eq!(parsed.stats.tokens_out, Some(13));
+    assert_eq!(parsed.stats.turns, Some(2));
+    assert_eq!(parsed.stats.cost_usd, Some(0.0025));
+}
+
+#[test]
+fn partial_opencode_progress_counts_streamed_tool_actions() {
+    let out = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}"#,
+        "\n",
+        r#"{"type":"step_finish","part":{"type":"step-finish","cost":0.001,"tokens":{"input":10,"output":5}}}"#,
+    );
+    let progress = parse_partial_progress("opencode", out);
+    assert_eq!(progress.stats.turns, Some(1));
+    assert_eq!(progress.tool_actions, Some(1));
+}
+
+#[test]
+fn parse_opencode_rejects_incomplete_runs() {
+    assert!(parse_output("opencode", "not json").is_err());
+    let no_text = r#"{"type":"step_finish","part":{"type":"step-finish","cost":0.0,"tokens":{"input":1,"output":1}}}"#;
+    assert!(parse_output("opencode", no_text).is_err());
+}
+
+#[test]
 fn parse_command_accepts_structured_result_with_usage() {
     let out = concat!(
         "cerberus noisy stdout\n",

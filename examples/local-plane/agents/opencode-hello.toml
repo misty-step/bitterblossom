@@ -1,0 +1,9 @@
+# The default open-harness agent (bitterblossom-935): opencode on
+# OpenRouter. No turn/tool-action cap support yet (no CLI flag exists for
+# either), so this agent — like every opencode agent today — must not
+# declare `policy.turn_cap`/`tool_action_cap`/`iteration_cap`; build_command
+# refuses to dispatch an unenforceable cap rather than run unbounded.
+version = 1
+harness = "opencode"
+model = "deepseek/deepseek-v4-flash" # provider defaults to "openrouter"
+secrets = ["OPENROUTER_API_KEY"]     # resolved per-exec, never persisted

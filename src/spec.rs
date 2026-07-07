@@ -662,7 +662,7 @@ impl Plane {
                      Anthropic/OpenAI API keys are forbidden on this plane",
                     agent.harness
                 ),
-                ("pi" | "omp", AuthClass::Subscription) => {
+                ("pi" | "omp" | "opencode", AuthClass::Subscription) => {
                     bail!(
                         "agent '{name}': {} has no subscription auth; use auth = \"api\"",
                         agent.harness

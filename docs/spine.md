@@ -93,9 +93,13 @@ max_cost_per_day_usd = 25.0       # global daily ceiling, enforced pre-dispatch
 ```toml
 version = 1                       # bump on any change; recorded on every attempt
 role = "reviewer"                 # operator-facing role: builder, critic, verifier, gardener...
-harness = "pi"                    # claude | codex | pi | omp | command
+harness = "opencode"              # claude | codex | opencode | pi | omp | command
+                                  # opencode is the default open harness (bitterblossom-935);
+                                  # flip to pi only for turn_cap/tool_action_cap/iteration_cap
+                                  # enforcement -- opencode has no CLI flag for any of the
+                                  # three yet, so build_command refuses a capped opencode agent.
 model = "moonshotai/kimi-k2.6"
-provider = "openrouter"           # pi/omp only; defaults to "openrouter"
+provider = "openrouter"           # opencode/pi/omp only; defaults to "openrouter"
 auth = "api"                      # api | subscription (defaults by harness)
 bin = "pi"                        # optional: override the harness binary path
 args = []                         # optional: extra CLI args appended verbatim
