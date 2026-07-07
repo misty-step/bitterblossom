@@ -1,6 +1,8 @@
 # Skill Workload Usefulness Scorecard
 
-Date: 2026-07-05, updated 2026-07-06 with five live dispatch attempts
+Date: 2026-07-05, updated 2026-07-06 with five live dispatch attempts,
+updated 2026-07-07 with the operator-named real targets and the first two
+completed real dispatches.
 Backlog: 122 (closes the docs-sync/CI-auditor epic opened by 120/121)
 
 Tracks whether the two skill-backed workloads this epic shipped --
@@ -11,14 +13,24 @@ disposition. This is the evidence ledger `docs/rollout-scorecards.md`'s
 promotion doctrine requires before either PR-only companion is considered
 for the next authority level.
 
-## Status: mechanism complete, one-week operational proof outstanding
+## Status: the one-week evidence clock has started
+
+Operator-named real targets (2026-07-07): `docs-sync` -> `misty-step/powder`
+and `misty-step/canary`; `ci-audit` -> `misty-step/crucible`. Before firing
+against them, fixed the `output_bytes_cap` gap flagged below (real evidence,
+not a guess -- see "Real Dispatches" below) and fired the first two real
+dispatches: one `ci-audit` against `misty-step/crucible`, one `docs-sync`
+against `misty-step/powder`. **Both completed with a written `REPORT.json`**
+-- the first completed reports in this scorecard's history. `docs-sync`
+against `misty-step/canary` has not yet been fired; that is the next
+increment, not a blocker on the clock already running.
 
 This card's full acceptance -- "within one week of enabling docs-sync/
 CI-auditor flows, at least two repos receive useful docs-sync PRs and at
 least one repo receives a useful CI-audit PR or report with accepted next
-action" -- is an **operational** milestone that requires real elapsed time
-against real target repos, not something a single session can manufacture
-honestly. What this card actually delivers today:
+action" -- is still an **operational** milestone that needs real elapsed
+time and a human review of the two reports below (see "What's Actually
+Left"). What this card delivers today:
 
 - This scorecard mechanism: the table below, ready to be filled in as real
   dispatches land.
@@ -116,49 +128,76 @@ name: run id, repo, trigger, model/provider/key path, cost, the exact
 commands used to verify, the PR link when one exists, the accepted/rejected
 outcome (and who reviewed it), and residual risk.
 
+## Real Dispatches (2026-07-07, operator-named targets)
+
+Output-cap fix, evidence-grounded: both live overruns above (attempts 2
+and 4) hit a repo-size ceiling the shipped default never anticipated. Set
+`output_bytes_cap = 150000` for both `ci-auditor` and `docs-watcher` --
+>2.7x the highest real observed value (55287 bytes) -- before firing
+either dispatch below. Not a guess: sized from the same-scorecard's own
+prior real evidence, per the instruction on this card.
+
+Both dispatches ran from a throwaway scratch copy of the checked-in
+`examples/ci-audit-plane`/`examples/docs-sync-plane` templates (not
+committed) with `workspace.repos` repointed at the real target and a
+`bb keys mint`-scoped OpenRouter key (spend cap $0.75, revoked
+immediately after use). GH auth was the operator's own `gh auth token`.
+
+| Run id | Task | Repo | Cost | Duration | Outcome | What it found |
+|---|---|---|---|---|---|---|
+| `cab7b2ff727a` | ci-audit | `misty-step/crucible` | $0.023 | 218s | `success`, `REPORT.json` written | 5 current gates identified (leak-scan, fmt, clippy, test, build, rustdoc), 5 missing/weak gates found. Top finding (critical): CI's fast/slow jobs are not required status checks on `master` branch protection, so a failing-CI PR can currently merge. Filed as `crucible-997` for operator review (report-only; not an accepted action until a human reviews it). |
+| `8f12dd532767` | docs-sync | `misty-step/powder` | $0.043 | 287s | `success`, `REPORT.json` written | Verified a real recent commit (`powder-951`, "genericize operator topology literals") fully addressed every drift finding the watcher could identify (hardcoded tailnet hostnames, operator home paths, tracked local-instance state) -- `recommended_changes: none_required`. A legitimate "checked, nothing further needed" result, not a null run: `card.md`'s own oracle covers this outcome explicitly. |
+
+`misty-step/canary` (the second operator-named `docs-sync` target) has not
+yet been dispatched -- natural next increment, not required to start the
+one-week clock (which starts now, from the two dispatches above).
+
 ## What's Actually Left
 
 To close the full bitterblossom-122 acceptance for real:
 
-1. **Operator picks target repos.** `docs-sync`/`docs-sync-pr` and
-   `ci-audit`/`ci-audit-pr` currently ship with placeholder `example-org/*`
-   allowlists (`examples/docs-sync-plane`, `examples/ci-audit-plane`).
-   Someone with the authority to say "audit/watch repo X for real" needs to
-   pick at least two real repos for docs-sync and at least one for
-   ci-audit, and those allowlists need updating in a real operator instance
-   plane (not the checked-in example templates, which stay generic). This
-   session's throwaway self-audit of `misty-step/bitterblossom` proved the
-   mechanism but is not a substitute for that operator decision.
-2. **Tune `output_bytes_cap` for real-repo audits before the first
-   production dispatch.** Both live attempts against bitterblossom's actual
-   CI surface overran the cap (24000, then 48000 doubled) -- a real repo's
-   workflow/test/lint surface produces materially more investigative output
-   than the toy `example-org/product-api` template. Size the cap from a
-   completed run's actual byte count once the operator names a real target
-   repo, not by guessing.
+1. ~~**Operator picks target repos.**~~ **Done 2026-07-07**: `docs-sync`
+   -> `misty-step/powder` + `misty-step/canary`; `ci-audit` ->
+   `misty-step/crucible`. A real operator instance plane still needs a
+   durable, committed home for these bindings (today's dispatches ran from
+   a throwaway scratch copy per run, not a standing plane) -- that is the
+   one piece of infra debt this pass did not pay down.
+2. ~~**Tune `output_bytes_cap`.**~~ **Done 2026-07-07**: raised to 150000
+   for both `ci-auditor` and `docs-watcher` (see "Real Dispatches" above),
+   sized from this scorecard's own prior real evidence.
 3. **Let report-only run for real, repeatedly, across those repos, and let
-   at least one attempt actually complete a `REPORT.json`.** Cron or
-   repeated manual dispatch, accumulating scorecard rows here. None of this
-   session's five attempts reached that bar.
+   at least one attempt actually complete a `REPORT.json`.** Partially
+   done: two dispatches fired 2026-07-07, both completed with a written
+   `REPORT.json` (see "Real Dispatches" above). Still needed: repeated runs
+   over the coming week (cron or manual), plus the `misty-step/canary`
+   docs-sync dispatch that hasn't run yet.
 4. **Operator approves at least one PR-only dispatch per family** (no bot-
    identity blocker remains per the correction above -- just the ordinary
-   "explicit approval naming repo and token" rule).
+   "explicit approval naming repo and token" rule). Not yet done; both
+   dispatches above were report-only.
 5. **A human reviews each resulting PR/report and records accepted or
    rejected** in the scorecard table -- "the agent said it was useful" does
    not count; per `docs/rollout-scorecards.md`'s doctrine, "'it has been
-   working' is not evidence."
-6. **Elapsed time**: the acceptance's "within one week" window starts when
-   step 3 begins in earnest, not when this card closes.
+   working' is not evidence." The `crucible-997` finding (branch
+   protection) is filed and awaiting that review; the `powder` docs-sync
+   result needs the same disposition recorded once a human looks at it.
+6. **Elapsed time**: the one-week window starts 2026-07-07, the day of the
+   first two completed dispatches above.
 
 ## Friction Filed
 
 - `output_bytes_cap` undersized for real-repo audits (see the scorecard
-  table, attempts 2 and 4): the builder role's Powder MCP surface has no
-  card-creation tool, so this is recorded as a comment on bitterblossom-122
-  (not a fabricated new card id) naming the exact gap for whoever grooms the
-  backlog next -- a genuine product tuning issue that will recur for every
-  repo more complex than the shipped `example-org/*` template, not unique
-  to this dogfood session.
+  table, attempts 2 and 4): **resolved 2026-07-07** -- raised to 150000 for
+  both `ci-auditor` and `docs-watcher`, before firing either real dispatch
+  above (see "Real Dispatches"). Still worth carrying forward: this
+  reappears for every future report-only agent template shipped with the
+  toy `example-org/*` default, not unique to these two.
+- Infra debt named, not resolved: today's two real dispatches ran from a
+  throwaway scratch plane copy per dispatch (mirroring the prior session's
+  self-audit pattern), not a durable operator-instance plane with these
+  bindings committed somewhere real. Building that standing home is the
+  natural next increment once repeated dispatch over the coming week makes
+  re-copying a scratch plane every time impractical.
 - The stale bot-identity doctrine found above was corrected in place rather
   than filed as a separate friction card, since it was a direct, mechanical
   fix to existing prose this card's own scope already touches.
