@@ -96,6 +96,23 @@ impl LocalSession {
         };
         env.push(("HOME".to_string(), home));
         env.extend(self.secrets.iter().cloned());
+        // bitterblossom-955: force OFF 1Password desktop-app settings loading
+        // for every local workload, regardless of the parent env. On macOS
+        // Tahoe `op` -- even in pure service-account mode with the token above
+        // -- otherwise opens ~/Library/Group Containers/…1password to load
+        // desktop settings; Tahoe App Data Protection blocks that open() behind
+        // the "op would like to access data from other apps" TCC prompt, so op
+        // hangs on the syscall and strands a wedged `op daemon --background`
+        // zombie per call. Setting it false is the load-bearing fix
+        // (OP_CACHE=false alone does not stop the hang). Set, not passed
+        // through, so a workload is immune even when the spawning context
+        // (bash -c, MCP bootstrap, cleared-env runner) never exported it.
+        // Pushed last so nothing can override it. Harmless off macOS: there is
+        // no desktop app to skip loading.
+        env.push((
+            "OP_LOAD_DESKTOP_APP_SETTINGS".to_string(),
+            "false".to_string(),
+        ));
         Ok(env)
     }
 }
@@ -363,5 +380,34 @@ mod tests {
 
         std::env::remove_var("OP_SERVICE_ACCOUNT_TOKEN");
         assert_eq!(result.stdout, "test-op-token-value");
+    }
+
+    #[test]
+    fn workload_env_forces_op_load_desktop_app_settings_false() {
+        // bitterblossom-955: a local workload must always see
+        // OP_LOAD_DESKTOP_APP_SETTINGS=false so `op` never hangs on the macOS
+        // Tahoe desktop-settings open(). Forced, not passed through: set the
+        // parent to a hostile value and prove the spawned workload still sees
+        // false. Runs a real subprocess through execute() (clear_env=true).
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("OP_LOAD_DESKTOP_APP_SETTINGS", "true");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = LocalSubstrate.acquire("local", tmp.path()).unwrap();
+        let result = session
+            .execute(
+                &[
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "printf '%s' \"$OP_LOAD_DESKTOP_APP_SETTINGS\"".to_string(),
+                ],
+                None,
+                Duration::from_secs(5),
+                None,
+            )
+            .unwrap();
+
+        std::env::remove_var("OP_LOAD_DESKTOP_APP_SETTINGS");
+        assert_eq!(result.stdout, "false");
     }
 }
