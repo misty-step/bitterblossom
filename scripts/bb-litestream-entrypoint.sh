@@ -70,11 +70,6 @@ fi
 mkdir -p "$(dirname "$db_path")" "$(dirname "$config_path")" "$(dirname "$heartbeat_path")" "$(dirname "$socket_path")"
 rm -f "$socket_path"
 
-if [ "$1" = "bb" ] && [ "${2:-}" = "serve" ]; then
-  # Create the SQLite ledger before Litestream starts watching the path.
-  BB_PLANE_DIR="$plane_dir" "$1" status --json >/dev/null
-fi
-
 {
   printf '%s\n' 'socket:'
   printf '%s\n' '  enabled: true'
@@ -82,8 +77,20 @@ fi
   printf '%s\n' 'dbs:'
   printf '  - path: %s\n' "$db_path"
   printf '%s\n' '    replica:'
+  # shellcheck disable=SC2016 # Keep the secret as a Litestream env reference.
   printf '      url: ${%s}\n' "$replica_env_name"
 } >"$config_path"
+
+if [ ! -f "$db_path" ]; then
+  log "bb-litestream-entrypoint: database missing; attempting Litestream restore"
+  litestream restore -if-replica-exists -o "$db_path" -config "$config_path" "$db_path" >/dev/null 2>&1 \
+    || fail "Litestream restore failed for missing database"
+fi
+
+if [ "$1" = "bb" ] && [ "${2:-}" = "serve" ]; then
+  # Create the SQLite ledger after any replica restore opportunity.
+  BB_PLANE_DIR="$plane_dir" "$1" status --json >/dev/null
+fi
 
 litestream replicate -config "$config_path" >/dev/null 2>&1 &
 litestream_pid=$!

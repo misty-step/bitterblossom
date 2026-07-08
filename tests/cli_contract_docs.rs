@@ -281,6 +281,9 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let entrypoint = read("scripts/bb-litestream-entrypoint.sh");
     assert!(entrypoint.contains("litestream replicate -config \"$config_path\""));
+    assert!(entrypoint.contains(
+        "litestream restore -if-replica-exists -o \"$db_path\" -config \"$config_path\" \"$db_path\""
+    ));
     assert!(entrypoint
         .contains("litestream sync -socket \"$socket_path\" -wait -timeout \"$sync_timeout\""));
     assert!(entrypoint.contains("url: ${%s}"));
