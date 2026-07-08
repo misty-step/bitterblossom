@@ -12,7 +12,9 @@ RUN cargo build --release --locked --manifest-path vendor/roster/Cargo.toml --bi
 FROM debian:bookworm-slim
 ARG SPRITE_VERSION=v0.0.1-rc44
 ARG LITESTREAM_VERSION=0.5.13
-ARG TARGETARCH
+# BuildKit auto-populates TARGETARCH; kaniko (DO App Platform) does not -- default
+# to amd64 so both builders work. BuildKit still overrides per-platform.
+ARG TARGETARCH=amd64
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl \
     && rm -rf /var/lib/apt/lists/*
