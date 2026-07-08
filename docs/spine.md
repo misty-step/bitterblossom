@@ -407,7 +407,7 @@ Deployment contract:
   `CERBERUS_REVIEW_GH_TOKEN` for bot/app posting identity; operator
   `GH_TOKEN` is for other explicit GitHub-backed dispatch only.
 - GitHub `pull_request` webhooks for the reviewed repo subset point at
-  `https://bitterblossom-plane.fly.dev/hooks/review`; the current subset is
+  `https://bitterblossom-plane-9xpa5.ondigitalocean.app/hooks/review`; the current subset is
   `misty-step/bitterblossom`, enforced again by the task filter. In-scope
   `opened`, `ready_for_review`, and `synchronize` deliveries create the review
   run and expand into the submission storm automatically: one submission keyed
@@ -421,7 +421,7 @@ Deployment contract:
   plane's enforced `max_cost_per_day_usd` daily ceiling — not by a per-run
   dollar cap.
 - GitHub `check_suite` webhooks for failed GitHub Actions suites point at
-  `https://bitterblossom-plane.fly.dev/hooks/ci-diagnose`; the first slice is
+  `https://bitterblossom-plane-9xpa5.ondigitalocean.app/hooks/ci-diagnose`; the first slice is
   report-only and may recommend a builder command, but never creates one.
 - Health and recovery checks after a host restart are: unauthenticated
   `GET /health`, `GET /api/tasks` with `Authorization: Bearer $BB_API_TOKEN`,
@@ -509,7 +509,7 @@ machinery:
 
 ```sh
 # at session start -- announce yourself, capture the run id
-export BB_URL=https://bitterblossom-plane.fly.dev BB_API_TOKEN=…   # from mint/op at point of use
+export BB_URL=https://bitterblossom-plane-9xpa5.ondigitalocean.app BB_API_TOKEN=…   # from mint/op at point of use
 id=$(BB_REGISTER_AGENT=<lane> BB_REGISTER_ROLE=interactive-lead \
      BB_REGISTER_REPO=<repo> BB_REGISTER_BRIEF_HASH=<campaign> \
      BB_REGISTER_PLANE=<campaign-label> \
@@ -533,7 +533,7 @@ role/substrate contracts named on the ratified card. Until then, external rows
 are observability receipts, not dispatch leases.
 - Canary self-report: `src/canary.rs` posts a `bb-plane` check-in every 60s
   and ad hoc error reports to canary-obs, gated on two Fly secrets —
-  `CANARY_ENDPOINT` (e.g. `https://canary-obs.fly.dev`) and
+  `CANARY_ENDPOINT` (e.g. `https://canary-obs-3jzhr.ondigitalocean.app`) and
   `CANARY_INGEST_KEY` (a scoped `ingest-only` key bound to service
   `bitterblossom-plane`, minted via canary's `POST /api/v1/keys`). Both must
   be set or the module no-ops with a one-time stderr warning. The check-in name is

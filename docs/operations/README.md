@@ -8,7 +8,7 @@ Canonical app and state:
 
 ```sh
 export BB_FLY_APP=bitterblossom-plane
-export BB_URL=https://bitterblossom-plane.fly.dev
+export BB_URL=https://bitterblossom-plane-9xpa5.ondigitalocean.app
 export BB_RUNTIME_PLANE=/path/to/private/plane
 ```
 

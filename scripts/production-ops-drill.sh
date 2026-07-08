@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 MODE=local
 BB_BIN=${BB_BIN:-./target/debug/bb}
-BB_URL=${BB_URL:-https://bitterblossom-plane.fly.dev}
+BB_URL=${BB_URL:-https://bitterblossom-plane-9xpa5.ondigitalocean.app}
 BB_FLY_APP=${BB_FLY_APP:-bitterblossom-plane}
 TMP=
 SERVER_PID=
