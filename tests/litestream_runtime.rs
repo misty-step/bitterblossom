@@ -33,7 +33,7 @@ set -eu
 printf 'bb:%s\n' "$*" >>"$BB_TEST_LOG"
 if [ "$1" = "status" ]; then
   mkdir -p "$(dirname "$BB_LITESTREAM_DB_PATH")"
-  : >"$BB_LITESTREAM_DB_PATH"
+  [ -f "$BB_LITESTREAM_DB_PATH" ] || : >"$BB_LITESTREAM_DB_PATH"
   printf '{}\n'
   exit 0
 fi
@@ -110,6 +110,94 @@ esac
 
     let heartbeat = fs::read_to_string(heartbeat_path).unwrap();
     assert!(heartbeat.trim_end().ends_with('Z'));
+}
+
+#[test]
+fn litestream_entrypoint_restores_missing_db_before_initializing_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let log_path = dir.path().join("calls.log");
+    let db_path = dir.path().join("plane/.bb/plane.db");
+    let config_path = dir.path().join("litestream.yml");
+    let heartbeat_path = dir.path().join("plane/.bb/backup-last-success");
+    let socket_path = dir.path().join("litestream.sock");
+
+    write_executable(
+        &bin_dir.join("bb"),
+        r#"#!/bin/sh
+set -eu
+printf 'bb:%s\n' "$*" >>"$BB_TEST_LOG"
+if [ "$1" = "status" ]; then
+  mkdir -p "$(dirname "$BB_LITESTREAM_DB_PATH")"
+  [ -f "$BB_LITESTREAM_DB_PATH" ] || : >"$BB_LITESTREAM_DB_PATH"
+  printf '{}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  sleep 1
+  exit 0
+fi
+exit 9
+"#,
+    );
+    write_executable(
+        &bin_dir.join("litestream"),
+        r#"#!/bin/sh
+set -eu
+printf 'litestream:%s\n' "$*" >>"$BB_TEST_LOG"
+case "$1" in
+  restore)
+    mkdir -p "$(dirname "$BB_LITESTREAM_DB_PATH")"
+    printf 'restored\n' >"$BB_LITESTREAM_DB_PATH"
+    exit 0
+    ;;
+  replicate) sleep 30 ;;
+  sync) exit 0 ;;
+  *) exit 0 ;;
+esac
+"#,
+    );
+
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(repo_root().join("scripts/bb-litestream-entrypoint.sh"))
+        .env("PATH", path)
+        .env("BB_TEST_LOG", &log_path)
+        .env("BB_TEST_ENTRYPOINT_ONCE", "1")
+        .env("BB_PLANE_DIR", dir.path().join("plane"))
+        .env("BB_LITESTREAM_REQUIRED", "1")
+        .env("BB_LITESTREAM_DB_PATH", &db_path)
+        .env("BB_LITESTREAM_CONFIG", &config_path)
+        .env("BB_LITESTREAM_REPLICA_URL_ENV", "LITESTREAM_REPLICA_URL")
+        .env("LITESTREAM_REPLICA_URL", "s3://example/plane.db")
+        .env("BB_LITESTREAM_HEARTBEAT_PATH", &heartbeat_path)
+        .env("BB_LITESTREAM_SOCKET_PATH", &socket_path)
+        .env("BB_LITESTREAM_SYNC_INTERVAL_SECONDS", "1")
+        .env("BB_LITESTREAM_SYNC_TIMEOUT_SECONDS", "5")
+        .args(["bb", "serve"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(log_path).unwrap();
+    let restore_index = log
+        .find("litestream:restore -if-replica-exists")
+        .expect("missing restore call");
+    let status_index = log.find("bb:status").expect("missing status call");
+    let serve_index = log.find("bb:serve").expect("missing serve call");
+    assert!(restore_index < status_index, "{log}");
+    assert!(restore_index < serve_index, "{log}");
+    assert_eq!(fs::read_to_string(db_path).unwrap(), "restored\n");
 }
 
 #[test]
