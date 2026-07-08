@@ -70,6 +70,18 @@ fi
 mkdir -p "$(dirname "$db_path")" "$(dirname "$config_path")" "$(dirname "$heartbeat_path")" "$(dirname "$socket_path")"
 rm -f "$socket_path"
 
+# Ephemeral-disk substrates (DO App Platform) have no volume carrying the
+# plane's workload config (plane.toml, agents/, tasks/). When
+# BB_PLANE_CONFIG_URL is set and config is absent, fetch and unpack it before
+# anything touches the plane dir. The URL is typically a presigned
+# object-store link: treat it as a secret, never log it.
+if [ -n "${BB_PLANE_CONFIG_URL:-}" ] && [ ! -f "$plane_dir/plane.toml" ]; then
+  log "bb-litestream-entrypoint: plane config missing; fetching bootstrap archive"
+  curl -fsSL "$BB_PLANE_CONFIG_URL" | tar xz -C "$plane_dir" \
+    || fail "plane config bootstrap fetch failed"
+  [ -f "$plane_dir/plane.toml" ] || fail "plane config bootstrap did not materialize plane.toml"
+fi
+
 {
   printf '%s\n' 'socket:'
   printf '%s\n' '  enabled: true'
