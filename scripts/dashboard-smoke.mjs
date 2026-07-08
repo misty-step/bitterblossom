@@ -111,25 +111,25 @@ try {
     const authVisible = await page.locator('#authForm').isVisible();
     if (!authVisible) fail(`${dims.width}px: auth form not visible on fresh load`);
 
-    // Chromium delivers console events asynchronously: under CI load the
-    // by-design pre-auth 401 (documented above) can flush AFTER the error
-    // listener attaches, failing the run on an error we explicitly expect.
-    // networkidle guarantees the unauthenticated fetch has fully settled
-    // before assertions begin; post-auth 401s still fail the gate.
-    await page.waitForLoadState('networkidle');
-
-    const consoleErrors = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
-    });
-    page.on('pageerror', (err) => consoleErrors.push(String(err)));
-
     // 4. Behavioral click path: submit the token, then switch to the Runs
     // view -- the same auth-then-navigate path a real operator takes.
     await page.fill('#authToken', TOKEN);
     await page.click('#authForm button[type="submit"]');
     await page.waitForSelector('.shell:not(.is-hidden)', { timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(300);
+
+    // Console assertions attach only NOW, once the shell is unlocked: the
+    // dashboard polls continuously and every pre-auth poll 401s by design
+    // (see above), so a listener attached any earlier races those expected
+    // errors -- observed as intermittent CI failures at 1440px (and
+    // networkidle can never be reached on a polling page). From this point
+    // every request carries the token, so a 401 is a real regression and
+    // still fails the gate.
+    const consoleErrors = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => consoleErrors.push(String(err)));
     await page.click('[data-view-button="runs"]');
     await page.waitForTimeout(300);
     const runsActive = await page.locator('[data-view-button="runs"].is-active').count();
