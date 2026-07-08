@@ -111,6 +111,13 @@ try {
     const authVisible = await page.locator('#authForm').isVisible();
     if (!authVisible) fail(`${dims.width}px: auth form not visible on fresh load`);
 
+    // Chromium delivers console events asynchronously: under CI load the
+    // by-design pre-auth 401 (documented above) can flush AFTER the error
+    // listener attaches, failing the run on an error we explicitly expect.
+    // networkidle guarantees the unauthenticated fetch has fully settled
+    // before assertions begin; post-auth 401s still fail the gate.
+    await page.waitForLoadState('networkidle');
+
     const consoleErrors = [];
     page.on('console', (msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
