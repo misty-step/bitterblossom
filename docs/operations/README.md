@@ -87,9 +87,21 @@ For a machine-user fallback, use a fine-grained PAT restricted to the reviewed
 repositories and the same permissions. The fallback is acceptable only while
 the distinct bot identity is visible in the `gh api ... user.login` readback.
 
-The review model key path is also name-only. The runtime
-`agents/cerberus-reviewer.toml` should declare
-`secrets = ["CERBERUS_REVIEW_GH_TOKEN", "OPENROUTER_API_KEY"]` plus:
+The review model key path is also name-only, but it needs **two distinct**
+OpenRouter credentials, not one -- see bitterblossom-942 below for why. The
+runtime `agents/cerberus-reviewer.toml` should declare:
+
+```toml
+secrets = [
+  "CERBERUS_REVIEW_GH_TOKEN",
+  "OPENROUTER_API_KEY",
+  "CERBERUS_OPENROUTER_PROVISIONING_KEY_ENV",
+  "CERBERUS_REVIEW_OPENROUTER_PROVISIONING_KEY",
+]
+```
+
+Optionally, BB's own per-workload capped-key minting can also govern the plain
+`OPENROUTER_API_KEY` chat-completion path via:
 
 ```toml
 [policy]
@@ -109,11 +121,33 @@ CERBERUS_REVIEW_GH_TOKEN="$CERBERUS_REVIEW_GH_TOKEN" \
   ./target/debug/bb --config "$BB_RUNTIME_PLANE" preflight review --json
 ```
 
-`OPENROUTER_MANAGEMENT_KEY` is used only by `bb keys` provisioning. It is not a
-declared review-run secret. At dispatch, BB injects the stored, capped
-per-workload-family key as `OPENROUTER_API_KEY`; the wrapper passes only that
-env name to Cerberus `--openrouter-scoped-key`, and Cerberus mints/revokes the
-per-review child key inside its isolated `container-opencode` path.
+**bitterblossom-942 (2026-07-09):** the design previously documented here
+conflated two different OpenRouter key types and 401'd every review run past
+the GH-auth check. OpenRouter's `/keys` management API (list/create/delete
+scoped keys) requires a genuine **Provisioning/Management API key** -- the
+same kind as `OPENROUTER_MANAGEMENT_KEY`, mintable only from the OpenRouter
+dashboard, and unable to make inference calls itself. A regular, capped
+inference key -- which is all `OPENROUTER_API_KEY` ever is, whether it is the
+plane's shared key or a `bb keys mint`-minted per-workload key -- **cannot**
+call `/keys`; OpenRouter returns 401. Cerberus's `--openrouter-scoped-key`
+flow needs the former to mint the latter (a per-review, capped, host-side-only
+key it then shadows into `OPENROUTER_API_KEY` for the sandboxed substrate), so
+it must be fed a real provisioning key through a name distinct from
+`OPENROUTER_API_KEY`:
+
+- `CERBERUS_OPENROUTER_PROVISIONING_KEY_ENV` -- a plain (non-secret) value
+  naming the env var Cerberus should read as its provisioning-key source;
+  live value: `CERBERUS_REVIEW_OPENROUTER_PROVISIONING_KEY`. The wrapper
+  (`scripts/cerberus-review-wrapper.sh`) forwards this name straight to
+  Cerberus's `--openrouter-provisioning-key-env` flag; no wrapper code
+  change was needed to fix this.
+- `CERBERUS_REVIEW_OPENROUTER_PROVISIONING_KEY` -- the actual Provisioning
+  key value. Currently the same value as `OPENROUTER_MANAGEMENT_KEY`,
+  declared under its own name for auditability and so a future dedicated
+  dashboard-minted key can be swapped in without touching code.
+
+`OPENROUTER_MANAGEMENT_KEY` itself remains `bb keys`-provisioning-only and is
+not declared on the review task.
 
 ## Live Plane Config On DO App Platform (Ephemeral Disk)
 
