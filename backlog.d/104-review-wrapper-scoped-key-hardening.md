@@ -69,3 +69,47 @@ The BB-side `cerberus-reviewer` agent is policy-bound so dispatch injects the
 stored, spend-capped per-workload-family OpenRouter key as `OPENROUTER_API_KEY`.
 Cerberus uses that only to mint/revoke a per-review child key for the contained
 review substrate.
+
+## Update (2026-07-09, bitterblossom-942)
+
+The "real review still succeeds end-to-end with both flags on" oracle item
+was never actually true in production: every prior review run failed earlier
+(GH-token, then an unrelated OpenRouter provisioning-key type mismatch fixed
+under bitterblossom-942), so `--harness container-opencode` was never
+exercised live. Once those earlier blockers were fixed, dispatch reached the
+container-opencode step and failed immediately: **the `lane-1` sprite host has
+neither `docker` nor `opencode` on `PATH`** (`sprite exec -- which docker
+opencode` both fail). M2 Docker isolation cannot function on this substrate
+as configured.
+
+Interim (applied live, not a permanent fix): `cerberus-reviewer.toml` now
+declares `CERBERUS_HARNESS` as a secrets-passthrough name, set to `omp` in the
+live app spec -- the wrapper's already-tested, already-supported non-container
+harness path (`cerberus_wrapper_can_override_to_omp_for_trusted_compatibility`
+in `tests/cerberus_wrapper.rs`). `omp` and `bun` are present on `lane-1`;
+`opencode` and `docker` are not. This is not a security regression versus the
+documented pre-M2 baseline (`trusted, first-party diffs` whitelist, "not an
+active incident") -- it makes today's already-unhardened reality (container
+mode was silently broken, not silently secure) explicit and working, rather
+than accidentally broken.
+
+Remaining oracle for this card: provision a Docker-capable substrate (or
+confirm sprites cannot nest containers and choose a different host) so M2
+isolation can actually run, then flip `CERBERUS_HARNESS` back off (removing
+the override reverts to the wrapper's `container-opencode` default).
+
+**`omp` fallback is also currently broken, not just `container-opencode`.**
+Two live runs against `omp` (`5d35f46063fa`, `54507e408872`) both failed
+deterministically in ~7-10s -- too fast for an actual model call -- with
+`Error: read emitted review artifact /tmp/cerberus-*/packet/review-artifact.json
+... No such file or directory`. This points at `omp` itself failing before or
+during the model call (likely a missing `omp`-specific auth/config on
+`lane-1` that the per-exec secret injection doesn't cover), not at anything
+in Bitterblossom's dispatch/wrapper layer -- both runs got cleanly past the
+OpenRouter provisioning-key step with no related warnings or errors. This is
+a **third, separate, still-open gap**: neither harness path (`container-opencode`:
+missing docker/opencode; `omp`: fails before writing the review artifact)
+currently produces a working end-to-end review on `lane-1`. Diagnosing the
+`omp` failure needs Cerberus-side investigation (its own repo) into what
+`omp` requires at runtime that isn't present in this sprite's per-exec
+environment -- out of scope for a Bitterblossom-side patch.
