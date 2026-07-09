@@ -1,0 +1,20 @@
+# Stub variant of plane/agents/powder-chewer.toml for the local drill: the
+# harness is a deterministic script (`command`), not a model, but it is
+# handed the SAME real Powder credentials the live agent would use --
+# resolved from the operator's own environment at dispatch time, exactly
+# like every other declared `secrets` entry. This is "real Powder, fake
+# execution": list-ready reads the live board; nothing else happens.
+version = 1
+role = "chewer"
+harness = "command"
+model = ""
+# Bare filename, resolved on PATH -- `local.rs`'s exec CWD is a temp
+# workspace directory, not the repo root, so a relative path here would not
+# resolve. Add this example directory to PATH before dispatching:
+#   export PATH="$PWD/examples/powder-chew-dev-plane:$PATH"
+bin = "powder-chew-dev-stub.sh"
+secrets = ["POWDER_API_BASE_URL", "POWDER_API_KEY"]
+skills = [
+  "harness-kit/deliver#end-to-end-ticket-delivery",
+  "bitterblossom/operator-min",
+]

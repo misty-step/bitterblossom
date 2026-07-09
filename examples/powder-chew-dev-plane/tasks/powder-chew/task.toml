@@ -1,0 +1,11 @@
+agent = "powder-chewer-stub"
+substrate = "local"
+required_artifacts = ["REPORT.json"]
+
+[budget]
+timeout_minutes = 5
+max_runs_per_day = 50
+max_cost_per_run_usd = 0.05
+
+[[trigger]]
+kind = "manual"

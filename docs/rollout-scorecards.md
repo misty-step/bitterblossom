@@ -199,6 +199,162 @@ Required artifacts:     REPORT.json (plan artifact)
 Operator approval needed for next level: yes
 ```
 
+### powder-chew (dry-run, shipping) — bitterblossom-959
+
+The pull-model counterpart to the push-model `dispatch-ready-builder`
+(`examples/powder-ready-plane`): instead of a Powder webhook dispatching the
+plane, `powder-chew` polls `powder list-ready` itself on a cron tick and acts
+on one eligible card. Scoped to an explicit repo allowlist (currently `sploot`
+only) declared in both `card.md` prose and `task.toml`.
+
+**Ships tonight at `dry-run`, not `PR-only` (operator ruling 2026-07-09).**
+The operator has not yet ruled on sploot branch protection or token scoping,
+and will not grant an unattended agent push authority on a repo whose default
+branch (`master`) accepts direct pushes (its protection is
+`required_status_checks` + `enforce_admins` only -- no "require a pull
+request" rule -- so a repo-scoped `GH_TOKEN` could push straight to it;
+status checks gate merges, not pushes). So the shipping variant:
+
+- polls `powder list-ready`, selects ONE eligible card by the same oracle
+  `backlog-chewer-dry-run` uses (ready + unclaimed + concrete acceptance +
+  S/M-sized + no destructive ask), and writes a full execution PLAN to
+  `REPORT.json` (acceptance checklist, gate command, proposed branch name,
+  expected changed paths, ordered implementation steps, best-effort proposed
+  diff, stop conditions);
+- **claims nothing, pushes nothing, opens no PR, mutates no Powder card,
+  touches no git remote.** `[rollout] authority = "dry-run"`;
+- carries **no `GH_TOKEN` in the agent's `secrets` list at all** -- the
+  no-push boundary is a capability control, not a prompt: an agent that
+  cannot authenticate to GitHub physically cannot push to `master`.
+
+The `PR-only` variant (which claims the card, works it against the target
+repo's gate, and opens one PR) is preserved verbatim in the repo, inert,
+ready to promote once branch protection and token scoping land:
+`plane/agents/powder-chewer-pr-only.toml.disabled`,
+`plane/tasks/powder-chew/task.pr-only.toml.disabled`, and
+`plane/tasks/powder-chew/card.pr-only.md.disabled` (bb's loaders read only
+`agents/*.toml` and exactly `tasks/<name>/task.toml`, so the `.disabled`
+siblings never load). Its scorecard block and the go-live hardening analysis
+that produced its pre-push-hook belt are retained below as the promotion
+target.
+
+```text
+Task family:            powder-chew
+Current authority:      dry-run
+Allowed actions:        poll Powder ready queue (allowlisted repos only, read-only), select one eligible card, write an execution plan to REPORT.json
+Forbidden actions:      claim, any Powder mutation, branch, push, PR, merge, deploy, repo clone/edit, any git remote operation, planning more than one card per run
+Evidence metrics:       every REPORT.json names exactly one selected card (or a clean no-op) with a full plan; 0 claims; 0 Powder mutations; 0 git operations; 0 repos touched; no-op runs produce a clean REPORT.json with zero side effects
+Promotion trigger:      dry-run scorecard green across the cron cadence PLUS an operator ruling on sploot branch protection + token scoping makes PR-only (below) eligible
+Rollback / hold trigger: any claim, Powder mutation, or git operation attempt (should be impossible -- no GH_TOKEN, read-only card use); or a plan naming more than one card
+Budget / cost cap:      12 runs/day, $0.50/run cap from task.toml; provider_spend_cap_usd 5.0 as a belt-and-suspenders child-key ceiling (bb keys mint powder-chewer), not sized per-run
+Duplicate-suppression key: n/a at dry-run (nothing is claimed or opened); becomes relevant only at PR-only (see below)
+Required artifacts:     REPORT.json
+Actor identity / token provisioning: a dedicated Powder API key (`bb-powder-chewer`, agent scope) minted via `powder key-create` against the deployed instance's own database, used READ-ONLY at this authority (bitterblossom-905 pre-check: the same key successfully drove a throwaway card through ready -> claimed -> running -> done -> abandoned end to end, 2026-07-09, proving it CAN drive lifecycle when promoted); NO GH_TOKEN at dry-run, by design
+Rollback / stop conditions: any side effect at all is an immediate hold -- the agent has no write path, so a side effect would indicate a config regression to root-cause before re-enabling
+Operator approval needed for next level: yes (plus the branch-protection ruling)
+```
+
+#### PR-only (promotion target, held) — bitterblossom-959
+
+Promote to this only after the operator rules on branch protection and token
+scoping. Reuses the already-proven push-model builder pattern
+(`dispatch-ready-builder`, live since bitterblossom-931) unchanged except for
+the trigger direction; Powder's own claim/status/work-log audit trail (one
+claim, one PR link, one comment, one work-log entry per attempt) is the
+evidence surface. The selection oracle is the same shape as the dry-run
+variant, plus a duplicate-PR-pressure check.
+
+Powder's `CardStatus` enum (`backlog`, `ready`, `claimed`, `running`,
+`awaiting_input`, `blocked`, `done`, `shipped`, `abandoned` -- verified
+against `powder-core::model::CardStatus` 2026-07-09) has no distinct "in
+review" state. `running` plus a linked PR plus a comment is the mapped
+in-flight-under-review state the card uses; `complete-card` is never called
+by this task, since merge (and therefore real completion) is out of its
+authority.
+
+```text
+Task family:            powder-chew
+Current authority:      PR-only
+Allowed actions:        poll Powder ready queue (allowlisted repos only), claim one eligible card, work it with the target repo's own gate, open exactly one pull request, link/comment/work-log the card, move status to running
+Forbidden actions:      merges, force-push, deploy, repo-settings/secret/branch-protection edits, direct push to a repo's default branch, complete-card, claiming a second card in the same run, touching any repo outside the allowlist, grinding past two failed gate attempts on the same card
+Evidence metrics:       every PR traces to exactly one claimed Powder card; 0 merges; 0 force-pushes; 0 repos touched outside the allowlist; at most one active claim/PR per card; no-op runs (no eligible card) produce a clean REPORT.json with zero side effects
+Promotion trigger:      scorecard green across >=2 weeks of cron runs against sploot makes guarded-land (merge behind CI/gate/review) eligible for this repo family + operator approval
+Rollback / hold trigger: any merge/force-push/settings-mutation attempt, any repo touched outside the allowlist, a second concurrently-claimed card, or grinding past the two-attempt gate-failure limit
+Budget / cost cap:      12 runs/day, $1.00/run cap from task.toml; provider_spend_cap_usd 5.0 as a belt-and-suspenders child-key ceiling (bb keys mint powder-chewer), not sized per-run
+Duplicate-suppression key: Powder's own claim (only one live claim per card) plus an agent-checked `gh pr list --search "<card-id> in:body" --state open` before claiming -- no BB-mechanism idempotency key today, since the trigger is a cron tick, not a webhook delivery with a natural dedupe id
+Required artifacts:     REPORT.json
+Actor identity / token provisioning: a dedicated Powder API key (`bb-powder-chewer`, agent scope) minted via `powder key-create` against the deployed instance's own database (bitterblossom-905 pre-check: an agent-scope key successfully drove a throwaway card through ready -> claimed -> running -> done -> abandoned end to end, 2026-07-09); GH_TOKEN is a required secret (a PR cannot open without it), the operator's own token scoped as narrowly as the operator chooses at dispatch time -- same superseded-bot-identity posture as canary-remediate
+Rollback / stop conditions: any single forbidden action above is an immediate hold -- revert this task to manual-only (drop the cron trigger) until root-caused
+Operator approval needed for next level: yes
+```
+
+**Go-live hardening pass (2026-07-09, fresh-context critic review before tonight's ship):**
+
+- **PR-only was prompt-only, now has a mechanical belt.** Checked sploot's live
+  GitHub branch protection on `master`: `required_status_checks` +
+  `enforce_admins`, no "require a pull request before merging" rule -- status
+  checks gate merges, not pushes, so a repo-scoped `GH_TOKEN` genuinely could
+  push straight to `master`. `task.toml`'s `pre_command` now installs a
+  client-side `pre-push` git hook in the same workspace clone the agent
+  works in, refusing any push whose remote ref is `refs/heads/master` (exit
+  1, no side effect); verified locally against both a refused `master` push
+  and an allowed feature-branch push before shipping. `card.md` forbids
+  `--no-verify`, `gh pr merge`, and enabling auto-merge explicitly. The
+  GitHub-side "require a pull request" rule is still the stronger,
+  server-side fix and remains the operator's call -- this hook is the belt
+  behind that ask being open, not a replacement for it.
+- **Claimed TTL is 3000s (50min), deliberately longer than the 45min
+  wall-clock kill**, not equal to it. `side_effect_policy = "kill"` SIGKILLs
+  an overrun run before its own `park-don't-grind` cleanup can execute, so a
+  timed-out run always strands its claim. Verified against
+  `powder-core::model::Card::is_ready_at` (2026-07-09): a `claimed`/`running`
+  card's freshness is re-evaluated on every `list-ready` call using the
+  claim's own `expires_at` -- once the TTL passes, the card reappears in
+  `list-ready` automatically, no re-claim attempt or background sweep
+  required. Residual risk: the card is invisible to `list-ready` (and to a
+  human reading the board) for that bounded window (worst case ~5 minutes
+  after a kill), not indefinitely.
+- **cost_usd non-null, verified against the exact shipped harness+model.**
+  `src/budget.rs`'s per-run/day cost ceilings only trigger when
+  `cost_usd` parses as `Some` (a harness that reports no usage silently
+  bypasses both the per-run cap and the daily ceiling). Ran one real
+  dispatch of the `powder-chewer` agent (harness `pi`, model
+  `deepseek/deepseek-v4-flash`) against the live `misty-step/lane-1` sprite
+  substrate with a trivial, no-Powder-access card
+  (`plane/tasks/powder-chewer-cost-smoke`, deleted after the smoke) and
+  confirmed via `bb runs show <id> --json` that `cost_usd` is a real
+  non-null number for this harness+model pair -- see the run id and value
+  recorded in this task's implementation report.
+- **Sprite substrate liveness, proven with a real dispatched run, not just a
+  raw `sprite exec` ping.** The same smoke run above executed through bb's
+  full lease/prepare/execute/collect/release pipeline against
+  `misty-step/lane-1` and returned `state: "success"` -- this is the same
+  host every currently-shipped task in this plane already uses
+  (`canary-triage`, `ci-audit-dogfood`, `self-drill`), reducing (not
+  eliminating) the bitterblossom-941 dead-sprite risk for the specific host
+  this task depends on.
+- **No repo-scoped daily cost ceiling exists in `bb` today.** `src/budget.rs`
+  (103 lines total) enforces exactly two live spend controls: a per-task
+  `max_runs_per_day` and the plane-global `[budget].max_cost_per_day_usd`
+  (`ledger.cost_today()`, summed across every task in the plane). A
+  `[[workload_repo]].budget_caps` field exists, but it only clamps what
+  budget values a *repo-owned* `.bb/task.toml` is allowed to request at
+  config-load time -- it is not a live per-repo spend tracker, and it only
+  applies to the separate `[[workload_repo]]` declaration shape (repo-owned
+  tasks), not a plane-owned task like this one. Building a real per-repo
+  daily ceiling would be a `src/budget.rs` change (new ledger query scoped
+  by repo, not by task) -- out of scope for this workload-as-config
+  delivery; a Rust mechanism gap, not a config gap, so no config key was
+  added that would silently do nothing. The practical mitigation available
+  today: this task's allowlist is one repo (`sploot`), so its own
+  `max_runs_per_day` (12) × `max_cost_per_run_usd` ($1.00) already bounds
+  sploot's worst-case exposure from this task to $12/day -- a de facto,
+  single-repo cap for as long as the allowlist stays at one repo. The
+  moment a second repo is added to the allowlist, this stops being a
+  meaningful per-repo bound (both repos would share the same task-level
+  ceiling) and a real `src/budget.rs` per-repo ceiling becomes a legitimate,
+  separately-shaped backlog card, not a config toggle to fake now.
+
 ### docs-sync (report-only) — backlog 120
 
 Extends the `examples/docs-sync-plane` starter into a production-shaped
