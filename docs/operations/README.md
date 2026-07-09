@@ -115,6 +115,59 @@ per-workload-family key as `OPENROUTER_API_KEY`; the wrapper passes only that
 env name to Cerberus `--openrouter-scoped-key`, and Cerberus mints/revokes the
 per-review child key inside its isolated `container-opencode` path.
 
+## Live Plane Config On DO App Platform (Ephemeral Disk)
+
+DO App Platform gives `bitterblossom-plane` no persistent volume, so
+`plane.toml`/`agents/`/`tasks/` cannot live baked into the image or on a
+mounted disk the way they did on the Fly volume above. Instead,
+`scripts/bb-litestream-entrypoint.sh` fetches and unpacks a tarball from
+`BB_PLANE_CONFIG_URL` (a presigned Spaces link, set as an app-spec secret)
+into `$BB_PLANE_DIR` on every fresh container boot, only when `plane.toml` is
+absent. The tarball itself is the actual source of truth for what workload
+config is live — this repo's local `plane/` directory (gitignored) is a
+separate dev/test plane, not a mirror of it.
+
+Current location: `s3://misty-step-litestream/bb-plane/plane-config-live.tgz`
+(DO Spaces, `nyc3`; `DO_SPACES_KEY`/`DO_SPACES_SECRET` sourced from
+`~/.secrets`). To change a live agent or task config:
+
+```sh
+AWS_ACCESS_KEY_ID="$DO_SPACES_KEY" AWS_SECRET_ACCESS_KEY="$DO_SPACES_SECRET" \
+  aws --endpoint-url https://nyc3.digitaloceanspaces.com s3 cp \
+  s3://misty-step-litestream/bb-plane/plane-config-live.tgz plane-config-live.tgz
+mkdir extracted && tar xzf plane-config-live.tgz -C extracted
+# edit extracted/agents/*.toml or extracted/tasks/*/task.toml
+cd extracted
+COPYFILE_DISABLE=1 tar --no-xattrs --no-acls --no-mac-metadata \
+  -czf ../plane-config-live-new.tgz agents tasks plane.toml
+cd ..
+AWS_ACCESS_KEY_ID="$DO_SPACES_KEY" AWS_SECRET_ACCESS_KEY="$DO_SPACES_SECRET" \
+  aws --endpoint-url https://nyc3.digitaloceanspaces.com s3 cp \
+  plane-config-live-new.tgz s3://misty-step-litestream/bb-plane/plane-config-live.tgz
+```
+
+**macOS tar gotcha:** building the replacement tarball with macOS's default
+`tar`/`bsdtar` silently embeds AppleDouble metadata as PAX extended headers
+and, more dangerously, as sidecar entries (`._foo.toml` alongside every real
+`foo.toml`). GNU tar on the container only warns
+(`Ignoring unknown extended header keyword
+'LIBARCHIVE.xattr.com.apple.provenance'`) and extracts both — but a sidecar
+still matches `*.toml`, and `bb`'s config loader crashes trying to read its
+binary AppleDouble content as UTF-8 TOML, taking down the whole container at
+boot (`DeployContainerExitNonZero`, readiness probe failures). Always build
+with `COPYFILE_DISABLE=1 tar --no-xattrs --no-acls --no-mac-metadata` and
+verify `tar tzf <bundle> | grep -c '\._'` is `0` before uploading; a Docker
+`debian:bookworm-slim` extraction (matching the production base image) is a
+cheap way to confirm before pushing to Spaces.
+
+An app-spec-only change (e.g. a new secret) still triggers a full redeploy,
+which re-fetches this bundle onto the fresh ephemeral disk — so a bundle fix
+and a spec-only fix land together on the next `doctl apps update`. DO
+auto-rolls back to the last healthy deployment on `DeployContainerExitNonZero`
+with no operator action needed; confirm via
+`doctl apps list-deployments <app-id>` and diff `get-deployment ... -o json`
+step statuses before assuming a bad deploy is still live.
+
 ## Deploy
 
 Local gate first:
