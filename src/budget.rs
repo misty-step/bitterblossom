@@ -87,7 +87,34 @@ pub fn budget_limits(plane: &Plane, ledger: &Ledger, task: &Task) -> Result<Opti
             }));
         }
     }
+    if let Some((repo_prefix, ceiling)) = repo_daily_ceiling(plane, task) {
+        let spent = ledger.cost_today_for_repo(repo_prefix)?;
+        if spent >= ceiling {
+            return Ok(Some(Violation {
+                kind: "repo_daily_ceiling",
+                detail: format!(
+                    "${spent:.2} spent today by repo '{repo_prefix}' >= ceiling ${ceiling:.2}"
+                ),
+            }));
+        }
+    }
     Ok(None)
+}
+
+/// Cost governor slice 1 (bitterblossom-960): a repo-owned task's name is
+/// always `<repo.name>/<short>` (`load_workload_repo_tasks` in spec.rs is
+/// the single source of that convention), so the repo's own declared
+/// namespace is recoverable from the task name alone -- no extra field on
+/// `Task` needed. Plane-owned (non-repo) tasks never match a workload repo
+/// name and fall through to `None`, unaffected by this ceiling.
+fn repo_daily_ceiling<'a>(plane: &'a Plane, task: &Task) -> Option<(&'a str, f64)> {
+    let (prefix, _) = task.name.split_once('/')?;
+    let repo = plane
+        .spec
+        .workload_repos
+        .iter()
+        .find(|r| r.name == prefix)?;
+    Some((repo.name.as_str(), repo.max_cost_per_day_usd?))
 }
 pub fn post_run_check(task: &Task, cost_usd: Option<f64>) -> Option<Violation> {
     let (Some(max), Some(cost)) = (task.spec.budget.max_cost_per_run_usd, cost_usd) else {

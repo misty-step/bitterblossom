@@ -37,6 +37,13 @@ repo_url = "https://github.com/o/r.git"   # optional; workspace clone URL, defau
 ref = "main"                      # default: master; recorded on every run
 agent = "reviewer"                # plane-owned binding
 substrate = "sprites"             # plane-owned substrate
+max_cost_per_day_usd = 5.0         # bitterblossom-960: repo-scoped daily ceiling,
+                                  # sibling to budget_caps (not nested in it) --
+                                  # contains an overspending repo's tasks to that
+                                  # repo alone, checked pre-dispatch alongside
+                                  # (never instead of) the plane-global ceiling
+                                  # below. Optional; absent means no repo-scoped
+                                  # ceiling, only the plane-global one applies.
 
 [workload_repo.workspace]         # plane-owned workspace authority
 host = "bb-target"
@@ -87,6 +94,16 @@ rto_seconds = 1800
 [budget]
 max_cost_per_day_usd = 25.0       # global daily ceiling, enforced pre-dispatch
 ```
+
+A daily ceiling breach (global `global_daily_ceiling` or repo-scoped
+`repo_daily_ceiling`, bitterblossom-960) blocks every trigger for the rest
+of the UTC day but escalates only once per (task, violation kind) per day:
+the first breach fires a `budget_blocked` notification, and every later
+same-day, same-kind redelivery (a webhook or cron trigger re-hitting an
+already-blocked or already-parked task) still records its own
+`blocked_budget` run row for audit but does not re-notify. This prevents a
+storm of redeliveries from grinding out identical notifications while
+keeping the run history complete.
 
 ## agents/<name>.toml
 

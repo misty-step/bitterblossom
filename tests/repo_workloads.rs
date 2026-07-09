@@ -319,3 +319,127 @@ fn dispatch_records_repo_config_source_on_run_row() {
     );
     assert_eq!(run.config_source_ref.as_deref(), Some("main"));
 }
+
+/// Cost governor slice 1 (bitterblossom-960): a repo-scoped
+/// `max_cost_per_day_usd` on `[[workload_repo]]` must contain an
+/// overspending repo's tasks to that repo alone -- an unrelated repo
+/// sharing the same plane (and its own, unbreached ceiling) must keep
+/// running. This is the per-repo counterpart to the plane-global daily
+/// ceiling, which today has plane-wide blast radius.
+#[test]
+fn repo_daily_ceiling_blocks_only_that_repos_tasks() {
+    const EXPENSIVE_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+echo '{"schema_version":"bb.command_result.v1","result":"ok","cost_usd":0.02}'
+"#;
+    const CHEAP_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+echo '{"schema_version":"bb.command_result.v1","result":"ok","cost_usd":0.001}'
+"#;
+
+    let dir = tempfile::tempdir().unwrap();
+    let alpha_target = tempfile::tempdir().unwrap();
+    let beta_target = tempfile::tempdir().unwrap();
+
+    let repo_toml = r#"[budget]
+timeout_minutes = 5
+[[trigger]]
+kind = "manual"
+"#;
+    target_repo(alpha_target.path(), repo_toml, "# alpha card\n");
+    target_repo(beta_target.path(), repo_toml, "# beta card\n");
+
+    fs::create_dir_all(dir.path().join("agents")).unwrap();
+    let alpha_bin = dir.path().join("alpha-stub.sh");
+    let beta_bin = dir.path().join("beta-stub.sh");
+    write_executable(&alpha_bin, EXPENSIVE_STUB);
+    write_executable(&beta_bin, CHEAP_STUB);
+    fs::write(
+        dir.path().join("agents/alpha.toml"),
+        format!("harness = \"command\"\nbin = \"{}\"\n", alpha_bin.display()),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("agents/beta.toml"),
+        format!("harness = \"command\"\nbin = \"{}\"\n", beta_bin.display()),
+    )
+    .unwrap();
+
+    fs::write(
+        dir.path().join("plane.toml"),
+        format!(
+            r#"dev = true
+
+[[workload_repo]]
+name = "alpha"
+path = "{alpha_path}"
+ref = "main"
+agent = "alpha"
+substrate = "local"
+max_cost_per_day_usd = 0.01
+
+[workload_repo.workspace]
+host = "alpha-local"
+
+[workload_repo.budget_caps]
+timeout_minutes = 10
+max_cost_per_run_usd = 1.0
+
+[[workload_repo]]
+name = "beta"
+path = "{beta_path}"
+ref = "main"
+agent = "beta"
+substrate = "local"
+
+[workload_repo.workspace]
+host = "beta-local"
+
+[workload_repo.budget_caps]
+timeout_minutes = 10
+max_cost_per_run_usd = 1.0
+"#,
+            alpha_path = alpha_target.path().display(),
+            beta_path = beta_target.path().display(),
+        ),
+    )
+    .unwrap();
+
+    let plane = Plane::load(dir.path()).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let run = |ledger: &mut Ledger, task: &str| {
+        let run_id = ledger
+            .ingest(IngressRequest {
+                task,
+                trigger_kind: "manual",
+                idempotency_key: None,
+                source_event_id: None,
+                payload: None,
+                parent_run_id: None,
+            })
+            .unwrap()
+            .run_id;
+        dispatch::dispatch_run(&plane, ledger, &run_id).unwrap()
+    };
+
+    // alpha/review costs $0.02 -- one run blows alpha's own $0.01 ceiling.
+    let first = run(&mut ledger, "alpha/review");
+    assert_eq!(first.state, "success", "{first:?}");
+
+    let second = run(&mut ledger, "alpha/review");
+    assert_eq!(second.state, "blocked_budget", "{second:?}");
+    assert!(
+        second
+            .state_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ceiling"),
+        "{second:?}"
+    );
+
+    // beta/review is a different repo, well under its own (unset) ceiling,
+    // and must not be collaterally blocked by alpha's breach.
+    let beta = run(&mut ledger, "beta/review");
+    assert_eq!(beta.state, "success", "{beta:?}");
+}

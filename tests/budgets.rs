@@ -453,6 +453,43 @@ fn global_daily_ceiling_blocks_pre_dispatch() {
     assert!(ledger.parked_reason("demo").unwrap().is_none());
 }
 
+/// Cost governor slice 1 (bitterblossom-960): once a daily ceiling is
+/// breached, every subsequent same-day trigger re-hits the identical
+/// violation kind. Without escalate-once-per-day, that is a notification
+/// grind -- N webhook/cron redeliveries produce N identical
+/// `budget_blocked` webhook posts. The fix escalates the first breach of a
+/// given (task, kind) per day and stays silent on repeats, while every
+/// repeat is still recorded as its own `blocked_budget` run for audit.
+#[test]
+fn repeated_daily_ceiling_hits_notify_once_per_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        "[budget]\nmax_cost_per_day_usd = 0.005\n\
+         [notify]\nwebhook_url = \"http://example.invalid/hook\"\n",
+        "",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+
+    let (states, notify_log) = with_notify_stub(dir.path(), || {
+        (0..5)
+            .map(|_| run_task(&plane, &mut ledger).state)
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(states[0], "success", "{states:?}");
+    assert!(
+        states[1..].iter().all(|s| s == "blocked_budget"),
+        "{states:?}"
+    );
+
+    let hits = notify_log.matches("budget_blocked").count();
+    assert_eq!(
+        hits, 1,
+        "expected exactly one escalation across 4 repeated same-day ceiling hits, log:\n{notify_log}"
+    );
+}
+
 #[test]
 fn advisory_per_run_cost_breach_parks_task_and_notifies() {
     let dir = tempfile::tempdir().unwrap();

@@ -278,7 +278,26 @@ rm -rf "$self_drill_tmp"
 # POST/PATCH handlers (~15 lines). No new module, no new subsystem, no
 # workload judgment -- observability of a run the plane already records,
 # not a decision the plane makes. See docs/spine.md "Glass lifecycle emitter".
-SPINE_LOC_CAP=15100
+# bitterblossom-960: 15100 -> 15200 for cost governor slice 1 -- a
+# repo-scoped daily cost ceiling (`WorkloadRepoSpec.max_cost_per_day_usd`,
+# a sibling field to the existing `budget_caps`) that contains an
+# overspending repo's blast radius to that repo alone, instead of the
+# plane-global ceiling's today blast radius across every task on the
+# plane. spec.rs gains the field plus a non-negative validation check
+# (~15 lines); ledger.rs gains `cost_today_for_repo` and
+# `budget_events_today_count` (~28 lines), the latter mirroring the
+# existing `cost_today`/`runs_today` query shape; budget.rs gains the
+# repo-ceiling check plus a `repo_daily_ceiling` lookup helper that derives
+# the repo namespace from the task name's existing `<repo>/<short>`
+# convention -- no new field on `Task` (~26 lines); dispatch.rs wraps the
+# existing budget_blocked notify call in an escalate-once-per-day guard so
+# repeated same-day, same-kind triggers (a parked or ceiling-blocked task
+# hit by every subsequent webhook/cron redelivery) stop grinding out
+# identical notifications while every blocked run still lands its own
+# ledger row (~9 lines). No new module, no new subsystem, no workload
+# judgment -- this is the same class of budget-governance arithmetic as
+# the existing global daily ceiling it sits beside.
+SPINE_LOC_CAP=15200
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

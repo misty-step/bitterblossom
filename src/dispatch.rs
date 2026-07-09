@@ -209,12 +209,22 @@ pub fn dispatch_run(plane: &Plane, ledger: &mut Ledger, run_id: &str) -> Result<
     match budget::admit_dispatch(plane, ledger, task, run_id)? {
         budget::DispatchAdmission::Running => {}
         budget::DispatchAdmission::Blocked(v) => {
-            crate::notify::notify(
-                plane,
-                ledger,
-                "budget_blocked",
-                &serde_json::json!({ "run_id": run_id, "task": task.name, "kind": v.kind, "detail": v.detail }),
-            );
+            // Cost governor slice 1 (bitterblossom-960), escalate-once:
+            // `admit_dispatch` already recorded this exact (task, kind)
+            // budget event before returning, so a count of 1 here means
+            // this is the first breach of this kind today. Every later
+            // same-day, same-kind trigger (webhook/cron redelivery hitting
+            // an already-blocked or already-parked task) is a grind
+            // repeat -- still a real `blocked_budget` run row for audit,
+            // but not a repeat notification.
+            if ledger.budget_events_today_count(&task.name, v.kind)? <= 1 {
+                crate::notify::notify(
+                    plane,
+                    ledger,
+                    "budget_blocked",
+                    &serde_json::json!({ "run_id": run_id, "task": task.name, "kind": v.kind, "detail": v.detail }),
+                );
+            }
             return ledger.run(run_id);
         }
         budget::DispatchAdmission::NotPending => {

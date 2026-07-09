@@ -57,6 +57,14 @@ pub struct WorkloadRepoSpec {
     pub workspace: WorkspaceSpec,
     #[serde(default)]
     pub budget_caps: TaskBudget,
+    /// Repo-scoped daily cost ceiling (bitterblossom-960): sibling to
+    /// `budget_caps`, not nested in it, because this is a plane-owned
+    /// invariant shared across every task this repo owns, never an
+    /// individual task's own capped-request budget. Contains an
+    /// overspending repo's tasks to that repo alone -- unlike the
+    /// plane-global `[budget].max_cost_per_day_usd`, which blocks every
+    /// task on the plane once breached.
+    pub max_cost_per_day_usd: Option<f64>,
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct GateSpec {
@@ -884,6 +892,14 @@ fn load_workload_repo_tasks(
                 "workload repo '{}': local substrate is dev/test machinery; set dev = true only for a development plane",
                 repo.name
             );
+        }
+        if let Some(ceiling) = repo.max_cost_per_day_usd {
+            if ceiling < 0.0 {
+                bail!(
+                    "workload repo '{}': max_cost_per_day_usd must be non-negative",
+                    repo.name
+                );
+            }
         }
         let (repo_dir, source_repo) = workload_repo_dir(plane_root, repo)?;
         let workspace_repo = repo.repo_url.as_ref().unwrap_or(&source_repo);

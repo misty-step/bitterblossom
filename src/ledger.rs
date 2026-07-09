@@ -1033,6 +1033,39 @@ impl Ledger {
         )?)
     }
 
+    /// Cost governor slice 1 (bitterblossom-960): sum of today's attempt
+    /// cost across every task namespaced under `<repo_prefix>/`, the same
+    /// namespace `load_workload_repo_tasks` uses for repo-owned task names.
+    /// Backs the repo-scoped daily ceiling, which contains an overspending
+    /// repo's blast radius to that repo alone.
+    pub fn cost_today_for_repo(&self, repo_prefix: &str) -> Result<f64> {
+        let day = &now()[..10];
+        let like = format!("{repo_prefix}/%");
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(a.cost_usd), 0.0)
+             FROM attempts a JOIN runs r ON a.run_id = r.id
+             WHERE r.task LIKE ?1 AND substr(a.started_at, 1, 10) = ?2",
+            params![like, day],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Cost governor slice 1 (bitterblossom-960): how many `budget_events`
+    /// rows exist today for this exact (task, kind) pair, including the one
+    /// `admit_dispatch` just recorded for the current admission. A count of
+    /// 1 means this is the first breach of this kind today (escalate); a
+    /// count above 1 means every subsequent same-day, same-kind trigger is a
+    /// grind repeat (stay silent -- the run row itself still records it).
+    pub fn budget_events_today_count(&self, task: &str, kind: &str) -> Result<i64> {
+        let day = &now()[..10];
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM budget_events
+             WHERE task = ?1 AND kind = ?2 AND substr(at, 1, 10) = ?3",
+            params![task, kind, day],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn run(&self, run_id: &str) -> Result<RunRow> {
         self.conn
             .query_row(
