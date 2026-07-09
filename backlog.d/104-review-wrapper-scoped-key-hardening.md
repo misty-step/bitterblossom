@@ -97,3 +97,19 @@ Remaining oracle for this card: provision a Docker-capable substrate (or
 confirm sprites cannot nest containers and choose a different host) so M2
 isolation can actually run, then flip `CERBERUS_HARNESS` back off (removing
 the override reverts to the wrapper's `container-opencode` default).
+
+**`omp` fallback is also currently broken, not just `container-opencode`.**
+Two live runs against `omp` (`5d35f46063fa`, `54507e408872`) both failed
+deterministically in ~7-10s -- too fast for an actual model call -- with
+`Error: read emitted review artifact /tmp/cerberus-*/packet/review-artifact.json
+... No such file or directory`. This points at `omp` itself failing before or
+during the model call (likely a missing `omp`-specific auth/config on
+`lane-1` that the per-exec secret injection doesn't cover), not at anything
+in Bitterblossom's dispatch/wrapper layer -- both runs got cleanly past the
+OpenRouter provisioning-key step with no related warnings or errors. This is
+a **third, separate, still-open gap**: neither harness path (`container-opencode`:
+missing docker/opencode; `omp`: fails before writing the review artifact)
+currently produces a working end-to-end review on `lane-1`. Diagnosing the
+`omp` failure needs Cerberus-side investigation (its own repo) into what
+`omp` requires at runtime that isn't present in this sprite's per-exec
+environment -- out of scope for a Bitterblossom-side patch.
