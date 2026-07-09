@@ -755,8 +755,8 @@ loop explicitly: push the branch → `bb submit open` → fire required storm
 members as parallel `bb run <kind> --idempotency-key
 storm:<submission>:<kind> --payload '{"submission":"<id>", ...}'` → `bb gate`
 (safe to call any time). For PR lifecycle work, the `review` webhook performs
-that opening fan-out automatically. On `clear`: file advisories to backlog.d,
-squash-land (`clear` is terminal); on `blocked`: fix, push, and the next
+that opening fan-out automatically. On `clear`: file advisories as Powder
+cards, squash-land (`clear` is terminal); on `blocked`: fix, push, and the next
 `synchronize` delivery opens the next review submission; on `escalated`: stop
 — the operator is already notified. Judgment (what to fix, what to reject)
 stays with the agent; arithmetic lives in `bb gate`.

@@ -48,10 +48,17 @@ src/                 The spine (mechanism only; scripts/verify.sh owns the bloat
   notify.rs          State-transition webhook (curl, best-effort)
 tests/               e2e (local + stubbed sprites), ingress, recovery, budgets
 examples/demo-plane/ Complete commented config surface (`bb check` validates)
-backlog.d/           Work source; _done/ is the archive
 docs/                Vision, ADRs, plans, spine contract, archive/
 skills/              Product-owned exportable agent interface for `bb`
 ```
+
+Work ledger: Powder (`bitterblossom-<n>` cards) is the source of record for
+open, done, and superseded work — not a repo-local directory. Use the
+`powder` CLI (`list-cards --repo bitterblossom`, `get-card`, `create-card`)
+or the misty-powder skill. `backlog.d/` was retired 2026-07-09; its content
+was migrated to Powder cards and the directory deleted (git history at
+commit `87ba2cbf1678daa150f430c0e9a45c74ef8e110c` preserves the pre-deletion
+files).
 
 ## Verification
 
@@ -125,8 +132,9 @@ per attempt.
   never happen: golfing code to fit, or inventing an extraction because you're
   "near the cap." That second failure produced a phantom: 069 chased a
   non-existent ~300-line gate extraction. `submit.rs` was then audited — it is
-  a generic gate primitive, mechanism (see `backlog.d/_done/069-*`). Trust the
-  audit, not the line count.
+  a generic gate primitive, mechanism (ticket archived in git history at
+  `backlog.d/_done/069-*`, commit `87ba2cbf1678daa150f430c0e9a45c74ef8e110c`).
+  Trust the audit, not the line count.
 
 ## Coding Standards
 

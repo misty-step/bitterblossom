@@ -61,8 +61,9 @@ Hard requirements:
 
 ## Backlog Loop
 
-1. Read active `backlog.d/` and choose the highest leverage ready item unless
-   the user named one.
+1. List ready Powder cards for this repo (`powder list-cards --repo
+   bitterblossom --status backlog`, or `powder list-ready`) and choose the
+   highest leverage ready item unless the user named one.
 2. Create or update a dogfood notes artifact under `docs/plans/` using the
    template. Notes are part of the deliverable, not a side channel.
 3. Dispatch the builder through Bitterblossom. This is the product surface
@@ -70,7 +71,7 @@ Hard requirements:
 
 ```bash
 GH_TOKEN=$(gh auth token) ./target/debug/bb --config "$BB_RUNTIME_PLANE" run build \
-  --payload '{"repo":"misty-step/bitterblossom","backlog":"<backlog-id-or-path>","branch_slug":"<slug>","dry_run":false}' \
+  --payload '{"repo":"misty-step/bitterblossom","backlog":"<powder-card-id>","branch_slug":"<slug>","dry_run":false}' \
   --json
 ```
 
@@ -149,9 +150,9 @@ future implementer can improve the product without replaying chat context.
 
 Reflect into backlog only after the delivery evidence is read. Backlog-worthy
 means: the issue affects the event-plane vision in `VISION.md`, repeats beyond
-one operator mistake, and has an oracle. Prefer one small `backlog.d/NNN-*.md`
-per product improvement. Do not create backlog for taste notes with no fix; put
-those under "No action".
+one operator mistake, and has an oracle. Prefer one small Powder card
+(`powder create-card --repo bitterblossom`) per product improvement. Do not
+create backlog for taste notes with no fix; put those under "No action".
 
 ## Notes Contract
 

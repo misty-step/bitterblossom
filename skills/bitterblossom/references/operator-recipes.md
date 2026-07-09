@@ -68,7 +68,7 @@ cron triggers.
 ```bash
 OPENROUTER_API_KEY=<key> GH_TOKEN=$(gh auth token) bb --config <plane> run build \
   --idempotency-key "build:<backlog-or-packet>:<date>" \
-  --payload '{"repo":"misty-step/bitterblossom","backlog":"backlog.d/060-builder-dispatch-role.md","branch_slug":"builder-dispatch-role"}' \
+  --payload '{"repo":"misty-step/bitterblossom","backlog":"bitterblossom-060","branch_slug":"builder-dispatch-role"}' \
   --json
 ```
 
@@ -272,7 +272,7 @@ argv), and prints a machine-readable receipt plus the safe next gate command:
 
 ```bash
 cat > /tmp/bb-storm-payload.json <<'JSON'
-{"repo":"misty-step/bitterblossom","change":"<change-id>","rev":"<git-rev>","backlog":"backlog.d/086-first-class-operator-dispatch-recipes.md","base_ref":"origin/master"}
+{"repo":"misty-step/bitterblossom","change":"<change-id>","rev":"<git-rev>","backlog":"bitterblossom-086","base_ref":"origin/master"}
 JSON
 
 scripts/bb-submit-storm \

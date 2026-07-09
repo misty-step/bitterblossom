@@ -88,10 +88,12 @@ degenerate substrate).
 
 ## Shared contracts
 
-Harness-kit defines, bitterblossom consumes: `backlog.d/` + closure
+Harness-kit defines, bitterblossom consumes: Powder cards + closure
 trailers, lane cards, delegation receipts, evidence paths
-(harness-kit `meta/CONTRACTS.md`). Every workload must be runnable ad hoc
-from a terminal with no webhook.
+(harness-kit `meta/CONTRACTS.md`). Powder (`bitterblossom-<n>` cards) is the
+work ledger of record; `backlog.d/` was retired and its content migrated to
+Powder on 2026-07-09. Every workload must be runnable ad hoc from a terminal
+with no webhook.
 
 ## Workload roadmap
 

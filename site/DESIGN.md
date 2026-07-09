@@ -46,11 +46,10 @@ Operator lock-in: 2026-07-07, `misty-step-936`.
 
 - Icon: `flower`
 - Reason: selected 2026-07-02 through the fleet-wide icon-logo playground
-  (`aesthetic/prototypes/icon-logo-playground.html`) and named in
-  `backlog.d/111-adopt-lucide-flower-as-the-bitterblossom-wordmark-icon.md`
-  (open, not yet adopted elsewhere in the repo) — Sprites infra, an MTG
-  enchantment that creates tokens every turn: recurring workloads, spun up
-  and run durably.
+  (`aesthetic/prototypes/icon-logo-playground.html`) and named in Powder card
+  `bitterblossom-111` (open, not yet adopted elsewhere in the repo) — Sprites
+  infra, an MTG enchantment that creates tokens every turn: recurring
+  workloads, spun up and run durably.
 - Rule: the mark is an inline Lucide SVG inside `.ae-app-mark`. No bespoke
   marks, logo images, emoji marks, or colored wordmarks.
 

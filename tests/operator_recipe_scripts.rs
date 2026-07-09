@@ -392,7 +392,7 @@ fn submit_storm_recipe_opens_dispatches_with_payload_files_and_returns_receipt()
     let payload = dir.path().join("payload.json");
     fs::write(
         &payload,
-        r#"{"repo":"misty-step/bitterblossom","change":"change-x","rev":"abc123","backlog":"backlog.d/086-first-class-operator-dispatch-recipes.md","base_ref":"origin/master"}"#,
+        r#"{"repo":"misty-step/bitterblossom","change":"change-x","rev":"abc123","backlog":"bitterblossom-086","base_ref":"origin/master"}"#,
     )
     .unwrap();
 
