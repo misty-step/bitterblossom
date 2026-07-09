@@ -113,3 +113,35 @@ currently produces a working end-to-end review on `lane-1`. Diagnosing the
 `omp` failure needs Cerberus-side investigation (its own repo) into what
 `omp` requires at runtime that isn't present in this sprite's per-exec
 environment -- out of scope for a Bitterblossom-side patch.
+
+## Update (2026-07-09, bitterblossom-942/940 restoration): root cause found, it IS a BB-side fix
+
+Reproduced the exact `omp` failure locally with the same CLI flags the
+wrapper uses (`cerberus review-pr --harness omp --openrouter-scoped-key
+--openrouter-provisioning-key-env ... --dry-run`), against the same live PR
+(#984). The failure has nothing to do with sprite-host auth/config -- it is
+that `cerberus-review-wrapper.sh` never passes `--model`, because
+`CERBERUS_MODEL` is not declared as a secrets-passthrough name anywhere, so
+`omp` resolves its own bare default. Observed two flavors of the same root
+cause depending on which bare model `omp` picked:
+
+- A fuzzy-matched non-OpenRouter provider ("kilo"), which has no credentials
+  in Cerberus's scrubbed child env: `error: No API key found for kilo.`
+- An OpenRouter model whose default `max_tokens` (65536) the $1.25-capped
+  scoped key can't afford: `402 ... You requested up to 65536 tokens, but
+  can only afford 10000.`
+
+Either way, `omp` exits non-zero before writing `review-artifact.json`,
+which is exactly the "no such file" error dispatch surfaces -- the true
+error (visible only in Cerberus's own `--receipt-bundle`/transcript, which
+the wrapper does not forward into BB's ledger) never reaches `bb runs show`.
+
+Fix (confirmed live end-to-end against PR #984 in `--dry-run`, cost within
+the existing $1.25 cap): explicitly pin an `openrouter/`-prefixed model.
+`--model openrouter/z-ai/glm-5.2` produces a complete, valid review verdict
+and post-plan. Applied live: `cerberus-reviewer.toml` now declares
+`CERBERUS_MODEL` as a secrets-passthrough name (matching the `CERBERUS_HARNESS`
+pattern), set to `openrouter/z-ai/glm-5.2` in the live app spec.
+
+This closes the "omp fallback is also broken" gap above; it does not touch
+the separate, still-open `container-opencode` docker/opencode gap.
