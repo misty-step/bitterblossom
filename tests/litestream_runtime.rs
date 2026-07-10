@@ -225,3 +225,84 @@ fn litestream_entrypoint_fails_closed_when_required_secret_is_missing() {
     assert!(stderr.contains("LITESTREAM_REPLICA_URL is required"));
     assert!(!stderr.contains("s3://"));
 }
+
+#[test]
+fn entrypoint_materializes_tailnet_ssh_credentials_without_logging_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path().join("root-ssh");
+    let private_key = "private-key-sentinel-line-1\nprivate-key-sentinel-line-2";
+    let known_hosts = "10.108.0.4 ssh-ed25519 pinned-host-key-sentinel";
+
+    let output = Command::new(repo_root().join("scripts/bb-litestream-entrypoint.sh"))
+        .env_remove("LITESTREAM_REPLICA_URL")
+        .env_remove("BB_LITESTREAM_REQUIRED")
+        .env("BB_TAILNET_SSH_DIR", &ssh_dir)
+        .env("BB_TAILNET_SSH_PRIVATE_KEY", private_key)
+        .env("BB_TAILNET_SSH_KNOWN_HOSTS", known_hosts)
+        .args([
+            "sh",
+            "-c",
+            "test -z \"${BB_TAILNET_SSH_PRIVATE_KEY:-}\" && test -z \"${BB_TAILNET_SSH_KNOWN_HOSTS:-}\"",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for output in [&output.stdout, &output.stderr] {
+        let output = String::from_utf8_lossy(output);
+        assert!(!output.contains("private-key-sentinel"));
+        assert!(!output.contains("pinned-host-key-sentinel"));
+    }
+
+    assert_eq!(
+        fs::read_to_string(ssh_dir.join("id_ed25519")).unwrap(),
+        format!("{private_key}\n")
+    );
+    assert_eq!(
+        fs::read_to_string(ssh_dir.join("known_hosts")).unwrap(),
+        format!("{known_hosts}\n")
+    );
+    assert_eq!(
+        fs::metadata(&ssh_dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for file in ["id_ed25519", "known_hosts"] {
+        assert_eq!(
+            fs::metadata(ssh_dir.join(file))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "wrong permissions for {file}"
+        );
+    }
+}
+
+#[test]
+fn entrypoint_does_not_touch_ssh_directory_when_tailnet_credentials_are_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path().join("root-ssh");
+    let output = Command::new(repo_root().join("scripts/bb-litestream-entrypoint.sh"))
+        .env_remove("LITESTREAM_REPLICA_URL")
+        .env_remove("BB_LITESTREAM_REQUIRED")
+        .env_remove("BB_TAILNET_SSH_PRIVATE_KEY")
+        .env_remove("BB_TAILNET_SSH_KNOWN_HOSTS")
+        .env("BB_TAILNET_SSH_DIR", &ssh_dir)
+        .args(["sh", "-c", "true"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!ssh_dir.exists());
+}

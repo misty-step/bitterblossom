@@ -1,0 +1,37 @@
+agent = "linejam-alert"
+substrate = "tailnet"
+required_artifacts = ["REPORT.json"]
+
+[workspace]
+# All Linejam alert and recovery deliveries serialize through one durable host
+# lease because Powder request_input is not idempotent.
+host = "bb-runner@10.108.0.4"
+repos = [
+  { url = "https://github.com/example-org/linejam-example.git", ref = "main" },
+  { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
+]
+
+[admission]
+attention_debt = "task"
+
+[budget]
+timeout_minutes = 10
+max_cost_per_run_usd = 0.10
+output_bytes_cap = 30000
+
+[[trigger]]
+kind = "manual"
+
+[[trigger]]
+kind = "webhook"
+route = "linejam-alert"
+secret_env = "BB_HOOK_LINEJAM_ALERT"
+dedupe_key = "header:X-Delivery-Id"
+
+[[trigger.filter]]
+pointer = "/event"
+any_of = ["incident.opened", "incident.updated", "incident.resolved"]
+
+[[trigger.filter]]
+pointer = "/incident/service"
+any_of = ["linejam"]

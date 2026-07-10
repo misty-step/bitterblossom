@@ -38,9 +38,35 @@ require_absolute_path() {
   esac
 }
 
+materialize_tailnet_ssh() {
+  private_key=${BB_TAILNET_SSH_PRIVATE_KEY:-}
+  known_hosts=${BB_TAILNET_SSH_KNOWN_HOSTS:-}
+  if [ -z "$private_key" ] && [ -z "$known_hosts" ]; then
+    return
+  fi
+
+  ssh_dir=${BB_TAILNET_SSH_DIR:-/root/.ssh}
+  require_absolute_path "BB_TAILNET_SSH_DIR" "$ssh_dir"
+  umask 077
+  mkdir -p "$ssh_dir"
+  chmod 0700 "$ssh_dir"
+
+  if [ -n "$private_key" ]; then
+    printf '%s\n' "$private_key" >"$ssh_dir/id_ed25519"
+    chmod 0600 "$ssh_dir/id_ed25519"
+  fi
+  if [ -n "$known_hosts" ]; then
+    printf '%s\n' "$known_hosts" >"$ssh_dir/known_hosts"
+    chmod 0600 "$ssh_dir/known_hosts"
+  fi
+  unset BB_TAILNET_SSH_PRIVATE_KEY BB_TAILNET_SSH_KNOWN_HOSTS private_key known_hosts
+}
+
 if [ "$#" -eq 0 ]; then
   set -- bb serve
 fi
+
+materialize_tailnet_ssh
 
 plane_dir=${BB_PLANE_DIR:-/app/plane}
 db_path=${BB_LITESTREAM_DB_PATH:-"$plane_dir/.bb/plane.db"}

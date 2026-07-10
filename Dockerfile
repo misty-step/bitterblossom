@@ -16,7 +16,7 @@ ARG LITESTREAM_VERSION=0.5.13
 # to amd64 so both builders work. BuildKit still overrides per-platform.
 ARG TARGETARCH=amd64
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl \
+    && apt-get install -y --no-install-recommends ca-certificates git curl openssh-client \
     && rm -rf /var/lib/apt/lists/*
 RUN case "${TARGETARCH}" in amd64|arm64) sprite_arch="${TARGETARCH}" ;; *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; esac \
     && curl -fsSL "https://sprites-binaries.t3.storage.dev/client/${SPRITE_VERSION}/sprite-linux-${sprite_arch}.tar.gz" \
