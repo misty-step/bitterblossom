@@ -353,6 +353,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
             && f.any_of.as_ref().is_some_and(|values| {
                 values.contains(&serde_json::json!("incident.opened"))
                     && values.contains(&serde_json::json!("incident.updated"))
+                    && values.contains(&serde_json::json!("incident.resolved"))
             })
     }));
     assert!(webhook.2.iter().any(|f| {

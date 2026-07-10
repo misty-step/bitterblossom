@@ -46,7 +46,7 @@ dedupe_key = "header:X-Delivery-Id"
 
 [[trigger.filter]]
 pointer = "/event"
-any_of = ["incident.opened", "incident.updated"]
+any_of = ["incident.opened", "incident.updated", "incident.resolved"]
 
 [[trigger.filter]]
 pointer = "/incident/service"

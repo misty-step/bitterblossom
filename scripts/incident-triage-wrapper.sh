@@ -107,6 +107,8 @@ incident_id = incident.get("id") or subject.get("id") or ""
 service = incident.get("service") or subject.get("service") or ""
 severity = incident.get("severity") or signal.get("severity") or ""
 fingerprint = signal.get("fingerprint") or ""
+event_name = event.get("event") or ""
+event_timestamp = event.get("timestamp") or incident.get("resolved_at") or ""
 run_id = run.get("run_id") or run.get("id") or ""
 delivery_id = (run.get("trigger") or {}).get("idempotency_key") or ""
 if delivery_id.startswith("wh:incident-triage:"):
@@ -130,6 +132,8 @@ for key, value in {
     "BB_TRIAGE_SERVICE": service,
     "BB_TRIAGE_SEVERITY": severity,
     "BB_TRIAGE_FINGERPRINT": fingerprint,
+    "BB_TRIAGE_EVENT": event_name,
+    "BB_TRIAGE_EVENT_TIMESTAMP": event_timestamp,
     "BB_TRIAGE_REPO": repo,
     "BB_TRIAGE_REPO_DIR": repo_dir,
     "BB_TRIAGE_AUTO_DEPLOY_ON_MERGE": auto_deploy,
@@ -140,6 +144,7 @@ PY
 )"
 export BB_TRIAGE_RUN_ID BB_TRIAGE_DELIVERY_ID BB_TRIAGE_INCIDENT_ID
 export BB_TRIAGE_SERVICE BB_TRIAGE_SEVERITY BB_TRIAGE_FINGERPRINT
+export BB_TRIAGE_EVENT BB_TRIAGE_EVENT_TIMESTAMP
 export BB_TRIAGE_REPO BB_TRIAGE_REPO_DIR BB_TRIAGE_AUTO_DEPLOY_ON_MERGE BB_TRIAGE_ALLOWED
 
 write_blocked_report() {
@@ -437,22 +442,44 @@ PY
     return 0
   fi
 
-  eval "$(python3 - "$annotations_json" <<'PY'
+  eval "$(python3 - "$annotations_json" "$BB_TRIAGE_EVENT_TIMESTAMP" <<'PY'
+from datetime import datetime
 import json
 import shlex
 import sys
 
 data = json.load(open(sys.argv[1], encoding="utf-8"))
+event_timestamp = sys.argv[2]
 annotations = data.get("annotations") if isinstance(data, dict) else []
 selected = None
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+event_time = parse_timestamp(event_timestamp)
 for annotation in annotations or []:
     metadata = annotation.get("metadata") if isinstance(annotation, dict) else None
-    if isinstance(metadata, dict) and metadata.get("kind") == "production-smoke-status":
+    created_at = parse_timestamp(annotation.get("created_at")) if isinstance(annotation, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("kind") != "production-smoke-status":
+        continue
+    # Linejam writes the annotation immediately before the check-in that emits
+    # this event. Timestamp correlation prevents a delayed delivery from
+    # consuming a newer failure or recovery annotation.
+    if event_time is None or created_at is None:
+        continue
+    age_seconds = (event_time - created_at).total_seconds()
+    if 0 <= age_seconds <= 600:
         selected = metadata
         break
 selected = selected or {}
 values = {
     "BB_LINEJAM_ALERT_OUTCOME": selected.get("outcome") or "",
+    "BB_LINEJAM_ALERT_STREAK": selected.get("consecutive_failures") or 0,
     "BB_LINEJAM_ALERT_DETAIL": selected.get("failure_detail") or "tests/e2e/prod-smoke.spec.ts",
     "BB_LINEJAM_ALERT_URL": selected.get("external_url") or "",
 }
@@ -460,32 +487,122 @@ for key, value in values.items():
     print(f"{key}={shlex.quote(str(value))}")
 PY
 )"
-  export BB_LINEJAM_ALERT_OUTCOME BB_LINEJAM_ALERT_DETAIL BB_LINEJAM_ALERT_URL
+  export BB_LINEJAM_ALERT_OUTCOME BB_LINEJAM_ALERT_STREAK BB_LINEJAM_ALERT_DETAIL BB_LINEJAM_ALERT_URL
   rm -f "$incident_json" "$annotations_json"
 
-  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "success" ]; then
-    write_linejam_alert_report "recovery_annotated" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+  case "$BB_LINEJAM_ALERT_STREAK" in
+    ''|*[!0-9]*)
+      write_blocked_report "Linejam Production Smoke annotation has an invalid consecutive-failure count"
+      return 0
+      ;;
+  esac
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "failure" ] && [ "$BB_LINEJAM_ALERT_STREAK" -lt 2 ]; then
+    write_linejam_alert_report "failure_below_threshold" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
     return 0
   fi
-  if [ "$BB_LINEJAM_ALERT_OUTCOME" != "failure" ]; then
-    write_blocked_report "Linejam Production Smoke annotation is missing a failure outcome"
-    return 0
-  fi
+
   if [ -z "${POWDER_API_BASE_URL:-}" ] || [ -z "${POWDER_API_KEY:-}" ]; then
     write_blocked_report "POWDER_API_BASE_URL or scoped incident-alert key is unset"
     return 0
   fi
 
-  card_id=$(python3 - "$BB_TRIAGE_INCIDENT_ID" "$BB_LINEJAM_ALERT_URL" <<'PY'
+  card_id=$(python3 - "$BB_TRIAGE_INCIDENT_ID" <<'PY'
 import re
 import sys
 
-incident_id, run_url = sys.argv[1:3]
-match = re.search(r"/runs/(\d+)", run_url)
-suffix = match.group(1) if match else re.sub(r"[^a-z0-9]+", "-", incident_id.lower()).strip("-")
+incident_id = sys.argv[1]
+suffix = re.sub(r"[^a-z0-9]+", "-", incident_id.lower()).strip("-")
 print(f"linejam-alert-{suffix}")
 PY
 )
+
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "success" ]; then
+    card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+      "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+      -H "Authorization: Bearer $POWDER_API_KEY")
+    if [ "$card_status" = "404" ]; then
+      rm -f .bb-powder-card.json
+      write_linejam_alert_report "recovery_annotated" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+      return 0
+    fi
+    if [ "$card_status" != "200" ]; then
+      rm -f .bb-powder-card.json
+      write_blocked_report "Powder recovery card read failed with HTTP $card_status"
+      return 0
+    fi
+    eval "$(python3 - .bb-powder-card.json <<'PY'
+import json
+import shlex
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+card = data.get("card", data) if isinstance(data, dict) else {}
+status = card.get("status") or ""
+claim = card.get("claim") if isinstance(card.get("claim"), dict) else {}
+run_id = claim.get("run_id") or ""
+if not run_id and isinstance(data, dict):
+    for run in data.get("runs") or []:
+        if isinstance(run, dict) and run.get("state") in {"awaiting_input", "active"}:
+            run_id = run.get("id") or ""
+            break
+print(f"BB_POWDER_CARD_STATUS={shlex.quote(str(status))}")
+print(f"BB_POWDER_EXISTING_RUN_ID={shlex.quote(str(run_id))}")
+PY
+)"
+    if [ "$BB_POWDER_CARD_STATUS" = "awaiting_input" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+      python3 - "$BB_LINEJAM_ALERT_URL" <<'PY'
+import json
+import sys
+
+run_url = sys.argv[1]
+json.dump({
+    "actor": "bb-incident-triage-alert",
+    "answer": f"Production Smoke recovered and Canary recorded fix-verified. Evidence: {run_url}",
+}, open(".bb-powder-answer.json", "w", encoding="utf-8"))
+PY
+      curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/runs/$BB_POWDER_EXISTING_RUN_ID/answer" \
+        -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+        -d @.bb-powder-answer.json -o /dev/null
+      BB_POWDER_CARD_STATUS="running"
+    fi
+    if [ "$BB_POWDER_CARD_STATUS" = "running" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+      python3 - "$BB_LINEJAM_ALERT_URL" <<'PY'
+import json
+import sys
+
+run_url = sys.argv[1]
+json.dump({
+    "proof": f"Linejam Production Smoke recovered; Canary fix-verified annotation and green run: {run_url}",
+}, open(".bb-powder-complete.json", "w", encoding="utf-8"))
+PY
+      curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id/complete" \
+        -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+        -d @.bb-powder-complete.json -o /dev/null
+      rm -f .bb-powder-card.json .bb-powder-answer.json .bb-powder-complete.json
+      write_linejam_alert_report "recovery_closed_operator_alert" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+      return 0
+    fi
+    rm -f .bb-powder-card.json .bb-powder-answer.json .bb-powder-complete.json
+    case "$BB_POWDER_CARD_STATUS" in
+      done|shipped|abandoned)
+        write_linejam_alert_report "recovery_alert_already_closed" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+        return 0
+        ;;
+      ready)
+        write_linejam_alert_report "recovery_annotated" "$card_id" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+        return 0
+        ;;
+      *)
+        write_blocked_report "Powder recovery card is not closable (status: $BB_POWDER_CARD_STATUS)"
+        return 0
+        ;;
+    esac
+  fi
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" != "failure" ]; then
+    write_blocked_report "Linejam Production Smoke annotation is missing an event-correlated outcome"
+    return 0
+  fi
+
   python3 - "$card_id" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL" "$BB_TRIAGE_INCIDENT_ID" <<'PY'
 import json
 import sys
