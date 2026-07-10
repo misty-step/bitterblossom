@@ -399,6 +399,28 @@ print(json.dumps({
 PY
 }
 
+load_powder_card_state() {
+  eval "$(python3 - "$1" <<'PY'
+import json
+import shlex
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+card = data.get("card", data) if isinstance(data, dict) else {}
+status = card.get("status") or ""
+claim = card.get("claim") if isinstance(card.get("claim"), dict) else {}
+run_id = claim.get("run_id") or ""
+if not run_id and isinstance(data, dict):
+    for run in data.get("runs") or []:
+        if isinstance(run, dict) and run.get("state") in {"awaiting_input", "active"}:
+            run_id = run.get("id") or ""
+            break
+print(f"BB_POWDER_CARD_STATUS={shlex.quote(str(status))}")
+print(f"BB_POWDER_EXISTING_RUN_ID={shlex.quote(str(run_id))}")
+PY
+)"
+}
+
 handle_linejam_smoke_alert() {
   monitor_id="MON-28junwbo5mgv"
   incident_json=".bb-linejam-incident.json"
@@ -451,7 +473,7 @@ import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 event_timestamp = sys.argv[2]
 annotations = data.get("annotations") if isinstance(data, dict) else []
-selected = None
+eligible = []
 
 def parse_timestamp(value):
     if not value:
@@ -474,9 +496,8 @@ for annotation in annotations or []:
         continue
     age_seconds = (event_time - created_at).total_seconds()
     if 0 <= age_seconds <= 600:
-        selected = metadata
-        break
-selected = selected or {}
+        eligible.append((created_at, metadata))
+selected = max(eligible, key=lambda item: item[0])[1] if eligible else {}
 values = {
     "BB_LINEJAM_ALERT_OUTCOME": selected.get("outcome") or "",
     "BB_LINEJAM_ALERT_STREAK": selected.get("consecutive_failures") or 0,
@@ -530,25 +551,7 @@ PY
       write_blocked_report "Powder recovery card read failed with HTTP $card_status"
       return 0
     fi
-    eval "$(python3 - .bb-powder-card.json <<'PY'
-import json
-import shlex
-import sys
-
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-card = data.get("card", data) if isinstance(data, dict) else {}
-status = card.get("status") or ""
-claim = card.get("claim") if isinstance(card.get("claim"), dict) else {}
-run_id = claim.get("run_id") or ""
-if not run_id and isinstance(data, dict):
-    for run in data.get("runs") or []:
-        if isinstance(run, dict) and run.get("state") in {"awaiting_input", "active"}:
-            run_id = run.get("id") or ""
-            break
-print(f"BB_POWDER_CARD_STATUS={shlex.quote(str(status))}")
-print(f"BB_POWDER_EXISTING_RUN_ID={shlex.quote(str(run_id))}")
-PY
-)"
+    load_powder_card_state .bb-powder-card.json
     if [ "$BB_POWDER_CARD_STATUS" = "awaiting_input" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
       python3 - "$BB_LINEJAM_ALERT_URL" <<'PY'
 import json
@@ -624,46 +627,95 @@ PY
     "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
     -H "Authorization: Bearer $POWDER_API_KEY")
   if [ "$card_status" = "404" ]; then
-    curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards" \
+    create_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+      -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards" \
       -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
-      -d @.bb-powder-card-create.json -o .bb-powder-card.json
+      -d @.bb-powder-card-create.json)
+    case "$create_status" in
+      200|201) ;;
+      409)
+        card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+          "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+          -H "Authorization: Bearer $POWDER_API_KEY")
+        if [ "$card_status" != "200" ]; then
+          rm -f .bb-powder-card-create.json .bb-powder-card.json
+          write_blocked_report "Powder concurrent card read failed with HTTP $card_status"
+          return 0
+        fi
+        ;;
+      *)
+        rm -f .bb-powder-card-create.json .bb-powder-card.json
+        write_blocked_report "Powder card create failed with HTTP $create_status"
+        return 0
+        ;;
+    esac
   elif [ "$card_status" != "200" ]; then
     rm -f .bb-powder-card-create.json .bb-powder-card.json
     write_blocked_report "Powder card read failed with HTTP $card_status"
     return 0
   fi
-  eval "$(python3 - .bb-powder-card.json <<'PY'
-import json
-import shlex
-import sys
-
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-card = data.get("card", data) if isinstance(data, dict) else {}
-status = card.get("status") or ""
-claim = card.get("claim") if isinstance(card.get("claim"), dict) else {}
-run_id = claim.get("run_id") or ""
-if not run_id and isinstance(data, dict):
-    for run in data.get("runs") or []:
-        if isinstance(run, dict) and run.get("state") == "awaiting_input":
-            run_id = run.get("id") or ""
-            break
-print(f"BB_POWDER_CARD_STATUS={shlex.quote(str(status))}")
-print(f"BB_POWDER_EXISTING_RUN_ID={shlex.quote(str(run_id))}")
-PY
-)"
+  load_powder_card_state .bb-powder-card.json
   if [ "$BB_POWDER_CARD_STATUS" = "awaiting_input" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
     rm -f .bb-powder-card-create.json .bb-powder-card.json
     write_linejam_alert_report "operator_attention_already_requested" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
     return 0
   fi
+  case "$BB_POWDER_CARD_STATUS" in
+    claimed|running)
+      if [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+        rm -f .bb-powder-card-create.json .bb-powder-card.json
+        write_linejam_alert_report "operator_attention_claimed_by_peer" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+        return 0
+      fi
+      ;;
+  esac
   if [ "$BB_POWDER_CARD_STATUS" != "ready" ]; then
     rm -f .bb-powder-card-create.json .bb-powder-card.json
     write_blocked_report "existing Powder alert card is not ready or awaiting input (status: $BB_POWDER_CARD_STATUS)"
     return 0
   fi
-  powder_run_id=$(curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id/claim" \
+  claim_status=$(curl -sS -o .bb-powder-claim.json -w '%{http_code}' \
+    -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id/claim" \
     -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
-    -d '{"agent":"bb-incident-triage-alert","ttl_seconds":86400}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+    -d '{"agent":"bb-incident-triage-alert","ttl_seconds":86400}')
+  case "$claim_status" in
+    200|201)
+      powder_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["run_id"])' .bb-powder-claim.json)
+      ;;
+    409)
+      card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+        "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+        -H "Authorization: Bearer $POWDER_API_KEY")
+      if [ "$card_status" = "200" ]; then
+        load_powder_card_state .bb-powder-card.json
+      else
+        BB_POWDER_CARD_STATUS=""
+        BB_POWDER_EXISTING_RUN_ID=""
+      fi
+      rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-claim.json
+      case "$BB_POWDER_CARD_STATUS" in
+        awaiting_input)
+          if [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+            write_linejam_alert_report "operator_attention_already_requested" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+            return 0
+          fi
+          ;;
+        claimed|running)
+          if [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+            write_linejam_alert_report "operator_attention_claimed_by_peer" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+            return 0
+          fi
+          ;;
+      esac
+      write_blocked_report "Powder claim conflicted without a readable active peer claim"
+      return 0
+      ;;
+    *)
+      rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-claim.json
+      write_blocked_report "Powder card claim failed with HTTP $claim_status"
+      return 0
+      ;;
+  esac
   python3 - "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL" <<'PY'
 import json
 import sys
@@ -676,7 +728,7 @@ PY
   curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/runs/$powder_run_id/input" \
     -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
     -d @.bb-powder-input.json -o /dev/null
-  rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-input.json
+  rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-claim.json .bb-powder-input.json
   write_linejam_alert_report "operator_attention_requested" "$card_id" "$powder_run_id" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
 }
 

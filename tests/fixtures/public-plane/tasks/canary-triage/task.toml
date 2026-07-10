@@ -11,7 +11,6 @@ host = "example-org/lane-1"
 repos = [
   { url = "https://github.com/example-org/canary-example.git", ref = "main" },
   { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
-  { url = "https://github.com/example-org/linejam-example.git", ref = "main" },
 ]
 
 [budget]
@@ -35,4 +34,4 @@ any_of = ["incident.opened", "incident.updated"]
 
 [[trigger.filter]]
 pointer = "/incident/service"
-any_of = ["canary", "linejam"]
+any_of = ["canary"]

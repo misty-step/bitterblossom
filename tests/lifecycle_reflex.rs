@@ -764,11 +764,11 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     assert_eq!(duplicate.status, 202);
     assert!(duplicate.body.contains("\"duplicate\":true"));
 
-    let linejam =
-        r#"{"event":"incident.opened","incident":{"id":"INC-linejam","service":"linejam"}}"#;
-    assert_eq!(deliver(&mut ledger, linejam, "DLV-2").status, 202);
-
     for (body, delivery) in [
+        (
+            r#"{"event":"incident.opened","incident":{"id":"INC-linejam","service":"linejam"}}"#,
+            "DLV-2",
+        ),
         (
             r#"{"event":"annotation.added","incident":{"id":"INC-factory","service":"canary"}}"#,
             "DLV-3",
@@ -784,7 +784,7 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     }
     assert_eq!(
         ledger.list_runs(Some("canary-triage"), None).unwrap().len(),
-        2
+        1
     );
 }
 

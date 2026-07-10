@@ -7,10 +7,6 @@ then `EVENT.json`, query Canary replay/read URLs when credentials are present,
 and write a bounded incident triage report. This task never mutates code,
 Canary, GitHub, deploy state, BB task state, or BB run state.
 
-The declared service mapping includes both `canary` and `linejam`; Linejam
-Production Smoke incidents are report-only evidence and never grant this task
-code or deployment authority.
-
 Read RUN.json first. Read EVENT.json next.
 
 ## Oracle
