@@ -5,7 +5,7 @@ required_artifacts = ["REPORT.json"]
 [workspace]
 # All Linejam alert and recovery deliveries serialize through one durable host
 # lease because Powder request_input is not idempotent.
-host = "bb-runner@10.108.0.4"
+host = "ssh://bb-runner@10.108.0.4:2222"
 repos = [
   { url = "https://github.com/example-org/linejam-example.git", ref = "main" },
   { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
