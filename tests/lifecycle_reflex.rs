@@ -306,6 +306,14 @@ fn incident_triage_task_is_glm_command_responder_contract() {
     assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"POWDER_INCIDENT_ALERT_API_KEY".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"POWDER_API_BASE_URL".to_string()));
     assert_eq!(task.agent.policy.authority.as_deref(), Some("merge"));
     assert!(task
         .agent
@@ -313,6 +321,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         .model_allowlist
         .contains(&"z-ai/glm-5.2".to_string()));
     assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.host(), "example-org/incident-triage-1");
     assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
     assert_eq!(task.spec.budget.max_runs_per_day, Some(3));
     assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(5.0));
@@ -321,7 +330,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         task.spec.admission.attention_debt,
         AttentionDebtPolicy::Task
     );
-    assert_eq!(task.spec.workspace.repos.len(), 4);
+    assert_eq!(task.spec.workspace.repos.len(), 5);
 
     let webhook = task
         .spec
@@ -345,6 +354,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
             && f.any_of.as_ref().is_some_and(|values| {
                 values.contains(&serde_json::json!("incident.opened"))
                     && values.contains(&serde_json::json!("incident.updated"))
+                    && values.contains(&serde_json::json!("incident.resolved"))
             })
     }));
     assert!(webhook.2.iter().any(|f| {
@@ -353,6 +363,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
                 values.contains(&serde_json::json!("canary"))
                     && values.contains(&serde_json::json!("bastion"))
                     && values.contains(&serde_json::json!("powder"))
+                    && values.contains(&serde_json::json!("linejam"))
             })
     }));
     assert!(
@@ -366,6 +377,11 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "misty-step/canary",
         "misty-step/bastion",
         "misty-step/powder",
+        "misty-step/linejam",
+        "linejam-production-smoke",
+        "single-flight",
+        "service-scoped",
+        "Powder",
         "Cerberus",
         "CI green is mandatory",
         "maximum 3 fix attempts",

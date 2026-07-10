@@ -139,7 +139,8 @@ fn write_event_and_run(dir: &std::path::Path, service: &str) {
   "subject": {{"type": "incident", "id": "INC-test123", "service": "{service}", "environment": "production"}},
   "signal": {{"kind": "error_group", "fingerprint": "fp-test", "severity": "low", "observed_at": "2026-07-02T00:00:00Z"}},
   "replay": {{"incident_url": "/api/v1/incidents/INC-test123", "timeline_url": "/api/v1/timeline?service={service}&window=1h", "report_url": "/api/v1/report?service={service}&window=1h"}},
-  "incident": {{"id": "INC-test123", "service": "{service}", "severity": "low", "opened_at": "2026-07-02T00:00:00Z"}}
+  "incident": {{"id": "INC-test123", "service": "{service}", "severity": "low", "opened_at": "2026-07-02T00:00:00Z"}},
+  "timestamp": "2026-07-02T00:00:10Z"
 }}"#
         ),
     )
@@ -150,6 +151,361 @@ fn write_event_and_run(dir: &std::path::Path, service: &str) {
     )
     .unwrap();
     fs::write(dir.join("LANE_CARD.md"), "# card\n").unwrap();
+}
+
+#[test]
+fn linejam_production_smoke_alert_creates_powder_needs_you_without_running_model() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "linejam");
+    let (canary_port, canary_log) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+            return (
+                200,
+                r#"{"signals":[{"type":"health_transition","monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke"}]}"#.to_string(),
+            );
+        }
+        if method == "GET" && path.starts_with("/api/v1/annotations?") {
+            return (
+                200,
+                r#"{"annotations":[{"created_at":"2026-07-02T00:00:08Z","metadata":{"kind":"production-smoke-status","outcome":"failure","consecutive_failures":1,"failure_detail":"tests/e2e/prod-smoke.spec.ts","external_url":"https://github.com/misty-step/linejam/actions/runs/12344"}},{"created_at":"2026-07-02T00:00:11Z","metadata":{"kind":"production-smoke-status","outcome":"success","consecutive_failures":0,"external_url":"https://github.com/misty-step/linejam/actions/runs/12346"}},{"created_at":"2026-07-02T00:00:09Z","metadata":{"kind":"production-smoke-status","outcome":"failure","consecutive_failures":2,"failure_detail":"tests/e2e/prod-smoke.spec.ts: signed-in user can join","external_url":"https://github.com/misty-step/linejam/actions/runs/12345"}}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+    let (powder_port, powder_log) = spawn_stub_canary(4, |method, path, _body| {
+        match (method, path) {
+            ("GET", "/api/v1/cards/linejam-alert-inc-test123") => (404, "{}".to_string()),
+            ("POST", "/api/v1/cards") => (
+                200,
+                r#"{"id":"linejam-alert-inc-test123","status":"ready"}"#.to_string(),
+            ),
+            ("POST", "/api/v1/cards/linejam-alert-inc-test123/claim") => (
+                200,
+                r#"{"card_id":"linejam-alert-inc-test123","run_id":"run-alert","expires_at":9999999999}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v1/runs/run-alert/input") => (
+                200,
+                r#"{"id":"run-alert","card_id":"linejam-alert-12345","state":"awaiting_input"}"#
+                    .to_string(),
+            ),
+            _ => (404, "{}".to_string()),
+        }
+    });
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .env(
+            "POWDER_API_BASE_URL",
+            format!("http://127.0.0.1:{powder_port}"),
+        )
+        .env("POWDER_INCIDENT_ALERT_API_KEY", "test-powder")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "operator_attention_requested");
+    assert_eq!(report["repo"], "misty-step/linejam");
+    assert_eq!(
+        report["powder_alert"]["card_id"],
+        "linejam-alert-inc-test123"
+    );
+    assert_eq!(report["powder_alert"]["run_id"], "run-alert");
+
+    let requests = powder_log.lock().unwrap();
+    let input = requests
+        .iter()
+        .find(|(method, path, _)| method == "POST" && path.ends_with("/input"))
+        .expect("Powder request_input call");
+    assert!(input.2.contains("signed-in user can join"));
+    assert!(input.2.contains("actions/runs/12345"));
+    drop(requests);
+    assert_eq!(canary_log.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn linejam_production_smoke_single_failure_stays_below_page_threshold() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "linejam");
+    let (canary_port, _) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+            return (
+                200,
+                r#"{"signals":[{"monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke"}]}"#.to_string(),
+            );
+        }
+        if method == "GET" && path.starts_with("/api/v1/annotations?") {
+            return (
+                200,
+                r#"{"annotations":[{"created_at":"2026-07-02T00:00:09Z","metadata":{"kind":"production-smoke-status","outcome":"failure","consecutive_failures":1,"failure_detail":"tests/e2e/prod-smoke.spec.ts","external_url":"https://github.com/misty-step/linejam/actions/runs/12344"}}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "failure_below_threshold");
+    assert!(report["powder_alert"]["card_id"].is_null());
+}
+
+#[test]
+fn linejam_production_smoke_recovery_is_annotated_without_new_powder_input() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "linejam");
+    let mut event: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("EVENT.json")).unwrap()).unwrap();
+    event["event"] = serde_json::json!("incident.resolved");
+    event["timestamp"] = serde_json::json!("2026-07-02T00:00:20Z");
+    fs::write(
+        dir.path().join("EVENT.json"),
+        serde_json::to_vec_pretty(&event).unwrap(),
+    )
+    .unwrap();
+    let (canary_port, _) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+            return (
+                200,
+                r#"{"signals":[{"monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke","resolved_at":"2026-07-10T05:00:00Z"}]}"#.to_string(),
+            );
+        }
+        if method == "GET" && path.starts_with("/api/v1/annotations?") {
+            return (
+                200,
+                r#"{"annotations":[{"created_at":"2026-07-02T00:00:19Z","metadata":{"kind":"production-smoke-status","outcome":"success","external_url":"https://github.com/misty-step/linejam/actions/runs/12346"}}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+    let (powder_port, powder_log) = spawn_stub_canary(3, |method, path, _body| {
+        match (method, path) {
+            ("GET", "/api/v1/cards/linejam-alert-inc-test123") => (
+                200,
+                r#"{"card":{"id":"linejam-alert-inc-test123","status":"awaiting_input","claim":{"agent":"bb-incident-triage-alert","run_id":"run-existing","acquired_at":1,"expires_at":9999999999}},"runs":[{"id":"run-existing","state":"awaiting_input"}]}"#.to_string(),
+            ),
+            ("POST", "/api/v1/runs/run-existing/answer") => (
+                200,
+                r#"{"id":"run-existing","state":"active"}"#.to_string(),
+            ),
+            ("POST", "/api/v1/cards/linejam-alert-inc-test123/complete") => (
+                200,
+                r#"{"id":"linejam-alert-inc-test123","status":"done"}"#.to_string(),
+            ),
+            _ => (404, "{}".to_string()),
+        }
+    });
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .env(
+            "POWDER_API_BASE_URL",
+            format!("http://127.0.0.1:{powder_port}"),
+        )
+        .env("POWDER_INCIDENT_ALERT_API_KEY", "test-powder")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "recovery_closed_operator_alert");
+    assert_eq!(
+        report["powder_alert"]["card_id"],
+        "linejam-alert-inc-test123"
+    );
+    let requests = powder_log.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().any(|(method, path, body)| {
+        method == "POST" && path.ends_with("/answer") && body.contains("Production Smoke recovered")
+    }));
+    assert!(requests
+        .iter()
+        .any(|(method, path, _)| { method == "POST" && path.ends_with("/complete") }));
+}
+
+#[test]
+fn linejam_production_smoke_redelivery_reuses_existing_powder_input() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "linejam");
+    let (canary_port, _) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+            return (
+                200,
+                r#"{"signals":[{"monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke"}]}"#.to_string(),
+            );
+        }
+        if method == "GET" && path.starts_with("/api/v1/annotations?") {
+            return (
+                200,
+                r#"{"annotations":[{"created_at":"2026-07-02T00:00:09Z","metadata":{"kind":"production-smoke-status","outcome":"failure","consecutive_failures":2,"failure_detail":"tests/e2e/prod-smoke.spec.ts: signed-in user can join","external_url":"https://github.com/misty-step/linejam/actions/runs/12345"}}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+    let (powder_port, powder_log) = spawn_stub_canary(1, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/cards/linejam-alert-inc-test123" {
+            return (
+                200,
+                r#"{"card":{"id":"linejam-alert-inc-test123","status":"awaiting_input","claim":{"agent":"bb-incident-triage-alert","run_id":"run-existing","acquired_at":1,"expires_at":9999999999}},"runs":[{"id":"run-existing","state":"awaiting_input"}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .env(
+            "POWDER_API_BASE_URL",
+            format!("http://127.0.0.1:{powder_port}"),
+        )
+        .env("POWDER_INCIDENT_ALERT_API_KEY", "test-powder")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "operator_attention_already_requested");
+    assert_eq!(report["powder_alert"]["run_id"], "run-existing");
+    let requests = powder_log.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "GET");
+}
+
+#[test]
+fn linejam_production_smoke_resumes_same_actor_claim_after_interruption() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "linejam");
+    let (canary_port, _) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+            return (
+                200,
+                r#"{"signals":[{"monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke"}]}"#.to_string(),
+            );
+        }
+        if method == "GET" && path.starts_with("/api/v1/annotations?") {
+            return (
+                200,
+                r#"{"annotations":[{"created_at":"2026-07-02T00:00:09Z","metadata":{"kind":"production-smoke-status","outcome":"failure","consecutive_failures":2,"failure_detail":"tests/e2e/prod-smoke.spec.ts:42:7","external_url":"https://github.com/misty-step/linejam/actions/runs/12345"}}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+    let (powder_port, powder_log) = spawn_stub_canary(3, |method, path, _body| {
+        match (method, path) {
+            ("GET", "/api/v1/cards/linejam-alert-inc-test123") => (
+                200,
+                r#"{"card":{"id":"linejam-alert-inc-test123","status":"claimed","claim":{"agent":"bb-incident-triage-alert","run_id":"run-interrupted","acquired_at":1,"expires_at":9999999999}},"runs":[{"id":"run-interrupted","state":"active"}]}"#.to_string(),
+            ),
+            ("POST", "/api/v1/cards/linejam-alert-inc-test123/claim") => (
+                200,
+                r#"{"card_id":"linejam-alert-inc-test123","run_id":"run-interrupted","agent":"bb-incident-triage-alert","expires_at":9999999999}"#.to_string(),
+            ),
+            ("POST", "/api/v1/runs/run-interrupted/input") => (
+                200,
+                r#"{"id":"run-interrupted","card_id":"linejam-alert-inc-test123","state":"awaiting_input"}"#.to_string(),
+            ),
+            _ => (404, "{}".to_string()),
+        }
+    });
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .env(
+            "POWDER_API_BASE_URL",
+            format!("http://127.0.0.1:{powder_port}"),
+        )
+        .env("POWDER_INCIDENT_ALERT_API_KEY", "test-powder")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "operator_attention_requested");
+    assert_eq!(report["powder_alert"]["run_id"], "run-interrupted");
+    let requests = powder_log.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .iter()
+        .any(|(method, path, _)| method == "POST" && path.ends_with("/input")));
+}
+
+#[test]
+fn linejam_production_smoke_concurrent_create_reuses_peer_powder_input() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "linejam");
+    let (canary_port, _) = spawn_stub_canary(2, |method, path, _body| {
+        if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+            return (
+                200,
+                r#"{"signals":[{"monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke"}]}"#.to_string(),
+            );
+        }
+        if method == "GET" && path.starts_with("/api/v1/annotations?") {
+            return (
+                200,
+                r#"{"annotations":[{"created_at":"2026-07-02T00:00:09Z","metadata":{"kind":"production-smoke-status","outcome":"failure","consecutive_failures":2,"failure_detail":"tests/e2e/prod-smoke.spec.ts: signed-in user can join","external_url":"https://github.com/misty-step/linejam/actions/runs/12345"}}]}"#.to_string(),
+            );
+        }
+        (404, "{}".to_string())
+    });
+    let powder_reads = Arc::new(Mutex::new(0usize));
+    let reads = powder_reads.clone();
+    let (powder_port, powder_log) = spawn_stub_canary(3, move |method, path, _body| {
+        match (method, path) {
+            ("GET", "/api/v1/cards/linejam-alert-inc-test123") => {
+                let mut read_count = reads.lock().unwrap();
+                *read_count += 1;
+                if *read_count == 1 {
+                    (404, "{}".to_string())
+                } else {
+                    (
+                        200,
+                        r#"{"card":{"id":"linejam-alert-inc-test123","status":"awaiting_input","claim":{"agent":"bb-incident-triage-alert","run_id":"run-peer","acquired_at":1,"expires_at":9999999999}},"runs":[{"id":"run-peer","state":"awaiting_input"}]}"#.to_string(),
+                    )
+                }
+            }
+            ("POST", "/api/v1/cards") => (409, r#"{"error":"card already exists"}"#.to_string()),
+            _ => (404, "{}".to_string()),
+        }
+    });
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+        .env("CANARY_API_KEY", "test-canary")
+        .env(
+            "POWDER_API_BASE_URL",
+            format!("http://127.0.0.1:{powder_port}"),
+        )
+        .env("POWDER_INCIDENT_ALERT_API_KEY", "test-powder")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "operator_attention_already_requested");
+    assert_eq!(report["powder_alert"]["run_id"], "run-peer");
+    assert_eq!(powder_log.lock().unwrap().len(), 3);
 }
 
 #[test]
@@ -720,6 +1076,48 @@ fn incident_triage_wrapper_blocks_unlisted_service_before_model_run() {
     );
     let parsed = parse_output("command", &String::from_utf8(output.stdout).unwrap()).unwrap();
     assert!(parsed.result.contains("incident triage blocked"));
+}
+
+#[test]
+fn incident_triage_wrapper_blocks_non_linejam_resolved_event_before_model_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let mut event: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("EVENT.json")).unwrap()).unwrap();
+    event["event"] = serde_json::json!("incident.resolved");
+    fs::write(
+        dir.path().join("EVENT.json"),
+        serde_json::to_vec_pretty(&event).unwrap(),
+    )
+    .unwrap();
+    let marker = dir.path().join("model-ran");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        &format!("#!/bin/sh\ntouch {}\nexit 9\n", marker.display()),
+    );
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(
+        !marker.exists(),
+        "resolved Canary incident must not run model"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "blocked");
+    assert_eq!(
+        report["residual_risk"][0],
+        "incident.resolved is admitted only for the Linejam alert recovery path"
+    );
 }
 
 #[test]

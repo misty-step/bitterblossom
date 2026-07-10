@@ -4,7 +4,7 @@ harness = "command"
 model = "z-ai/glm-5.2"
 auth = "api"
 bin = "bitterblossom/scripts/incident-triage-wrapper.sh"
-secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "CANARY_ENDPOINT", "CANARY_API_KEY"]
+secrets = ["OPENROUTER_API_KEY", "GH_TOKEN", "CANARY_ENDPOINT", "CANARY_API_KEY", "POWDER_INCIDENT_ALERT_API_KEY", "POWDER_API_BASE_URL"]
 skills = [
   "harness-kit/diagnose#incident-triage",
   "harness-kit/deliver#builder",

@@ -45,6 +45,7 @@ copy_env_value() {
       GH_TOKEN) GH_TOKEN="$value"; export GH_TOKEN ;;
       OPENROUTER_API_KEY) OPENROUTER_API_KEY="$value"; export OPENROUTER_API_KEY ;;
       CANARY_API_KEY) CANARY_API_KEY="$value"; export CANARY_API_KEY ;;
+      POWDER_API_KEY) POWDER_API_KEY="$value"; export POWDER_API_KEY ;;
       *)
         echo "internal error: unsupported target env $target" >&2
         exit 70
@@ -56,6 +57,7 @@ copy_env_value() {
 copy_env_value GH_TOKEN "${INCIDENT_TRIAGE_GH_TOKEN_ENV:-GH_TOKEN}"
 copy_env_value OPENROUTER_API_KEY "${INCIDENT_TRIAGE_OPENROUTER_API_KEY_ENV:-OPENROUTER_API_KEY}"
 copy_env_value CANARY_API_KEY "${INCIDENT_TRIAGE_CANARY_API_KEY_ENV:-CANARY_API_KEY}"
+copy_env_value POWDER_API_KEY "${INCIDENT_TRIAGE_POWDER_API_KEY_ENV:-POWDER_INCIDENT_ALERT_API_KEY}"
 
 if [ ! -f "$event_file" ]; then
   echo "EVENT.json not found" >&2
@@ -105,6 +107,8 @@ incident_id = incident.get("id") or subject.get("id") or ""
 service = incident.get("service") or subject.get("service") or ""
 severity = incident.get("severity") or signal.get("severity") or ""
 fingerprint = signal.get("fingerprint") or ""
+event_name = event.get("event") or ""
+event_timestamp = event.get("timestamp") or incident.get("resolved_at") or ""
 run_id = run.get("run_id") or run.get("id") or ""
 delivery_id = (run.get("trigger") or {}).get("idempotency_key") or ""
 if delivery_id.startswith("wh:incident-triage:"):
@@ -116,6 +120,7 @@ repos = {
     "canary": ("misty-step/canary", "canary", "true"),
     "bastion": ("misty-step/bastion", "bastion", "false"),
     "powder": ("misty-step/powder", "powder", "false"),
+    "linejam": ("misty-step/linejam", "linejam", "true"),
 }
 repo, repo_dir, auto_deploy = repos.get(service, ("", "", "false"))
 allowed = "1" if service in repos else "0"
@@ -127,6 +132,8 @@ for key, value in {
     "BB_TRIAGE_SERVICE": service,
     "BB_TRIAGE_SEVERITY": severity,
     "BB_TRIAGE_FINGERPRINT": fingerprint,
+    "BB_TRIAGE_EVENT": event_name,
+    "BB_TRIAGE_EVENT_TIMESTAMP": event_timestamp,
     "BB_TRIAGE_REPO": repo,
     "BB_TRIAGE_REPO_DIR": repo_dir,
     "BB_TRIAGE_AUTO_DEPLOY_ON_MERGE": auto_deploy,
@@ -137,6 +144,7 @@ PY
 )"
 export BB_TRIAGE_RUN_ID BB_TRIAGE_DELIVERY_ID BB_TRIAGE_INCIDENT_ID
 export BB_TRIAGE_SERVICE BB_TRIAGE_SEVERITY BB_TRIAGE_FINGERPRINT
+export BB_TRIAGE_EVENT BB_TRIAGE_EVENT_TIMESTAMP
 export BB_TRIAGE_REPO BB_TRIAGE_REPO_DIR BB_TRIAGE_AUTO_DEPLOY_ON_MERGE BB_TRIAGE_ALLOWED
 
 write_blocked_report() {
@@ -334,8 +342,406 @@ print(json.dumps({
 PY
 }
 
+write_linejam_alert_report() {
+  status="$1"
+  card_id="$2"
+  powder_run_id="$3"
+  detail="$4"
+  run_url="$5"
+  python3 - "$status" "$card_id" "$powder_run_id" "$detail" "$run_url" "$max_fix_attempts" <<'PY'
+import json
+import os
+import sys
+
+status, card_id, powder_run_id, detail, run_url, max_attempts = sys.argv[1:7]
+report = {
+    "schema": "bb.incident_triage_response.v1",
+    "status": status,
+    "bb_run_id": os.environ.get("BB_TRIAGE_RUN_ID", ""),
+    "delivery_id": os.environ.get("BB_TRIAGE_DELIVERY_ID", ""),
+    "incident": {
+        "id": os.environ.get("BB_TRIAGE_INCIDENT_ID", ""),
+        "service": "linejam",
+        "severity": os.environ.get("BB_TRIAGE_SEVERITY", ""),
+        "fingerprint": os.environ.get("BB_TRIAGE_FINGERPRINT", ""),
+    },
+    "repo": "misty-step/linejam",
+    "progress_writebacks": [],
+    "hypotheses": [],
+    "experiments": [],
+    "fix_attempts": [],
+    "iteration_guard": {
+        "max_fix_attempts": int(max_attempts),
+        "attempts_used": 0,
+        "stopped": True,
+        "reason": "production smoke alert routed to operator attention without autonomous code mutation",
+    },
+    "scope_honesty": {
+        "auto_deploy_on_merge": True,
+        "v1_stop": status,
+    },
+    "powder_alert": {
+        "card_id": card_id or None,
+        "run_id": powder_run_id or None,
+        "failure_detail": detail or None,
+        "external_url": run_url or None,
+    },
+    "artifact_paths": ["REPORT.json"],
+    "residual_risk": [],
+}
+with open("REPORT.json", "w", encoding="utf-8") as f:
+    json.dump(report, f, indent=2, sort_keys=True)
+    f.write("\n")
+print(json.dumps({
+    "schema_version": "bb.command_result.v1",
+    "result": f"incident triage {status} for misty-step/linejam {report['incident']['id']}",
+}, sort_keys=True))
+PY
+}
+
+load_powder_card_state() {
+  eval "$(python3 - "$1" <<'PY'
+import json
+import shlex
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+card = data.get("card", data) if isinstance(data, dict) else {}
+status = card.get("status") or ""
+claim = card.get("claim") if isinstance(card.get("claim"), dict) else {}
+run_id = claim.get("run_id") or ""
+if not run_id and isinstance(data, dict):
+    for run in data.get("runs") or []:
+        if isinstance(run, dict) and run.get("state") in {"awaiting_input", "active"}:
+            run_id = run.get("id") or ""
+            break
+print(f"BB_POWDER_CARD_STATUS={shlex.quote(str(status))}")
+print(f"BB_POWDER_EXISTING_RUN_ID={shlex.quote(str(run_id))}")
+PY
+)"
+}
+
+handle_linejam_smoke_alert() {
+  monitor_id="MON-28junwbo5mgv"
+  incident_json=".bb-linejam-incident.json"
+  annotations_json=".bb-linejam-monitor-annotations.json"
+
+  if [ -z "${CANARY_ENDPOINT:-}" ] || [ -z "${CANARY_API_KEY:-}" ]; then
+    write_blocked_report "CANARY_ENDPOINT or CANARY_API_KEY is unset"
+    return 0
+  fi
+  if ! curl -fsS "${CANARY_ENDPOINT%/}/api/v1/incidents/$BB_TRIAGE_INCIDENT_ID" \
+      -H "Authorization: Bearer $CANARY_API_KEY" -o "$incident_json"; then
+    write_blocked_report "failed to read Linejam incident context from Canary"
+    return 0
+  fi
+
+  monitor_match=$(python3 - "$incident_json" "$monitor_id" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+monitor_id = sys.argv[2]
+signals = data.get("signals") if isinstance(data, dict) else []
+print("1" if any(
+    isinstance(signal, dict)
+    and (signal.get("monitor_id") == monitor_id
+         or signal.get("monitor_name") == "linejam-production-smoke")
+    for signal in (signals or [])
+) else "0")
+PY
+)
+  if [ "$monitor_match" != "1" ]; then
+    rm -f "$incident_json"
+    write_blocked_report "Linejam incident is not the declared linejam-production-smoke monitor alert"
+    return 0
+  fi
+
+  if ! curl -fsS "${CANARY_ENDPOINT%/}/api/v1/annotations?subject_type=monitor&subject_id=$monitor_id&limit=20" \
+      -H "Authorization: Bearer $CANARY_API_KEY" -o "$annotations_json"; then
+    rm -f "$incident_json"
+    write_blocked_report "failed to read Linejam Production Smoke annotations from Canary"
+    return 0
+  fi
+
+  eval "$(python3 - "$annotations_json" "$BB_TRIAGE_EVENT_TIMESTAMP" <<'PY'
+from datetime import datetime
+import json
+import shlex
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+event_timestamp = sys.argv[2]
+annotations = data.get("annotations") if isinstance(data, dict) else []
+eligible = []
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+event_time = parse_timestamp(event_timestamp)
+for annotation in annotations or []:
+    metadata = annotation.get("metadata") if isinstance(annotation, dict) else None
+    created_at = parse_timestamp(annotation.get("created_at")) if isinstance(annotation, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("kind") != "production-smoke-status":
+        continue
+    # Linejam writes the annotation immediately before the check-in that emits
+    # this event. Timestamp correlation prevents a delayed delivery from
+    # consuming a newer failure or recovery annotation.
+    if event_time is None or created_at is None:
+        continue
+    age_seconds = (event_time - created_at).total_seconds()
+    if 0 <= age_seconds <= 600:
+        eligible.append((created_at, metadata))
+selected = max(eligible, key=lambda item: item[0])[1] if eligible else {}
+values = {
+    "BB_LINEJAM_ALERT_OUTCOME": selected.get("outcome") or "",
+    "BB_LINEJAM_ALERT_STREAK": selected.get("consecutive_failures") or 0,
+    "BB_LINEJAM_ALERT_DETAIL": selected.get("failure_detail") or "tests/e2e/prod-smoke.spec.ts",
+    "BB_LINEJAM_ALERT_URL": selected.get("external_url") or "",
+}
+for key, value in values.items():
+    print(f"{key}={shlex.quote(str(value))}")
+PY
+)"
+  export BB_LINEJAM_ALERT_OUTCOME BB_LINEJAM_ALERT_STREAK BB_LINEJAM_ALERT_DETAIL BB_LINEJAM_ALERT_URL
+  rm -f "$incident_json" "$annotations_json"
+
+  case "$BB_LINEJAM_ALERT_STREAK" in
+    ''|*[!0-9]*)
+      write_blocked_report "Linejam Production Smoke annotation has an invalid consecutive-failure count"
+      return 0
+      ;;
+  esac
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "failure" ] && [ "$BB_LINEJAM_ALERT_STREAK" -lt 2 ]; then
+    write_linejam_alert_report "failure_below_threshold" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+    return 0
+  fi
+
+  if [ -z "${POWDER_API_BASE_URL:-}" ] || [ -z "${POWDER_API_KEY:-}" ]; then
+    write_blocked_report "POWDER_API_BASE_URL or scoped incident-alert key is unset"
+    return 0
+  fi
+
+  card_id=$(python3 - "$BB_TRIAGE_INCIDENT_ID" <<'PY'
+import re
+import sys
+
+incident_id = sys.argv[1]
+suffix = re.sub(r"[^a-z0-9]+", "-", incident_id.lower()).strip("-")
+print(f"linejam-alert-{suffix}")
+PY
+)
+
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "success" ]; then
+    card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+      "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+      -H "Authorization: Bearer $POWDER_API_KEY")
+    if [ "$card_status" = "404" ]; then
+      rm -f .bb-powder-card.json
+      write_linejam_alert_report "recovery_annotated" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+      return 0
+    fi
+    if [ "$card_status" != "200" ]; then
+      rm -f .bb-powder-card.json
+      write_blocked_report "Powder recovery card read failed with HTTP $card_status"
+      return 0
+    fi
+    load_powder_card_state .bb-powder-card.json
+    if [ "$BB_POWDER_CARD_STATUS" = "awaiting_input" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+      python3 - "$BB_LINEJAM_ALERT_URL" <<'PY'
+import json
+import sys
+
+run_url = sys.argv[1]
+json.dump({
+    "actor": "bb-incident-triage-alert",
+    "answer": f"Production Smoke recovered and Canary recorded fix-verified. Evidence: {run_url}",
+}, open(".bb-powder-answer.json", "w", encoding="utf-8"))
+PY
+      curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/runs/$BB_POWDER_EXISTING_RUN_ID/answer" \
+        -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+        -d @.bb-powder-answer.json -o /dev/null
+      BB_POWDER_CARD_STATUS="running"
+    fi
+    if [ "$BB_POWDER_CARD_STATUS" = "running" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+      python3 - "$BB_LINEJAM_ALERT_URL" <<'PY'
+import json
+import sys
+
+run_url = sys.argv[1]
+json.dump({
+    "proof": f"Linejam Production Smoke recovered; Canary fix-verified annotation and green run: {run_url}",
+}, open(".bb-powder-complete.json", "w", encoding="utf-8"))
+PY
+      curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id/complete" \
+        -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+        -d @.bb-powder-complete.json -o /dev/null
+      rm -f .bb-powder-card.json .bb-powder-answer.json .bb-powder-complete.json
+      write_linejam_alert_report "recovery_closed_operator_alert" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+      return 0
+    fi
+    rm -f .bb-powder-card.json .bb-powder-answer.json .bb-powder-complete.json
+    case "$BB_POWDER_CARD_STATUS" in
+      done|shipped|abandoned)
+        write_linejam_alert_report "recovery_alert_already_closed" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+        return 0
+        ;;
+      ready)
+        write_linejam_alert_report "recovery_annotated" "$card_id" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+        return 0
+        ;;
+      *)
+        write_blocked_report "Powder recovery card is not closable (status: $BB_POWDER_CARD_STATUS)"
+        return 0
+        ;;
+    esac
+  fi
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" != "failure" ]; then
+    write_blocked_report "Linejam Production Smoke annotation is missing an event-correlated outcome"
+    return 0
+  fi
+
+  python3 - "$card_id" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL" "$BB_TRIAGE_INCIDENT_ID" <<'PY'
+import json
+import sys
+
+card_id, detail, run_url, incident_id = sys.argv[1:5]
+json.dump({
+    "id": card_id,
+    "title": "Linejam Production Smoke needs operator attention",
+    "body": f"Two consecutive Production Smoke runs failed. Failing test: {detail}. Canary incident: {incident_id}. Run: {run_url}",
+    "acceptance": ["Operator acknowledges the failure and chooses rollback or repair from the linked evidence."],
+    "proof_plan": ["Inspect the failing GitHub run, Canary incident, and current production health before acting."],
+    "status": "ready",
+    "priority": "P0",
+    "repo": "linejam",
+    "labels": ["incident", "production-smoke", "needs-operator"],
+}, open(".bb-powder-card-create.json", "w", encoding="utf-8"))
+PY
+  card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+    "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+    -H "Authorization: Bearer $POWDER_API_KEY")
+  if [ "$card_status" = "404" ]; then
+    create_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+      -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards" \
+      -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+      -d @.bb-powder-card-create.json)
+    case "$create_status" in
+      200|201) ;;
+      409)
+        card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+          "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+          -H "Authorization: Bearer $POWDER_API_KEY")
+        if [ "$card_status" != "200" ]; then
+          rm -f .bb-powder-card-create.json .bb-powder-card.json
+          write_blocked_report "Powder concurrent card read failed with HTTP $card_status"
+          return 0
+        fi
+        ;;
+      *)
+        rm -f .bb-powder-card-create.json .bb-powder-card.json
+        write_blocked_report "Powder card create failed with HTTP $create_status"
+        return 0
+        ;;
+    esac
+  elif [ "$card_status" != "200" ]; then
+    rm -f .bb-powder-card-create.json .bb-powder-card.json
+    write_blocked_report "Powder card read failed with HTTP $card_status"
+    return 0
+  fi
+  load_powder_card_state .bb-powder-card.json
+  if [ "$BB_POWDER_CARD_STATUS" = "awaiting_input" ] && [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+    rm -f .bb-powder-card-create.json .bb-powder-card.json
+    write_linejam_alert_report "operator_attention_already_requested" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+    return 0
+  fi
+  case "$BB_POWDER_CARD_STATUS" in
+    ready|claimed|running) ;;
+    *)
+      rm -f .bb-powder-card-create.json .bb-powder-card.json
+      write_blocked_report "existing Powder alert card cannot accept input (status: $BB_POWDER_CARD_STATUS)"
+      return 0
+      ;;
+  esac
+  # Every incident-triage run shares one declared workspace host, and BB's
+  # atomic host lease keeps wrapper executions single-flight. Re-claiming here
+  # is therefore recovery, not a concurrent request_input race: Powder returns
+  # the existing run for this scoped actor after an interruption between claim
+  # and input. A genuinely different claim holder returns 409 below.
+  claim_status=$(curl -sS -o .bb-powder-claim.json -w '%{http_code}' \
+    -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id/claim" \
+    -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+    -d '{"agent":"bb-incident-triage-alert","ttl_seconds":86400}')
+  case "$claim_status" in
+    200|201)
+      powder_run_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["run_id"])' .bb-powder-claim.json)
+      ;;
+    409)
+      card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
+        "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
+        -H "Authorization: Bearer $POWDER_API_KEY")
+      if [ "$card_status" = "200" ]; then
+        load_powder_card_state .bb-powder-card.json
+      else
+        BB_POWDER_CARD_STATUS=""
+        BB_POWDER_EXISTING_RUN_ID=""
+      fi
+      rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-claim.json
+      case "$BB_POWDER_CARD_STATUS" in
+        awaiting_input)
+          if [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+            write_linejam_alert_report "operator_attention_already_requested" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+            return 0
+          fi
+          ;;
+        claimed|running)
+          if [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
+            write_linejam_alert_report "operator_attention_claimed_by_peer" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+            return 0
+          fi
+          ;;
+      esac
+      write_blocked_report "Powder claim conflicted without a readable active peer claim"
+      return 0
+      ;;
+    *)
+      rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-claim.json
+      write_blocked_report "Powder card claim failed with HTTP $claim_status"
+      return 0
+      ;;
+  esac
+  python3 - "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL" <<'PY'
+import json
+import sys
+
+detail, run_url = sys.argv[1:3]
+json.dump({
+    "question": f"Linejam Production Smoke failed twice. Failing test: {detail}. Inspect {run_url} and choose rollback or repair."
+}, open(".bb-powder-input.json", "w", encoding="utf-8"))
+PY
+  curl -fsS -X POST "${POWDER_API_BASE_URL%/}/api/v1/runs/$powder_run_id/input" \
+    -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \
+    -d @.bb-powder-input.json -o /dev/null
+  rm -f .bb-powder-card-create.json .bb-powder-card.json .bb-powder-claim.json .bb-powder-input.json
+  write_linejam_alert_report "operator_attention_requested" "$card_id" "$powder_run_id" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+}
+
 if [ "$BB_TRIAGE_ALLOWED" != "1" ]; then
   write_blocked_report "service is not in the incident-triage whitelist"
+  exit 0
+fi
+
+if [ "$BB_TRIAGE_SERVICE" = "linejam" ]; then
+  handle_linejam_smoke_alert
+  exit 0
+fi
+if [ "$BB_TRIAGE_EVENT" = "incident.resolved" ]; then
+  write_blocked_report "incident.resolved is admitted only for the Linejam alert recovery path"
   exit 0
 fi
 

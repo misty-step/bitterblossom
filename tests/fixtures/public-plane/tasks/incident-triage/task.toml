@@ -3,11 +3,14 @@ substrate = "sprites"
 required_artifacts = ["REPORT.json"]
 
 [workspace]
+# Keep every incident-triage run on this one host. BB's atomic host lease is
+# the single-flight guard around Powder request_input, which is not idempotent.
 host = "example-org/incident-triage-1"
 repos = [
   { url = "https://github.com/example-org/canary-example.git", ref = "main" },
   { url = "https://github.com/example-org/bastion-example.git", ref = "main" },
   { url = "https://github.com/example-org/powder-example.git", ref = "main" },
+  { url = "https://github.com/example-org/linejam-example.git", ref = "main" },
   { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
 ]
 
@@ -45,8 +48,8 @@ dedupe_key = "header:X-Delivery-Id"
 
 [[trigger.filter]]
 pointer = "/event"
-any_of = ["incident.opened", "incident.updated"]
+any_of = ["incident.opened", "incident.updated", "incident.resolved"]
 
 [[trigger.filter]]
 pointer = "/incident/service"
-any_of = ["canary", "bastion", "powder"]
+any_of = ["canary", "bastion", "powder", "linejam"]
