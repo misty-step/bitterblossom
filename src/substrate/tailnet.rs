@@ -46,7 +46,10 @@ fn ssh_exec(
         host.to_string(),
         "--".into(),
     ];
-    cmd.extend(remote.iter().cloned());
+    // OpenSSH joins every argument after the destination into one command
+    // string for the remote login shell. Quote each intended argv element so
+    // scripts, redirects, and whitespace survive that lossy boundary.
+    cmd.extend(remote.iter().map(|arg| shell_quote(arg)));
     run_with_timeout(
         &cmd,
         stdin,

@@ -27,13 +27,17 @@ while [ $# -gt 0 ]; do
 done
 mkdir -p "$home"
 export HOME="$home"
-# macOS test hosts have no setsid; the session-leader semantics are
-# exercised on a real tailnet host (Linux), not by this stub.
-if [ "$1" = "setsid" ]; then
-  shift
-  [ "$1" = "-w" ] && shift
-fi
-exec "$@"
+# OpenSSH does not preserve a remote argv. It joins the remaining local argv
+# into one command string and asks the remote login shell to parse it. Emulate
+# that boundary here so scripts containing spaces fail unless BB shell-quotes
+# every remote argument before invoking ssh.
+remote="$*"
+# macOS test hosts have no setsid; the session-leader semantics are exercised
+# on a real tailnet host (Linux), not by this stub.
+case "$remote" in
+  "setsid -w sh"|"'setsid' '-w' 'sh'") remote="sh";;
+esac
+exec /bin/sh -c "$remote"
 "#;
 
 const COMMAND_STUB: &str = r#"#!/bin/sh
