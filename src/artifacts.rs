@@ -9,6 +9,7 @@
 
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -726,11 +727,28 @@ fn bundle_file_profile(path: &Path, rel: &Path) -> Result<BundleFileProfile> {
     }
     let size = meta.len();
     let content_type = content_type(rel);
+    bundle_file_profile_from_reader(&mut file, size, content_type)
+}
+
+fn bundle_file_profile_from_reader(
+    file: &mut impl Read,
+    size: u64,
+    content_type: String,
+) -> Result<BundleFileProfile> {
     if size <= READ_LIMIT {
         let mut bytes = Vec::new();
-        use std::io::Read;
-        file.read_to_end(&mut bytes)
-            .with_context(|| format!("read artifact {}", path.display()))?;
+        file.take(READ_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .context("read artifact")?;
+        let size = size.max(bytes.len() as u64);
+        if size > READ_LIMIT {
+            return Ok(BundleFileProfile {
+                size,
+                content_type,
+                binary: is_binary_sniff_bytes(&bytes[..bytes.len().min(8192)]),
+                bytes: None,
+            });
+        }
         let binary = is_binary_full_bytes(&bytes);
         Ok(BundleFileProfile {
             size,
@@ -739,11 +757,8 @@ fn bundle_file_profile(path: &Path, rel: &Path) -> Result<BundleFileProfile> {
             bytes: Some(bytes),
         })
     } else {
-        use std::io::Read;
         let mut buf = [0u8; 8192];
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("read artifact sniff {}", path.display()))?;
+        let n = file.read(&mut buf).context("read artifact sniff")?;
         Ok(BundleFileProfile {
             size,
             content_type,
@@ -821,8 +836,21 @@ fn looks_binary(path: &Path, size: u64) -> Result<bool> {
         return Ok(false);
     }
     let mut f = fs::File::open(path).context("open artifact for binary sniff")?;
-    use std::io::Read;
     let mut buf = [0u8; 8192];
     let n = f.read(&mut buf).context("read artifact for binary sniff")?;
     Ok(is_binary_sniff_bytes(&buf[..n]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_small_metadata_never_allows_an_oversized_inline_body() {
+        let mut input = std::io::Cursor::new(vec![b'a'; READ_LIMIT as usize + 2]);
+        let profile = bundle_file_profile_from_reader(&mut input, 1, "text/plain".into()).unwrap();
+        assert_eq!(profile.size, READ_LIMIT + 1);
+        assert!(profile.bytes.is_none());
+        assert_eq!(input.position(), READ_LIMIT + 1);
+    }
 }
