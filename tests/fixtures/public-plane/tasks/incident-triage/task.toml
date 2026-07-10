@@ -3,6 +3,8 @@ substrate = "sprites"
 required_artifacts = ["REPORT.json"]
 
 [workspace]
+# Keep every incident-triage run on this one host. BB's atomic host lease is
+# the single-flight guard around Powder request_input, which is not idempotent.
 host = "example-org/incident-triage-1"
 repos = [
   { url = "https://github.com/example-org/canary-example.git", ref = "main" },

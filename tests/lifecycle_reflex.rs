@@ -321,6 +321,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         .model_allowlist
         .contains(&"z-ai/glm-5.2".to_string()));
     assert_eq!(task.spec.substrate, "sprites");
+    assert_eq!(task.host(), "example-org/incident-triage-1");
     assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
     assert_eq!(task.spec.budget.max_runs_per_day, Some(3));
     assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(5.0));
@@ -378,6 +379,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "misty-step/powder",
         "misty-step/linejam",
         "linejam-production-smoke",
+        "single-flight",
         "Powder",
         "Cerberus",
         "CI green is mandatory",

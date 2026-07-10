@@ -661,19 +661,18 @@ PY
     return 0
   fi
   case "$BB_POWDER_CARD_STATUS" in
-    claimed|running)
-      if [ -n "$BB_POWDER_EXISTING_RUN_ID" ]; then
-        rm -f .bb-powder-card-create.json .bb-powder-card.json
-        write_linejam_alert_report "operator_attention_claimed_by_peer" "$card_id" "$BB_POWDER_EXISTING_RUN_ID" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
-        return 0
-      fi
+    ready|claimed|running) ;;
+    *)
+      rm -f .bb-powder-card-create.json .bb-powder-card.json
+      write_blocked_report "existing Powder alert card cannot accept input (status: $BB_POWDER_CARD_STATUS)"
+      return 0
       ;;
   esac
-  if [ "$BB_POWDER_CARD_STATUS" != "ready" ]; then
-    rm -f .bb-powder-card-create.json .bb-powder-card.json
-    write_blocked_report "existing Powder alert card is not ready or awaiting input (status: $BB_POWDER_CARD_STATUS)"
-    return 0
-  fi
+  # Every incident-triage run shares one declared workspace host, and BB's
+  # atomic host lease keeps wrapper executions single-flight. Re-claiming here
+  # is therefore recovery, not a concurrent request_input race: Powder returns
+  # the existing run for this scoped actor after an interruption between claim
+  # and input. A genuinely different claim holder returns 409 below.
   claim_status=$(curl -sS -o .bb-powder-claim.json -w '%{http_code}' \
     -X POST "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id/claim" \
     -H "Authorization: Bearer $POWDER_API_KEY" -H "Content-Type: application/json" \

@@ -23,6 +23,14 @@ This V1 is intentionally scoped to Misty Step repos only:
   correlated `incident.resolved` delivery answers and completes the owned
   Powder alert after recovery.
 
+The Linejam alert path is single-flight at the event-plane boundary. Every
+incident-triage run uses the task's one declared workspace host, and BB holds
+that host's atomic lease for the full wrapper attempt. Powder deliberately
+returns the same run to repeated claims by this scoped actor, while
+`request_input` itself is not idempotent; never invoke this wrapper outside the
+BB host lease. If an attempt stops after claiming but before requesting input,
+the next leased attempt reclaims the same run and finishes the operator handoff.
+
 The operator explicitly waived the usual BB never-skip-a-level rollout ladder
 for this incident responder on 2026-07-02. Do not reintroduce ceremonial rungs
 inside this task; simple, bounded, and verified remediation is the contract.
