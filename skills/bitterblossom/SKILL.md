@@ -269,9 +269,10 @@ The portable artifact is this whole folder: `skills/bitterblossom/`. Consumers
 should copy or symlink the folder, not just `SKILL.md`, so references and agent
 metadata travel with it.
 
-Harness Kit integration should keep one source of truth. Prefer a source entry,
-bootstrap projection, or explicit symlink from Harness Kit to this folder over a
-manual copied skill that can drift. The durable decision is
+Roster integration keeps one source of truth: vendor this whole folder at a
+pinned Bitterblossom commit in `primitives/skills/.external/registry.yaml`,
+then project it with `roster sync`. Do not maintain a manual copied skill that
+can drift. The original distribution decision is documented in
 `docs/adr/006-skill-projection.md`.
 
 ## Closeout Evidence

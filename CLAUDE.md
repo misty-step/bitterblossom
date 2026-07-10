@@ -27,8 +27,8 @@ One Rust crate, one binary (`bb`), two personalities:
   models, hermetic. Dispatch work = operator-initiated, may use
   claude/codex on subscription auth. Never Anthropic/OpenAI API keys.
 
-Mode boundary (harness-kit `meta/CONTRACTS.md`): ad-hoc operator sessions
-live in harness-kit (Mode A); recurring event-driven workflows live here
+Mode boundary (Roster `docs/CONTRACTS.md`): ad-hoc operator sessions
+use Roster (Mode A); recurring event-driven workflows live here
 (Mode B). The plane holds **no judgment** — no workload logic, mechanical
 retries only, agents own their own decomposition.
 

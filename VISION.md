@@ -78,7 +78,7 @@ work.
 
 In the Weave loop, Bitterblossom is the compute plane. Powder may hold work
 state, Cerberus may review, Canary may report incidents, Landmark may write
-release intelligence, and Harness Kit may provide skills, but recurring model
+release intelligence, and Roster may provide skills, but recurring model
 calls and remote execution run through BB with per-agent budgets, scoped
 authority, artifacts, and recovery evidence.
 
