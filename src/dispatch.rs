@@ -756,14 +756,16 @@ fn attempt_on_host(
                 cap_breach: None,
             });
         }
-        ledger.finish_attempt(
+        if let Err(error) = ledger.finish_attempt(
             attempt_id,
             "success",
             None,
             Some(exec.exit_code),
             &AttemptStats::default(),
             Some(&artifact_dir),
-        )?;
+        ) {
+            return Ok(artifact_durability_failure(error, AttemptStats::default()));
+        }
         ledger.set_attempt_phase(attempt_id, "released")?;
         ledger.record_progress(run_id, "phase:released")?;
         return Ok(AttemptOutcome::Success {
@@ -884,14 +886,16 @@ fn attempt_on_host(
     // required-artifact contract -- the attempt stopped deliberately, not by
     // finishing its commission, so REPORT.json (or similar) is not expected.
     if attempt_dir.join(ASK_PACKET_FILENAME).exists() {
-        ledger.finish_attempt(
+        if let Err(error) = ledger.finish_attempt(
             attempt_id,
             "parked_on_ask",
             None,
             Some(exec.exit_code),
             &parsed.stats,
             Some(&artifact_dir),
-        )?;
+        ) {
+            return Ok(artifact_durability_failure(error, parsed.stats));
+        }
         ledger.set_attempt_phase(attempt_id, "released")?;
         ledger.record_progress(run_id, "phase:released")?;
         return Ok(AttemptOutcome::Parked {
@@ -914,20 +918,32 @@ fn attempt_on_host(
             cap_breach: None,
         });
     }
-    ledger.finish_attempt(
+    if let Err(error) = ledger.finish_attempt(
         attempt_id,
         "success",
         None,
         Some(exec.exit_code),
         &parsed.stats,
         Some(&artifact_dir),
-    )?;
+    ) {
+        return Ok(artifact_durability_failure(error, parsed.stats));
+    }
     ledger.set_attempt_phase(attempt_id, "released")?;
     ledger.record_progress(run_id, "phase:released")?;
     Ok(AttemptOutcome::Success {
         stats: parsed.stats,
     })
 }
+
+fn artifact_durability_failure(error: anyhow::Error, stats: AttemptStats) -> AttemptOutcome {
+    AttemptOutcome::Failure {
+        phase_executed: true,
+        error: format!("artifact durability: {error:#}"),
+        stats,
+        cap_breach: None,
+    }
+}
+
 fn verdict_submission(
     ledger: &Ledger,
     run_id: &str,

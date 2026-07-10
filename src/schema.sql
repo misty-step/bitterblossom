@@ -69,6 +69,20 @@ CREATE TABLE IF NOT EXISTS attempts (
   ended_at TEXT
 );
 
+-- Public, top-level attempt artifacts must remain inspectable when a hosted
+-- runtime loses its ephemeral artifact directories. Bodies are present only
+-- for bounded text artifacts; binary and oversized files retain metadata so
+-- list/read keep their refusal semantics without bloating the ledger.
+CREATE TABLE IF NOT EXISTS artifact_snapshots (
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  content_type TEXT NOT NULL,
+  binary INTEGER NOT NULL,
+  content BLOB,
+  PRIMARY KEY (attempt_id, path)
+);
+
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,

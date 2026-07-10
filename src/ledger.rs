@@ -99,6 +99,15 @@ pub struct AttemptRow {
     pub ended_at: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct ArtifactSnapshotRow {
+    pub path: String,
+    pub size: u64,
+    pub content_type: String,
+    pub binary: bool,
+    pub content: Option<Vec<u8>>,
+}
+
 #[derive(Serialize)]
 pub struct RunEventRow {
     pub run_id: String,
@@ -596,14 +605,31 @@ impl Ledger {
         stats: &AttemptStats,
         artifact_dir: Option<&str>,
     ) -> Result<()> {
+        let snapshot_error = artifact_dir
+            .and_then(|dir| {
+                crate::artifacts::snapshot_attempt(self, attempt_id, Path::new(dir)).err()
+            })
+            .map(|error| format!("artifact snapshot failed: {error:#}"));
+        let requested_success = matches!(outcome, "success" | "parked_on_ask");
+        let stored_outcome = if requested_success && snapshot_error.is_some() {
+            "failure"
+        } else {
+            outcome
+        };
+        let stored_error = match (error, snapshot_error.as_deref()) {
+            (Some(error), Some(snapshot_error)) => Some(format!("{error}; {snapshot_error}")),
+            (Some(error), None) => Some(error.to_string()),
+            (None, Some(snapshot_error)) => Some(snapshot_error.to_string()),
+            (None, None) => None,
+        };
         self.conn.execute(
             "UPDATE attempts SET outcome = ?2, error = ?3, exit_code = ?4, tokens_in = ?5,
                tokens_out = ?6, turns = ?7, cost_usd = ?8, artifact_dir = ?9, ended_at = ?10
              WHERE id = ?1",
             params![
                 attempt_id,
-                outcome,
-                error,
+                stored_outcome,
+                stored_error,
                 exit_code,
                 stats.tokens_in,
                 stats.tokens_out,
@@ -613,7 +639,92 @@ impl Ledger {
                 now()
             ],
         )?;
+        if requested_success {
+            if let Some(error) = snapshot_error {
+                bail!(error);
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) fn replace_artifact_snapshots(
+        &self,
+        attempt_id: i64,
+        snapshots: &[ArtifactSnapshotRow],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM artifact_snapshots WHERE attempt_id = ?1",
+            params![attempt_id],
+        )?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO artifact_snapshots
+                   (attempt_id, path, size, content_type, binary, content)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for snapshot in snapshots {
+                let size = i64::try_from(snapshot.size)
+                    .context("artifact snapshot size exceeds SQLite INTEGER range")?;
+                insert.execute(params![
+                    attempt_id,
+                    snapshot.path,
+                    size,
+                    snapshot.content_type,
+                    snapshot.binary,
+                    snapshot.content,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn artifact_snapshots(&self, attempt_id: i64) -> Result<Vec<ArtifactSnapshotRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, size, content_type, binary, content
+             FROM artifact_snapshots WHERE attempt_id = ?1 ORDER BY path",
+        )?;
+        let rows = stmt
+            .query_map(params![attempt_id], |row| {
+                let size: i64 = row.get(1)?;
+                Ok(ArtifactSnapshotRow {
+                    path: row.get(0)?,
+                    size: u64::try_from(size)
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, size))?,
+                    content_type: row.get(2)?,
+                    binary: row.get(3)?,
+                    content: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub(crate) fn artifact_snapshot(
+        &self,
+        attempt_id: i64,
+        path: &str,
+    ) -> Result<Option<ArtifactSnapshotRow>> {
+        self.conn
+            .query_row(
+                "SELECT path, size, content_type, binary, content
+                 FROM artifact_snapshots WHERE attempt_id = ?1 AND path = ?2",
+                params![attempt_id, path],
+                |row| {
+                    let size: i64 = row.get(1)?;
+                    Ok(ArtifactSnapshotRow {
+                        path: row.get(0)?,
+                        size: u64::try_from(size)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, size))?,
+                        content_type: row.get(2)?,
+                        binary: row.get(3)?,
+                        content: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn attempt_count(&self, run_id: &str) -> Result<i64> {

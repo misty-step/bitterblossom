@@ -74,6 +74,203 @@ fn read_report_json_from_newest_attempt_that_has_it() {
 }
 
 #[test]
+fn report_snapshot_survives_artifact_dir_loss_and_ledger_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let a1 = dir.path().join("a1");
+    fs::create_dir_all(&a1).unwrap();
+    fs::write(a1.join("REPORT.json"), r#"{"durable":true}"#).unwrap();
+
+    let run = {
+        let mut ledger = Ledger::open(&db).unwrap();
+        let run = run_id(&mut ledger);
+        add_attempt(&mut ledger, &run, 1, &a1);
+        run
+    };
+
+    fs::remove_dir_all(&a1).unwrap();
+    let ledger = Ledger::open(&db).unwrap();
+
+    let entries = artifacts::list(&ledger, &run).unwrap();
+    assert!(entries.iter().any(|entry| {
+        entry.attempt == 1
+            && entry.path == "REPORT.json"
+            && entry.content_type == "application/json"
+            && !entry.binary
+    }));
+
+    let outcome = artifacts::read(&ledger, &run, "REPORT.json").unwrap();
+    match outcome {
+        ReadOutcome::Text {
+            attempt, content, ..
+        } => {
+            assert_eq!(attempt, 1);
+            assert_eq!(content, r#"{"durable":true}"#);
+        }
+        other => panic!("expected durable text snapshot, got {other:?}"),
+    }
+
+    let bundle_dir = dir.path().join("durable-bundle");
+    let manifest = artifacts::bundle(&ledger, &run, &bundle_dir).unwrap();
+    assert_eq!(manifest.entries.len(), 1);
+    assert_eq!(
+        fs::read_to_string(bundle_dir.join("attempt-1/REPORT.json")).unwrap(),
+        r#"{"durable":true}"#
+    );
+}
+
+#[test]
+fn snapshot_failure_rejects_a_successful_attempt_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let mut ledger = Ledger::open(&db).unwrap();
+    let run = run_id(&mut ledger);
+    let attempt = ledger
+        .create_attempt(&run, 1, "stub", 1, "claude", "stub-model")
+        .unwrap();
+    let not_a_dir = dir.path().join("not-a-directory");
+    fs::write(&not_a_dir, "plain file").unwrap();
+    let artifact_path = not_a_dir.to_string_lossy().into_owned();
+
+    let error = ledger
+        .finish_attempt(
+            attempt,
+            "success",
+            None,
+            Some(0),
+            &AttemptStats::default(),
+            Some(&artifact_path),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("artifact snapshot"));
+
+    let attempt = ledger.attempts(&run).unwrap().remove(0);
+    assert_eq!(attempt.outcome.as_deref(), Some("failure"));
+    assert!(attempt
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("artifact snapshot")));
+}
+
+#[test]
+fn missing_declared_artifact_dir_rejects_a_successful_attempt_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let mut ledger = Ledger::open(&db).unwrap();
+    let run = run_id(&mut ledger);
+    let attempt = ledger
+        .create_attempt(&run, 1, "stub", 1, "claude", "stub-model")
+        .unwrap();
+    let missing = dir.path().join("missing-artifacts");
+    let artifact_path = missing.to_string_lossy().into_owned();
+
+    let error = ledger
+        .finish_attempt(
+            attempt,
+            "success",
+            None,
+            Some(0),
+            &AttemptStats::default(),
+            Some(&artifact_path),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("artifact snapshot"));
+    assert!(error.to_string().contains("not found"));
+
+    let attempt = ledger.attempts(&run).unwrap().remove(0);
+    assert_eq!(attempt.outcome.as_deref(), Some("failure"));
+}
+
+#[test]
+fn snapshots_preserve_live_file_then_newest_attempt_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let mut ledger = Ledger::open(&db).unwrap();
+    let run = run_id(&mut ledger);
+    let a1 = dir.path().join("a1");
+    let a2 = dir.path().join("a2");
+    fs::create_dir_all(&a1).unwrap();
+    fs::create_dir_all(&a2).unwrap();
+    fs::write(a1.join("REPORT.json"), r#"{"attempt":1}"#).unwrap();
+    fs::write(a2.join("REPORT.json"), r#"{"attempt":2}"#).unwrap();
+    add_attempt(&mut ledger, &run, 1, &a1);
+    add_attempt(&mut ledger, &run, 2, &a2);
+
+    fs::write(a2.join("REPORT.json"), r#"{"source":"live"}"#).unwrap();
+    let outcome = artifacts::read(&ledger, &run, "REPORT.json").unwrap();
+    match outcome {
+        ReadOutcome::Text {
+            attempt, content, ..
+        } => {
+            assert_eq!(attempt, 2);
+            assert_eq!(content, r#"{"source":"live"}"#);
+        }
+        other => panic!("expected live attempt 2 text, got {other:?}"),
+    }
+
+    fs::remove_dir_all(&a2).unwrap();
+    let outcome = artifacts::read(&ledger, &run, "REPORT.json").unwrap();
+    match outcome {
+        ReadOutcome::Text {
+            attempt, content, ..
+        } => {
+            assert_eq!(attempt, 2);
+            assert_eq!(content, r#"{"attempt":2}"#);
+        }
+        other => panic!("expected snapshotted attempt 2 text, got {other:?}"),
+    }
+}
+
+#[test]
+fn durable_snapshot_bounds_bodies_and_excludes_non_public_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("plane.db");
+    let mut ledger = Ledger::open(&db).unwrap();
+    let run = run_id(&mut ledger);
+    let a1 = dir.path().join("a1");
+    fs::create_dir_all(a1.join("nested")).unwrap();
+    fs::write(a1.join("REPORT.json"), "{}").unwrap();
+    fs::write(a1.join("blob.bin"), [0, 1, 2, 3]).unwrap();
+    fs::write(
+        a1.join("huge.log"),
+        vec![b'a'; artifacts::READ_LIMIT as usize + 1],
+    )
+    .unwrap();
+    fs::write(a1.join("harness.pid"), "123").unwrap();
+    fs::write(a1.join("nested/ignored.txt"), "nested").unwrap();
+    fs::write(dir.path().join("outside"), "outside").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path().join("outside"), a1.join("escape")).unwrap();
+    add_attempt(&mut ledger, &run, 1, &a1);
+    fs::remove_dir_all(&a1).unwrap();
+
+    let entries = artifacts::list(&ledger, &run).unwrap();
+    let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+    assert_eq!(paths, vec!["REPORT.json", "blob.bin", "huge.log"]);
+
+    assert!(matches!(
+        artifacts::read(&ledger, &run, "blob.bin").unwrap(),
+        ReadOutcome::Binary { size: 4, .. }
+    ));
+    assert!(matches!(
+        artifacts::read(&ledger, &run, "huge.log").unwrap(),
+        ReadOutcome::Oversized {
+            limit: artifacts::READ_LIMIT,
+            ..
+        }
+    ));
+    assert!(matches!(
+        artifacts::read(&ledger, &run, "harness.pid").unwrap(),
+        ReadOutcome::Missing { .. }
+    ));
+    #[cfg(unix)]
+    assert!(matches!(
+        artifacts::read(&ledger, &run, "escape").unwrap(),
+        ReadOutcome::Missing { .. }
+    ));
+}
+
+#[test]
 fn read_falls_back_to_earlier_attempt_when_newest_lacks_file() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("plane.db");
