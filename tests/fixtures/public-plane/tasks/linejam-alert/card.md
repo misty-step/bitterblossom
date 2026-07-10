@@ -20,8 +20,10 @@ with `incident.opened` or `incident.updated` is recorded but never closes work.
 ## Single-flight contract
 
 Every Linejam alert run uses the dedicated tailnet workspace host
-`bb-runner@10.108.0.4`. Bitterblossom holds that host's atomic lease for the
-full wrapper attempt. Powder deliberately returns the same run to repeated
+`ssh://bb-runner@10.108.0.4:2222`. The non-default port avoids App Platform's
+managed SSH-port boundary while staying private to the peered VPC.
+Bitterblossom holds that host's atomic lease for the full wrapper attempt.
+Powder deliberately returns the same run to repeated
 claims by this scoped actor, while `request_input` itself is not idempotent;
 never invoke this wrapper outside the BB host lease. If an attempt stops after
 claiming but before requesting input, the next leased attempt reclaims the same

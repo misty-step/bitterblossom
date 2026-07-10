@@ -231,7 +231,7 @@ fn entrypoint_materializes_tailnet_ssh_credentials_without_logging_them() {
     let dir = tempfile::tempdir().unwrap();
     let ssh_dir = dir.path().join("root-ssh");
     let private_key = "private-key-sentinel-line-1\nprivate-key-sentinel-line-2";
-    let known_hosts = "10.108.0.4 ssh-ed25519 pinned-host-key-sentinel";
+    let known_hosts = "[10.108.0.4]:2222 ssh-ed25519 pinned-host-key-sentinel";
 
     let output = Command::new(repo_root().join("scripts/bb-litestream-entrypoint.sh"))
         .env_remove("LITESTREAM_REPLICA_URL")

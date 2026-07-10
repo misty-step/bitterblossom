@@ -437,7 +437,7 @@ fn linejam_alert_task_is_tailnet_command_alert_contract() {
         .contains(&"OPENROUTER_API_KEY".to_string()));
     assert_eq!(task.agent.policy.authority.as_deref(), Some("edit"));
     assert_eq!(task.spec.substrate, "tailnet");
-    assert_eq!(task.host(), "bb-runner@10.108.0.4");
+    assert_eq!(task.host(), "ssh://bb-runner@10.108.0.4:2222");
     assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
     assert_eq!(task.spec.budget.max_runs_per_day, None);
     assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.10));
@@ -491,7 +491,7 @@ fn linejam_alert_task_is_tailnet_command_alert_contract() {
         "linejam-production-smoke",
         "one service-scoped Linejam subscription",
         "Do not create a separate recovery subscription",
-        "bb-runner@10.108.0.4",
+        "ssh://bb-runner@10.108.0.4:2222",
         "Single-flight",
         "Powder",
         "request_input",
