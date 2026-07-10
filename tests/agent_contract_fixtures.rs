@@ -149,8 +149,9 @@ fn json_ok(root: &str, args: &[&str]) -> serde_json::Value {
     let out = bb(root, args);
     assert!(
         out.status.success(),
-        "cmd {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        "cmd {:?} failed with {}\nstdout:\n{}\nstderr:\n{}",
         args,
+        out.status,
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -317,18 +318,16 @@ fn versioned_agent_read_surface_contract_fixture_validates_cli_and_api() {
         ],
     );
     let sub_id = as_str(&sub, "id").to_string();
-    assert!(bb(
+    json_ok(
         gate_root,
         &[
             "run",
             "verify",
             "--payload",
             &format!("{{\"submission\":\"{sub_id}\"}}"),
-            "--json"
-        ]
-    )
-    .status
-    .success());
+            "--json",
+        ],
+    );
     let (gate_port, _api) = start_api(gate_root);
     assert_contract_surface(
         "gate",
@@ -520,18 +519,16 @@ fn gate_json_shape() {
         ],
     );
     let sub_id = as_str(&sub, "id");
-    assert!(bb(
+    json_ok(
         root,
         &[
             "run",
             "verify",
             "--payload",
             &format!("{{\"submission\":\"{sub_id}\"}}"),
-            "--json"
-        ]
-    )
-    .status
-    .success());
+            "--json",
+        ],
+    );
     let report = json_ok(root, &["gate", "--change", "c1", "--json"]);
     as_str(&report, "submission");
     as_str(&report, "change_key");

@@ -22,26 +22,26 @@ const STREAMING_PI_OVERRUN_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 printf '{"type":"turn_end"}\n'
 printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"over cap but still running"}],"usage":{"input":10,"output":5,"cost":{"total":0.02}}}}\n'
-sleep 2
+sleep 10
 "#;
 
 const STREAMING_OUTPUT_OVERRUN_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 yes x | head -c 2000
-sleep 2
+sleep 10
 "#;
 
 const STREAMING_TURN_OVERRUN_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 printf '{"type":"turn_end"}\n'
 printf '{"type":"turn_end"}\n'
-sleep 2
+sleep 10
 "#;
 
 const STREAMING_TOOL_OVERRUN_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"},{"type":"toolCall","name":"write"}]}}\n'
-sleep 2
+sleep 10
 "#;
 
 /// Notify transport stub: swallow curl-style args, append the JSON body
