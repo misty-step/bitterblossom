@@ -512,3 +512,9 @@ one live run or `bb task unpark <task> --since <timestamp> --yes` for a bounded
 recent slice. A blind multi-run `bb task unpark <task>` requires `--yes` after
 printing the blocked count and age range; treat that preview as the final
 operator check before re-queueing historical work.
+
+> Note: a reflex webhook task's `[admission] attention_debt` policy defaults to
+> `global` — any open dead-letter/awaiting-recovery run anywhere on the plane
+> then 429s that task's deliveries. Set `attention_debt = "task"` on advisory
+> tasks (e.g. `review`) so unrelated operational debt can't silently mute them
+> (bitterblossom-977).
