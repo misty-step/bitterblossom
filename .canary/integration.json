@@ -2,7 +2,7 @@
   "schema_version": 1,
   "service": "bitterblossom-plane",
   "environment": "production",
-  "canary_endpoint": "https://canary-obs-3jzhr.ondigitalocean.app",
+  "canary_endpoint": "https://canary.mistystep.io",
   "health_url": "https://bitterblossom-plane-9xpa5.ondigitalocean.app/health",
   "target_id": "TGT-zzjlrcj90ynk",
   "monitor_ids": [
