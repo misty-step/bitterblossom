@@ -339,6 +339,71 @@ fn linejam_production_smoke_recovery_is_annotated_without_new_powder_input() {
 }
 
 #[test]
+fn linejam_success_annotation_cannot_close_powder_before_resolved_event() {
+    for event_name in ["incident.opened", "incident.updated"] {
+        let dir = tempfile::tempdir().unwrap();
+        write_event_and_run(dir.path(), "linejam");
+        let mut event: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("EVENT.json")).unwrap())
+                .unwrap();
+        event["event"] = serde_json::json!(event_name);
+        fs::write(
+            dir.path().join("EVENT.json"),
+            serde_json::to_vec_pretty(&event).unwrap(),
+        )
+        .unwrap();
+
+        let (canary_port, _) = spawn_stub_canary(2, |method, path, _body| {
+            if method == "GET" && path == "/api/v1/incidents/INC-test123" {
+                return (
+                    200,
+                    r#"{"signals":[{"monitor_id":"MON-28junwbo5mgv","monitor_name":"linejam-production-smoke"}]}"#.to_string(),
+                );
+            }
+            if method == "GET" && path.starts_with("/api/v1/annotations?") {
+                return (
+                    200,
+                    r#"{"annotations":[{"created_at":"2026-07-02T00:00:09Z","metadata":{"kind":"production-smoke-status","outcome":"success","external_url":"https://github.com/misty-step/linejam/actions/runs/12346"}}]}"#.to_string(),
+                );
+            }
+            (404, "{}".to_string())
+        });
+        let (powder_port, powder_log) =
+            spawn_stub_canary(1, |_method, _path, _body| (500, "{}".to_string()));
+
+        let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+            .current_dir(dir.path())
+            .env("CANARY_ENDPOINT", format!("http://127.0.0.1:{canary_port}"))
+            .env("CANARY_API_KEY", "test-canary")
+            .env(
+                "POWDER_API_BASE_URL",
+                format!("http://127.0.0.1:{powder_port}"),
+            )
+            .env("POWDER_INCIDENT_ALERT_API_KEY", "test-powder")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "event={event_name} stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let report: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            report["status"], "success_ignored_without_resolved_event",
+            "event={event_name}"
+        );
+        assert!(
+            powder_log.lock().unwrap().is_empty(),
+            "event={event_name} must not read, answer, or complete Powder"
+        );
+    }
+}
+
+#[test]
 fn linejam_production_smoke_redelivery_reuses_existing_powder_input() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path(), "linejam");

@@ -426,6 +426,14 @@ handle_linejam_smoke_alert() {
   incident_json=".bb-linejam-incident.json"
   annotations_json=".bb-linejam-monitor-annotations.json"
 
+  case "$BB_TRIAGE_EVENT" in
+    incident.opened|incident.updated|incident.resolved) ;;
+    *)
+      write_blocked_report "Linejam alert path admits only incident.opened, incident.updated, or incident.resolved"
+      return 0
+      ;;
+  esac
+
   if [ -z "${CANARY_ENDPOINT:-}" ] || [ -z "${CANARY_API_KEY:-}" ]; then
     write_blocked_report "CANARY_ENDPOINT or CANARY_API_KEY is unset"
     return 0
@@ -517,6 +525,14 @@ PY
       return 0
       ;;
   esac
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "success" ] && [ "$BB_TRIAGE_EVENT" != "incident.resolved" ]; then
+    write_linejam_alert_report "success_ignored_without_resolved_event" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
+    return 0
+  fi
+  if [ "$BB_TRIAGE_EVENT" = "incident.resolved" ] && [ "$BB_LINEJAM_ALERT_OUTCOME" != "success" ]; then
+    write_blocked_report "Linejam incident.resolved event lacks an event-correlated success annotation"
+    return 0
+  fi
   if [ "$BB_LINEJAM_ALERT_OUTCOME" = "failure" ] && [ "$BB_LINEJAM_ALERT_STREAK" -lt 2 ]; then
     write_linejam_alert_report "failure_below_threshold" "" "" "$BB_LINEJAM_ALERT_DETAIL" "$BB_LINEJAM_ALERT_URL"
     return 0
@@ -537,7 +553,7 @@ print(f"linejam-alert-{suffix}")
 PY
 )
 
-  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "success" ]; then
+  if [ "$BB_LINEJAM_ALERT_OUTCOME" = "success" ] && [ "$BB_TRIAGE_EVENT" = "incident.resolved" ]; then
     card_status=$(curl -sS -o .bb-powder-card.json -w '%{http_code}' \
       "${POWDER_API_BASE_URL%/}/api/v1/cards/$card_id" \
       -H "Authorization: Bearer $POWDER_API_KEY")

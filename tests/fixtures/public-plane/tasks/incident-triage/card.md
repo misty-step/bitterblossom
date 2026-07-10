@@ -16,24 +16,10 @@ This V1 is intentionally scoped to Misty Step repos only:
 - `canary` -> `misty-step/canary`
 - `bastion` -> `misty-step/bastion`
 - `powder` -> `misty-step/powder`
-- `linejam` -> `misty-step/linejam`, but only when the incident carries the
-  exact `linejam-production-smoke` monitor signal. That declared alert path
-  creates a Powder `request_input` item with the failing test and run URL,
-  then stops without model execution, branches, PRs, merges, or deploys. The
-  correlated `incident.resolved` delivery answers and completes the owned
-  Powder alert after recovery.
 
-The Linejam alert path is single-flight at the event-plane boundary. Every
-incident-triage run uses the task's one declared workspace host, and BB holds
-that host's atomic lease for the full wrapper attempt. Powder deliberately
-returns the same run to repeated claims by this scoped actor, while
-`request_input` itself is not idempotent; never invoke this wrapper outside the
-BB host lease. If an attempt stops after claiming but before requesting input,
-the next leased attempt reclaims the same run and finishes the operator handoff.
-Canary delivery mirrors that boundary: the incumbent opened/updated subscription
-is global, while `incident.resolved` reaches this route only through a separate
-service-scoped `linejam` subscription. The wrapper rejects any non-Linejam
-resolved delivery as defense in depth.
+Linejam production-smoke alerts are intentionally outside this task. They use
+the separate `linejam-alert` route and dedicated tailnet task; this generic
+Sprites responder accepts neither the `linejam` service nor resolved events.
 
 The operator explicitly waived the usual BB never-skip-a-level rollout ladder
 for this incident responder on 2026-07-02. Do not reintroduce ceremonial rungs

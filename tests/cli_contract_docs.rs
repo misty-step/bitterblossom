@@ -268,6 +268,7 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let dockerfile = read("Dockerfile");
     assert!(dockerfile.contains("ARG LITESTREAM_VERSION=0.5.13"));
+    assert!(dockerfile.contains("ca-certificates git curl openssh-client"));
     assert!(dockerfile.contains("litestream-${LITESTREAM_VERSION}-linux-${litestream_arch}.tar.gz"));
     assert!(dockerfile.contains("ENTRYPOINT [\"/usr/local/bin/bb-litestream-entrypoint\"]"));
     assert!(!dockerfile.contains("LITESTREAM_REPLICA_URL="));
@@ -288,6 +289,12 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
         .contains("litestream sync -socket \"$socket_path\" -wait -timeout \"$sync_timeout\""));
     assert!(entrypoint.contains("url: ${%s}"));
     assert!(entrypoint.contains("date -u '+%Y-%m-%dT%H:%M:%SZ' >\"$heartbeat_path\""));
+    assert!(entrypoint.contains("BB_TAILNET_SSH_PRIVATE_KEY"));
+    assert!(entrypoint.contains("BB_TAILNET_SSH_KNOWN_HOSTS"));
+    assert!(entrypoint.contains("BB_TAILNET_SSH_DIR:-/root/.ssh"));
+    assert!(entrypoint.contains("chmod 0700 \"$ssh_dir\""));
+    assert!(entrypoint.contains("chmod 0600 \"$ssh_dir/id_ed25519\""));
+    assert!(entrypoint.contains("chmod 0600 \"$ssh_dir/known_hosts\""));
 
     let verify = read("scripts/verify.sh");
     assert!(verify.contains("scripts/production-ops-drill.sh --local"));

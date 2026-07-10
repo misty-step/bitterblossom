@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bitterblossom::ingress::{handle_webhook, sign_hmac};
-use bitterblossom::ledger::Ledger;
+use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::{AttentionDebtPolicy, AuthClass, Plane, TriggerSpec};
 
 fn repo_root() -> PathBuf {
@@ -306,11 +306,11 @@ fn incident_triage_task_is_glm_command_responder_contract() {
     assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
-    assert!(task
+    assert!(!task
         .agent
         .secrets
         .contains(&"POWDER_INCIDENT_ALERT_API_KEY".to_string()));
-    assert!(task
+    assert!(!task
         .agent
         .secrets
         .contains(&"POWDER_API_BASE_URL".to_string()));
@@ -330,7 +330,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         task.spec.admission.attention_debt,
         AttentionDebtPolicy::Task
     );
-    assert_eq!(task.spec.workspace.repos.len(), 5);
+    assert_eq!(task.spec.workspace.repos.len(), 4);
 
     let webhook = task
         .spec
@@ -354,7 +354,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
             && f.any_of.as_ref().is_some_and(|values| {
                 values.contains(&serde_json::json!("incident.opened"))
                     && values.contains(&serde_json::json!("incident.updated"))
-                    && values.contains(&serde_json::json!("incident.resolved"))
+                    && !values.contains(&serde_json::json!("incident.resolved"))
             })
     }));
     assert!(webhook.2.iter().any(|f| {
@@ -363,12 +363,21 @@ fn incident_triage_task_is_glm_command_responder_contract() {
                 values.contains(&serde_json::json!("canary"))
                     && values.contains(&serde_json::json!("bastion"))
                     && values.contains(&serde_json::json!("powder"))
-                    && values.contains(&serde_json::json!("linejam"))
+                    && !values.contains(&serde_json::json!("linejam"))
             })
     }));
     assert!(
         webhook.3.is_none(),
         "incident triage should create only the responder task run"
+    );
+
+    assert_eq!(
+        task.spec
+            .triggers
+            .iter()
+            .filter(|trigger| matches!(trigger, TriggerSpec::Webhook { .. }))
+            .count(),
+        1
     );
 
     for required in [
@@ -377,11 +386,6 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "misty-step/canary",
         "misty-step/bastion",
         "misty-step/powder",
-        "misty-step/linejam",
-        "linejam-production-smoke",
-        "single-flight",
-        "service-scoped",
-        "Powder",
         "Cerberus",
         "CI green is mandatory",
         "maximum 3 fix attempts",
@@ -402,6 +406,250 @@ fn incident_triage_task_is_glm_command_responder_contract() {
     ] {
         assert!(task.card.contains(required), "card missing {required}");
     }
+}
+
+#[test]
+fn linejam_alert_task_is_tailnet_command_alert_contract() {
+    let plane = Plane::load(&public_plane_root()).unwrap();
+    let task = plane.task("linejam-alert").unwrap();
+
+    assert_eq!(task.agent_name, "linejam-alert");
+    assert_eq!(task.agent.harness, "command");
+    assert_eq!(task.agent.auth_class().unwrap(), AuthClass::Api);
+    assert_eq!(task.agent.role.as_deref(), Some("incident-alert-responder"));
+    assert_eq!(
+        task.agent.bin.as_deref(),
+        Some("bitterblossom/scripts/incident-triage-wrapper.sh")
+    );
+    assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
+    assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"POWDER_INCIDENT_ALERT_API_KEY".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"POWDER_API_BASE_URL".to_string()));
+    assert!(!task
+        .agent
+        .secrets
+        .contains(&"OPENROUTER_API_KEY".to_string()));
+    assert_eq!(task.agent.policy.authority.as_deref(), Some("edit"));
+    assert_eq!(task.spec.substrate, "tailnet");
+    assert_eq!(task.host(), "bb-runner@10.108.0.4");
+    assert_eq!(task.spec.required_artifacts, vec!["REPORT.json"]);
+    assert_eq!(task.spec.budget.max_runs_per_day, None);
+    assert_eq!(task.spec.budget.max_cost_per_run_usd, Some(0.10));
+    assert_eq!(task.spec.budget.timeout_minutes, Some(10));
+    assert_eq!(task.spec.budget.output_bytes_cap, Some(30000));
+    assert_eq!(
+        task.spec.admission.attention_debt,
+        AttentionDebtPolicy::Task
+    );
+    assert_eq!(task.spec.workspace.repos.len(), 2);
+
+    let webhook = task
+        .spec
+        .triggers
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerSpec::Webhook {
+                route,
+                secret_env,
+                dedupe_key,
+                filter,
+                action,
+            } => Some((route, secret_env, dedupe_key, filter, action)),
+            TriggerSpec::Manual | TriggerSpec::Cron { .. } => None,
+        })
+        .expect("linejam-alert webhook trigger");
+    assert_eq!(webhook.0, "linejam-alert");
+    assert_eq!(webhook.1, "BB_HOOK_LINEJAM_ALERT");
+    assert_eq!(webhook.2.as_deref(), Some("header:X-Delivery-Id"));
+    assert!(webhook.3.iter().any(|filter| {
+        filter.pointer == "/event"
+            && filter.any_of.as_ref().is_some_and(|values| {
+                values
+                    == &[
+                        serde_json::json!("incident.opened"),
+                        serde_json::json!("incident.updated"),
+                        serde_json::json!("incident.resolved"),
+                    ]
+            })
+    }));
+    assert!(webhook.3.iter().any(|filter| {
+        filter.pointer == "/incident/service"
+            && filter
+                .any_of
+                .as_ref()
+                .is_some_and(|values| values == &[serde_json::json!("linejam")])
+    }));
+    assert!(webhook.4.is_none());
+
+    for required in [
+        "linejam-production-smoke",
+        "one service-scoped Linejam subscription",
+        "Do not create a separate recovery subscription",
+        "bb-runner@10.108.0.4",
+        "Single-flight",
+        "Powder",
+        "request_input",
+        "incident.resolved",
+        "non-resolved success ignored",
+        "no task-wide daily run cap",
+        "10-minute timeout",
+        "no code or production mutation authority",
+        "bb.incident_triage_response.v1",
+        "REPORT.json",
+    ] {
+        assert!(task.card.contains(required), "card missing {required}");
+    }
+}
+
+#[test]
+fn incident_webhooks_route_linejam_lifecycle_only_to_tailnet_alert_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = temp_incident_route_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_HOOK_INCIDENT_TRIAGE", "generic-secret");
+    std::env::set_var("BB_HOOK_LINEJAM_ALERT", "linejam-secret");
+
+    let deliver = |ledger: &mut Ledger, route: &str, body: &str, delivery: &str| {
+        let timestamp = "2026-07-10T06:45:00Z";
+        let secret = match route {
+            "incident-triage" => "generic-secret",
+            "linejam-alert" => "linejam-secret",
+            other => panic!("unexpected route {other}"),
+        };
+        let sig = sign_hmac(secret, format!("{timestamp}.{delivery}.{body}").as_bytes());
+        handle_webhook(
+            &plane,
+            ledger,
+            route,
+            &[
+                ("X-Canary-Signature".to_string(), sig),
+                ("X-Timestamp".to_string(), timestamp.to_string()),
+                ("X-Delivery-Id".to_string(), delivery.to_string()),
+            ],
+            body,
+        )
+        .unwrap()
+    };
+
+    let generic_opened =
+        r#"{"event":"incident.opened","incident":{"id":"INC-powder","service":"powder"}}"#;
+    assert_eq!(
+        deliver(
+            &mut ledger,
+            "incident-triage",
+            generic_opened,
+            "DLV-generic-opened"
+        )
+        .status,
+        202
+    );
+
+    for (body, delivery) in [
+        (
+            r#"{"event":"incident.opened","incident":{"id":"INC-linejam","service":"linejam"}}"#,
+            "DLV-linejam-on-generic",
+        ),
+        (
+            r#"{"event":"incident.resolved","incident":{"id":"INC-powder","service":"powder"}}"#,
+            "DLV-resolved-on-generic",
+        ),
+    ] {
+        let response = deliver(&mut ledger, "incident-triage", body, delivery);
+        assert_eq!(response.status, 200, "{}", response.body);
+        assert!(response.body.contains("filtered"), "{}", response.body);
+    }
+
+    for (event, delivery) in [
+        ("incident.opened", "DLV-linejam-opened"),
+        ("incident.updated", "DLV-linejam-updated"),
+        ("incident.resolved", "DLV-linejam-resolved"),
+    ] {
+        let body = format!(
+            r#"{{"event":"{event}","incident":{{"id":"INC-linejam","service":"linejam"}}}}"#
+        );
+        let response = deliver(&mut ledger, "linejam-alert", &body, delivery);
+        assert_eq!(response.status, 202, "{}", response.body);
+    }
+
+    let wrong_service =
+        r#"{"event":"incident.opened","incident":{"id":"INC-powder","service":"powder"}}"#;
+    let response = deliver(
+        &mut ledger,
+        "linejam-alert",
+        wrong_service,
+        "DLV-powder-on-linejam",
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(response.body.contains("filtered"), "{}", response.body);
+
+    assert_eq!(
+        ledger
+            .list_runs(Some("incident-triage"), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ledger.list_runs(Some("linejam-alert"), None).unwrap().len(),
+        3
+    );
+}
+
+#[test]
+fn linejam_resolved_admission_survives_prior_completed_delivery_churn() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = temp_incident_route_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_HOOK_LINEJAM_ALERT", "linejam-secret");
+
+    for index in 0..9 {
+        let key = format!("prior-linejam-{index}");
+        let run = ledger
+            .ingest(IngressRequest {
+                task: "linejam-alert",
+                trigger_kind: "webhook",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: None,
+                parent_run_id: None,
+            })
+            .unwrap();
+        ledger.transition(&run.run_id, "running", None).unwrap();
+        ledger.transition(&run.run_id, "success", None).unwrap();
+    }
+
+    let body =
+        r#"{"event":"incident.resolved","incident":{"id":"INC-linejam","service":"linejam"}}"#;
+    let timestamp = "2026-07-10T07:00:00Z";
+    let delivery = "DLV-linejam-recovery-after-churn";
+    let signature = sign_hmac(
+        "linejam-secret",
+        format!("{timestamp}.{delivery}.{body}").as_bytes(),
+    );
+    let response = handle_webhook(
+        &plane,
+        &mut ledger,
+        "linejam-alert",
+        &[
+            ("X-Canary-Signature".to_string(), signature),
+            ("X-Timestamp".to_string(), timestamp.to_string()),
+            ("X-Delivery-Id".to_string(), delivery.to_string()),
+        ],
+        body,
+    )
+    .unwrap();
+
+    assert_eq!(response.status, 202, "{}", response.body);
+    assert_eq!(
+        ledger.list_runs(Some("linejam-alert"), None).unwrap().len(),
+        10
+    );
 }
 
 #[test]
@@ -1148,6 +1396,34 @@ fn temp_canary_triage_plane(root: &Path) -> Plane {
         fs::read_to_string(repo.join("tasks/canary-triage/card.md")).unwrap(),
     )
     .unwrap();
+
+    Plane::load(root).unwrap()
+}
+
+fn temp_incident_route_plane(root: &Path) -> Plane {
+    fs::create_dir_all(root.join("agents")).unwrap();
+    for task in ["incident-triage", "linejam-alert"] {
+        fs::create_dir_all(root.join("tasks").join(task)).unwrap();
+    }
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+
+    let fixture = public_plane_root();
+    for agent in ["incident-triager", "linejam-alert"] {
+        fs::copy(
+            fixture.join("agents").join(format!("{agent}.toml")),
+            root.join("agents").join(format!("{agent}.toml")),
+        )
+        .unwrap();
+    }
+    for task in ["incident-triage", "linejam-alert"] {
+        for file in ["task.toml", "card.md"] {
+            fs::copy(
+                fixture.join("tasks").join(task).join(file),
+                root.join("tasks").join(task).join(file),
+            )
+            .unwrap();
+        }
+    }
 
     Plane::load(root).unwrap()
 }

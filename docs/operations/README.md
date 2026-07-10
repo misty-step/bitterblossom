@@ -168,6 +168,24 @@ with no operator action needed; confirm via
 `doctl apps list-deployments <app-id>` and diff `get-deployment ... -o json`
 step statuses before assuming a bad deploy is still live.
 
+### Tailnet Linejam alert runner
+
+The deterministic `linejam-alert` task runs on its dedicated tailnet host;
+generic incident remediation remains on Sprites. The runtime image includes
+`openssh-client`. Set `BB_TAILNET_SSH_PRIVATE_KEY` and a pinned
+`BB_TAILNET_SSH_KNOWN_HOSTS` value as app secrets. At startup the entrypoint
+materializes them as `/root/.ssh/id_ed25519` and `/root/.ssh/known_hosts` with
+directory mode `0700` and file mode `0600`, without logging either value. It
+does not run `ssh-keyscan`, and it does not touch `/root/.ssh` when both values
+are unset.
+
+Canary uses one service-scoped Linejam webhook subscription to the
+`linejam-alert` route for `incident.opened`, `incident.updated`, and
+`incident.resolved`, with its generated secret stored as
+`BB_HOOK_LINEJAM_ALERT`. Do not add a second recovery subscription. The generic
+`incident-triage` subscription accepts only opened/updated events for Canary,
+Bastion, and Powder.
+
 ## Deploy
 
 Local gate first:
