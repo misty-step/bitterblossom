@@ -380,6 +380,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "misty-step/linejam",
         "linejam-production-smoke",
         "single-flight",
+        "service-scoped",
         "Powder",
         "Cerberus",
         "CI green is mandatory",

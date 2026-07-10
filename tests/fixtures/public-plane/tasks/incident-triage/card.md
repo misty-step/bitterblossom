@@ -30,6 +30,10 @@ returns the same run to repeated claims by this scoped actor, while
 `request_input` itself is not idempotent; never invoke this wrapper outside the
 BB host lease. If an attempt stops after claiming but before requesting input,
 the next leased attempt reclaims the same run and finishes the operator handoff.
+Canary delivery mirrors that boundary: the incumbent opened/updated subscription
+is global, while `incident.resolved` reaches this route only through a separate
+service-scoped `linejam` subscription. The wrapper rejects any non-Linejam
+resolved delivery as defense in depth.
 
 The operator explicitly waived the usual BB never-skip-a-level rollout ladder
 for this incident responder on 2026-07-02. Do not reintroduce ceremonial rungs

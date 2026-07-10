@@ -1079,6 +1079,48 @@ fn incident_triage_wrapper_blocks_unlisted_service_before_model_run() {
 }
 
 #[test]
+fn incident_triage_wrapper_blocks_non_linejam_resolved_event_before_model_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_event_and_run(dir.path(), "canary");
+    let mut event: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("EVENT.json")).unwrap()).unwrap();
+    event["event"] = serde_json::json!("incident.resolved");
+    fs::write(
+        dir.path().join("EVENT.json"),
+        serde_json::to_vec_pretty(&event).unwrap(),
+    )
+    .unwrap();
+    let marker = dir.path().join("model-ran");
+    let stub = dir.path().join("triage-agent-stub.sh");
+    write_executable(
+        &stub,
+        &format!("#!/bin/sh\ntouch {}\nexit 9\n", marker.display()),
+    );
+
+    let output = Command::new(repo_root().join("scripts/incident-triage-wrapper.sh"))
+        .current_dir(dir.path())
+        .env("INCIDENT_TRIAGE_AGENT_BIN", &stub)
+        .env("OPENROUTER_API_KEY", "test-openrouter")
+        .env("GH_TOKEN", "test-gh")
+        .env("CANARY_ENDPOINT", "http://127.0.0.1:1")
+        .env("CANARY_API_KEY", "test-canary")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(
+        !marker.exists(),
+        "resolved Canary incident must not run model"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("REPORT.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "blocked");
+    assert_eq!(
+        report["residual_risk"][0],
+        "incident.resolved is admitted only for the Linejam alert recovery path"
+    );
+}
+
+#[test]
 fn incident_triage_wrapper_skips_already_escalated_incident_before_model_run() {
     let dir = tempfile::tempdir().unwrap();
     write_event_and_run(dir.path(), "canary");

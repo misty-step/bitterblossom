@@ -740,6 +740,10 @@ if [ "$BB_TRIAGE_SERVICE" = "linejam" ]; then
   handle_linejam_smoke_alert
   exit 0
 fi
+if [ "$BB_TRIAGE_EVENT" = "incident.resolved" ]; then
+  write_blocked_report "incident.resolved is admitted only for the Linejam alert recovery path"
+  exit 0
+fi
 
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
   write_blocked_report "OPENROUTER_API_KEY is unset"
