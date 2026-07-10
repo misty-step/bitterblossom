@@ -1,8 +1,9 @@
 //! Run-artifact inspection helpers shared by the CLI and MCP.
 //!
 //! Mechanism only: enumerate and safely read artifact files a run's attempts
-//! left on disk, without letting a caller escape the attempt artifact root or
-//! flood stdout with binary/oversized output. The CLI surface in `main.rs`
+//! left on disk or snapshotted into the durable ledger, without letting a
+//! caller escape the attempt artifact root or flood stdout with
+//! binary/oversized output. The CLI surface in `main.rs`
 //! and the read-only MCP server (backlog 078) both call these helpers so
 //! their outputs agree by construction.
 
@@ -13,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::ledger::Ledger;
+use crate::ledger::{ArtifactSnapshotRow, Ledger};
 
 /// Maximum bytes `read` will load into memory and print. Oversized artifacts
 /// are rejected with a structured `Oversized` outcome instead of being
@@ -23,6 +24,57 @@ pub const READ_LIMIT: u64 = 1 << 20; // 1 MiB
 /// Files the harness writes into the attempt artifact dir for its own
 /// bookkeeping. They are not agent artifacts and are hidden from `list`.
 const INTERNAL_ARTIFACTS: &[&str] = &["harness.pid"];
+
+/// Persist the public top-level artifacts for one completed attempt. Text
+/// bodies use the same per-file bound as `read`; binary and oversized files
+/// retain metadata only. Directories, internal harness markers, and symlinks
+/// are deliberately absent from the durable snapshot.
+pub(crate) fn snapshot_attempt(ledger: &Ledger, attempt_id: i64, dir: &Path) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!("artifact snapshot dir {} not found", dir.display())
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read artifact snapshot dir {}", dir.display()))
+        }
+    };
+    let mut entries = entries
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read artifact snapshot entries at {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut snapshots = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let meta = path
+            .symlink_metadata()
+            .with_context(|| format!("stat artifact snapshot candidate {}", path.display()))?;
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if INTERNAL_ARTIFACTS.contains(&name.as_str()) {
+            continue;
+        }
+        let profile = bundle_file_profile(&path, Path::new(&name))
+            .with_context(|| format!("classify artifact snapshot candidate {}", path.display()))?;
+        let content = if profile.size <= READ_LIMIT && !profile.binary {
+            profile.bytes
+        } else {
+            None
+        };
+        snapshots.push(ArtifactSnapshotRow {
+            path: name,
+            size: profile.size,
+            content_type: profile.content_type,
+            binary: profile.binary,
+            content,
+        });
+    }
+    ledger.replace_artifact_snapshots(attempt_id, &snapshots)
+}
 
 #[derive(Debug)]
 pub enum ArtifactError {
@@ -132,56 +184,21 @@ pub fn list(ledger: &Ledger, run_id: &str) -> Result<Vec<ArtifactEntry>> {
     ensure_run_exists(ledger, run_id)?;
     let mut out = Vec::new();
     for a in ledger.attempts(run_id)? {
-        let Some(dir) = &a.artifact_dir else { continue };
-        let dir = Path::new(dir);
-        let entries = match fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => bail!(
-                "read artifact dir for run {run_id} attempt {} at {}: {e}",
-                a.n,
-                dir.display()
-            ),
+        let live_entries = match &a.artifact_dir {
+            Some(dir) => list_live_attempt(run_id, a.n, Path::new(dir))?,
+            None => None,
         };
-        for entry in entries {
-            let entry = entry.with_context(|| {
-                format!(
-                    "read artifact dir entry for run {run_id} attempt {} at {}",
-                    a.n,
-                    dir.display()
-                )
-            })?;
-            // Do not follow symlinks while listing. `read` has a containment
-            // guard for explicit paths; `list` should never stat or sniff a
-            // target outside the attempt artifact root just because a symlink
-            // exists in the directory.
-            let meta = entry.path().symlink_metadata().with_context(|| {
-                format!(
-                    "stat artifact for run {run_id} attempt {} at {}",
-                    a.n,
-                    entry.path().display()
-                )
-            })?;
-            if !meta.is_file() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if INTERNAL_ARTIFACTS.contains(&name.as_str()) {
-                continue;
-            }
-            let profile = artifact_profile(&entry.path(), meta.len()).with_context(|| {
-                format!(
-                    "classify artifact for run {run_id} attempt {} at {}",
-                    a.n,
-                    entry.path().display()
-                )
-            })?;
+        if let Some(entries) = live_entries {
+            out.extend(entries);
+            continue;
+        }
+        for snapshot in ledger.artifact_snapshots(a.id)? {
             out.push(ArtifactEntry {
                 attempt: a.n,
-                path: name,
-                size: meta.len(),
-                content_type: profile.content_type,
-                binary: profile.binary,
+                path: snapshot.path,
+                size: snapshot.size,
+                content_type: snapshot.content_type,
+                binary: snapshot.binary,
             });
         }
     }
@@ -194,63 +211,158 @@ pub fn list(ledger: &Ledger, run_id: &str) -> Result<Vec<ArtifactEntry>> {
 /// artifacts are summarized, never streamed to stdout.
 pub fn read(ledger: &Ledger, run_id: &str, path: &str) -> Result<ReadOutcome> {
     let rel = safe_relative(path)?;
+    let rel_display = manifest_path(&rel);
     ensure_run_exists(ledger, run_id)?;
     let mut attempts = ledger.attempts(run_id)?;
     // Newest-first so a retry's artifact wins over an earlier attempt's.
     attempts.reverse();
     for a in &attempts {
-        let Some(dir) = &a.artifact_dir else { continue };
-        let dir = Path::new(dir);
-        let file = dir.join(&rel);
-        let meta = match fs::metadata(&file) {
-            Ok(m) if m.is_file() => m,
-            Ok(_) => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                return Err(e).with_context(|| {
-                    format!(
-                        "stat artifact for run {run_id} attempt {} at {}",
-                        a.n,
-                        file.display()
-                    )
-                })
+        if let Some(dir) = &a.artifact_dir {
+            if let Some(outcome) = read_live_attempt(run_id, a.n, Path::new(dir), &rel, path)? {
+                return Ok(outcome);
             }
+        }
+        let Some(snapshot) = ledger.artifact_snapshot(a.id, &rel_display)? else {
+            continue;
         };
-        // Defense-in-depth: safe_relative already blocks lexical escapes;
-        // canonicalize catches symlinks pointing outside the artifact root.
-        let (root_c, file_c) = (
-            fs::canonicalize(dir).context("canonicalize artifact dir")?,
-            fs::canonicalize(&file).context("canonicalize artifact path")?,
-        );
-        if !file_c.starts_with(&root_c) {
-            return Err(ArtifactError::EscapesRoot { path: path.into() }.into());
+        return snapshot_read_outcome(a.n, snapshot);
+    }
+    Ok(ReadOutcome::Missing { path: rel_display })
+}
+
+fn list_live_attempt(run_id: &str, attempt: i64, dir: &Path) -> Result<Option<Vec<ArtifactEntry>>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => bail!(
+            "read artifact dir for run {run_id} attempt {attempt} at {}: {error}",
+            dir.display()
+        ),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "read artifact dir entry for run {run_id} attempt {attempt} at {}",
+                dir.display()
+            )
+        })?;
+        // Do not follow symlinks while listing. `read` has a containment
+        // guard for explicit paths; `list` should never stat or sniff a target
+        // outside the attempt artifact root just because a symlink exists.
+        let meta = entry.path().symlink_metadata().with_context(|| {
+            format!(
+                "stat artifact for run {run_id} attempt {attempt} at {}",
+                entry.path().display()
+            )
+        })?;
+        if !meta.is_file() {
+            continue;
         }
-        let size = meta.len();
-        if size > READ_LIMIT {
-            return Ok(ReadOutcome::Oversized {
-                attempt: a.n,
-                path: rel.to_string_lossy().into_owned(),
-                size,
-                limit: READ_LIMIT,
-            });
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if INTERNAL_ARTIFACTS.contains(&name.as_str()) {
+            continue;
         }
-        let bytes = fs::read(&file).context("read artifact")?;
-        if is_binary_full_bytes(&bytes) {
-            return Ok(ReadOutcome::Binary {
-                attempt: a.n,
-                path: rel.to_string_lossy().into_owned(),
-                size,
-            });
-        }
-        return Ok(ReadOutcome::Text {
-            attempt: a.n,
-            path: rel.to_string_lossy().into_owned(),
-            bytes: bytes.len(),
-            content: String::from_utf8(bytes)?,
+        let profile = artifact_profile(&entry.path(), meta.len()).with_context(|| {
+            format!(
+                "classify artifact for run {run_id} attempt {attempt} at {}",
+                entry.path().display()
+            )
+        })?;
+        out.push(ArtifactEntry {
+            attempt,
+            path: name,
+            size: meta.len(),
+            content_type: profile.content_type,
+            binary: profile.binary,
         });
     }
-    Ok(ReadOutcome::Missing {
-        path: rel.to_string_lossy().into_owned(),
+    Ok(Some(out))
+}
+
+fn read_live_attempt(
+    run_id: &str,
+    attempt: i64,
+    dir: &Path,
+    rel: &Path,
+    requested_path: &str,
+) -> Result<Option<ReadOutcome>> {
+    let file = dir.join(rel);
+    let meta = match fs::metadata(&file) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "stat artifact for run {run_id} attempt {attempt} at {}",
+                    file.display()
+                )
+            })
+        }
+    };
+    // Defense-in-depth: safe_relative already blocks lexical escapes;
+    // canonicalize catches symlinks pointing outside the artifact root.
+    let (root_c, file_c) = (
+        fs::canonicalize(dir).context("canonicalize artifact dir")?,
+        fs::canonicalize(&file).context("canonicalize artifact path")?,
+    );
+    if !file_c.starts_with(&root_c) {
+        return Err(ArtifactError::EscapesRoot {
+            path: requested_path.into(),
+        }
+        .into());
+    }
+    let path = manifest_path(rel);
+    let size = meta.len();
+    if size > READ_LIMIT {
+        return Ok(Some(ReadOutcome::Oversized {
+            attempt,
+            path,
+            size,
+            limit: READ_LIMIT,
+        }));
+    }
+    let bytes = fs::read(&file).context("read artifact")?;
+    if is_binary_full_bytes(&bytes) {
+        return Ok(Some(ReadOutcome::Binary {
+            attempt,
+            path,
+            size,
+        }));
+    }
+    Ok(Some(ReadOutcome::Text {
+        attempt,
+        path,
+        bytes: bytes.len(),
+        content: String::from_utf8(bytes)?,
+    }))
+}
+
+fn snapshot_read_outcome(attempt: i64, snapshot: ArtifactSnapshotRow) -> Result<ReadOutcome> {
+    if snapshot.size > READ_LIMIT {
+        return Ok(ReadOutcome::Oversized {
+            attempt,
+            path: snapshot.path,
+            size: snapshot.size,
+            limit: READ_LIMIT,
+        });
+    }
+    if snapshot.binary {
+        return Ok(ReadOutcome::Binary {
+            attempt,
+            path: snapshot.path,
+            size: snapshot.size,
+        });
+    }
+    let content = snapshot
+        .content
+        .context("durable artifact snapshot is missing its bounded text body")?;
+    Ok(ReadOutcome::Text {
+        attempt,
+        path: snapshot.path,
+        bytes: content.len(),
+        content: String::from_utf8(content)?,
     })
 }
 
@@ -267,10 +379,12 @@ pub fn bundle(ledger: &Ledger, run_id: &str, out_dir: &Path) -> Result<ArtifactB
     let mut entries = Vec::new();
     for attempt in attempts {
         let Some(dir) = &attempt.artifact_dir else {
+            append_snapshot_bundle_entries(ledger, attempt.id, attempt.n, out_dir, &mut entries)?;
             continue;
         };
         let dir = Path::new(dir);
         if !dir.exists() {
+            append_snapshot_bundle_entries(ledger, attempt.id, attempt.n, out_dir, &mut entries)?;
             continue;
         }
         let root_c = fs::canonicalize(dir).context("canonicalize artifact dir")?;
@@ -397,6 +511,69 @@ pub fn bundle(ledger: &Ledger, run_id: &str, out_dir: &Path) -> Result<ArtifactB
     )
     .with_context(|| format!("write artifact bundle manifest {}", out_dir.display()))?;
     Ok(manifest)
+}
+
+fn append_snapshot_bundle_entries(
+    ledger: &Ledger,
+    attempt_id: i64,
+    attempt: i64,
+    out_dir: &Path,
+    entries: &mut Vec<ArtifactBundleEntry>,
+) -> Result<()> {
+    for snapshot in ledger.artifact_snapshots(attempt_id)? {
+        let policy = if snapshot.size > READ_LIMIT {
+            Some(ArtifactBundlePolicy {
+                kind: "manifest_only_oversized",
+                reason: "artifact exceeds bundle inline byte limit",
+                limit: Some(READ_LIMIT),
+            })
+        } else if snapshot.binary {
+            Some(ArtifactBundlePolicy {
+                kind: "manifest_only_binary",
+                reason: "binary artifacts are recorded in the manifest only",
+                limit: None,
+            })
+        } else {
+            None
+        };
+        if let Some(policy) = policy {
+            entries.push(ArtifactBundleEntry {
+                attempt,
+                path: snapshot.path,
+                size: snapshot.size,
+                content_type: snapshot.content_type,
+                binary: snapshot.binary,
+                included: false,
+                bundle_path: None,
+                policy: Some(policy),
+            });
+            continue;
+        }
+
+        let bundle_path = format!("attempt-{attempt}/{}", snapshot.path);
+        let dest = out_dir.join(&bundle_path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("create artifact bundle directory {}", parent.display())
+            })?;
+        }
+        let content = snapshot
+            .content
+            .context("durable artifact snapshot is missing its bounded text body")?;
+        fs::write(&dest, content)
+            .with_context(|| format!("copy durable artifact into bundle at {}", dest.display()))?;
+        entries.push(ArtifactBundleEntry {
+            attempt,
+            path: snapshot.path,
+            size: snapshot.size,
+            content_type: snapshot.content_type,
+            binary: snapshot.binary,
+            included: true,
+            bundle_path: Some(bundle_path),
+            policy: None,
+        });
+    }
+    Ok(())
 }
 
 /// Validate a caller-supplied artifact path: non-empty, relative, no `.`/`..`

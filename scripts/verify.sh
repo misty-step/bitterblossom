@@ -298,7 +298,17 @@ rm -rf "$self_drill_tmp"
 # ledger row (~9 lines). No new module, no new subsystem, no workload
 # judgment -- this is the same class of budget-governance arithmetic as
 # the existing global daily ceiling it sits beside.
-SPINE_LOC_CAP=15200
+# Linejam DigitalOcean cutover: 15200 -> 15500 for durable attempt-artifact
+# snapshots. artifacts.rs captures public top-level files at the existing
+# finish_attempt seam, bounds each stored text body at the existing 1 MiB read
+# limit, and projects the same list/read/bundle contracts from SQLite when an
+# ephemeral runtime loses its attempt directories (~175 lines). ledger.rs adds
+# the additive table access and makes snapshot failure reject success instead
+# of claiming evidence durability it did not achieve (~90 lines); dispatch.rs
+# maps that rejection onto the existing executed-attempt failure path (~20
+# lines). No workload identity or judgment enters the spine: this is generic
+# persistence and operator read-path mechanism for every task.
+SPINE_LOC_CAP=15500
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
