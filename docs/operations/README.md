@@ -168,6 +168,38 @@ with no operator action needed; confirm via
 `doctl apps list-deployments <app-id>` and diff `get-deployment ... -o json`
 step statuses before assuming a bad deploy is still live.
 
+### Tailnet-only Mint bridge
+
+The DO container reaches the tailnet-only Mint broker through a supervised
+userspace Tailscale node, not a public Mint ingress. Set
+`BB_MINT_TAILNET_AUTHKEY` to a reusable ephemeral pre-auth key restricted to
+the production Bitterblossom tag. `bb-mint-tailnet-entrypoint` writes it to a
+mode-0600 temporary file, unsets the environment value, joins the tailnet, and
+deletes the file before starting `bb`. The agent process therefore inherits
+neither the Tailscale bootstrap key nor a Powder credential.
+
+The root-owned Tailscale socket lives under mode-0700 `/run/bb-mint`; tunnel
+processes start with a scrubbed environment. Litestream and `bb` run as the
+unprivileged `bb` user with `no-new-privs`, so workloads can reach the
+loopback Mint forward but cannot use the Tailscale local API to open arbitrary
+tailnet connections. The wrapper does not install an exit node or proxy
+unrelated egress.
+
+Before starting `bb`, and every ten seconds afterward, the supervisor performs
+a read-only Powder list request through Mint using
+`__mint.powder.bitterblossom__`. It exports the same placeholder and Mint proxy
+base to `bb`. Loss of tailscaled, the loopback forward, or the end-to-end Mint
+Powder capability terminates the container so App Platform restarts the
+complete identity boundary.
+
+Before deployment, exercise the real production image boundary (real
+`setpriv`, filesystem permissions, `socat`, `curl`, and entrypoints; only the
+external Tailscale/Mint network is replaced):
+
+```sh
+scripts/mint-tailnet-container-smoke.sh
+```
+
 ### Tailnet Linejam alert runner
 
 The deterministic `linejam-alert` task runs on its dedicated tailnet host;

@@ -268,10 +268,25 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let dockerfile = read("Dockerfile");
     assert!(dockerfile.contains("ARG LITESTREAM_VERSION=0.5.13"));
-    assert!(dockerfile.contains("ca-certificates git curl openssh-client"));
+    assert!(dockerfile.contains("ca-certificates git curl openssh-client passwd socat util-linux"));
+    assert!(dockerfile.contains("useradd --system --create-home"));
+    assert!(dockerfile.contains("chown bb:bb \"$BB_PLANE_DIR\""));
     assert!(dockerfile.contains("litestream-${LITESTREAM_VERSION}-linux-${litestream_arch}.tar.gz"));
-    assert!(dockerfile.contains("ENTRYPOINT [\"/usr/local/bin/bb-litestream-entrypoint\"]"));
+    assert!(dockerfile.contains("FROM tailscale/tailscale:stable@sha256:"));
+    assert!(dockerfile.contains("COPY --from=tailscale /usr/local/bin/tailscaled"));
+    assert!(dockerfile.contains("COPY --from=tailscale /usr/local/bin/tailscale"));
+    assert!(dockerfile.contains("ENTRYPOINT [\"/usr/local/bin/bb-mint-tailnet-entrypoint\"]"));
     assert!(!dockerfile.contains("LITESTREAM_REPLICA_URL="));
+
+    let mint_container_smoke = read("scripts/mint-tailnet-container-smoke.sh");
+    assert!(mint_container_smoke.contains("NoNewPrivs:"));
+    assert!(mint_container_smoke.contains("Cap(Inh|Prm|Eff|Bnd|Amb):"));
+    assert!(mint_container_smoke.contains("Mint Powder capability probe failed; stopping bb"));
+    assert!(mint_container_smoke.contains("/run/bb-mint/tailscaled.sock"));
+    assert!(mint_container_smoke.contains("__mint.powder.bitterblossom__"));
+
+    let ci = read(".github/workflows/ci.yml");
+    assert!(ci.contains("scripts/mint-tailnet-container-smoke.sh"));
 
     let fly = read("fly.toml");
     assert!(fly.contains("BB_LITESTREAM_REQUIRED = \"1\""));
