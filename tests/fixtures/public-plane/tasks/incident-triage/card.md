@@ -16,6 +16,10 @@ This V1 is intentionally scoped to Misty Step repos only:
 - `canary` -> `misty-step/canary`
 - `bastion` -> `misty-step/bastion`
 - `powder` -> `misty-step/powder`
+- `linejam` -> `misty-step/linejam`, but only when the incident carries the
+  exact `linejam-production-smoke` monitor signal. That declared alert path
+  creates a Powder `request_input` item with the failing test and run URL,
+  then stops without model execution, branches, PRs, merges, or deploys.
 
 The operator explicitly waived the usual BB never-skip-a-level rollout ladder
 for this incident responder on 2026-07-02. Do not reintroduce ceremonial rungs

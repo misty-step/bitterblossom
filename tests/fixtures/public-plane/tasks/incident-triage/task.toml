@@ -8,6 +8,7 @@ repos = [
   { url = "https://github.com/example-org/canary-example.git", ref = "main" },
   { url = "https://github.com/example-org/bastion-example.git", ref = "main" },
   { url = "https://github.com/example-org/powder-example.git", ref = "main" },
+  { url = "https://github.com/example-org/linejam-example.git", ref = "main" },
   { url = "https://github.com/example-org/bitterblossom-example.git", ref = "main" },
 ]
 
@@ -49,4 +50,4 @@ any_of = ["incident.opened", "incident.updated"]
 
 [[trigger.filter]]
 pointer = "/incident/service"
-any_of = ["canary", "bastion", "powder"]
+any_of = ["canary", "bastion", "powder", "linejam"]

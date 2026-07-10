@@ -306,6 +306,14 @@ fn incident_triage_task_is_glm_command_responder_contract() {
     assert!(task.agent.secrets.contains(&"GH_TOKEN".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_ENDPOINT".to_string()));
     assert!(task.agent.secrets.contains(&"CANARY_API_KEY".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"POWDER_INCIDENT_ALERT_API_KEY".to_string()));
+    assert!(task
+        .agent
+        .secrets
+        .contains(&"POWDER_API_BASE_URL".to_string()));
     assert_eq!(task.agent.policy.authority.as_deref(), Some("merge"));
     assert!(task
         .agent
@@ -321,7 +329,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         task.spec.admission.attention_debt,
         AttentionDebtPolicy::Task
     );
-    assert_eq!(task.spec.workspace.repos.len(), 4);
+    assert_eq!(task.spec.workspace.repos.len(), 5);
 
     let webhook = task
         .spec
@@ -353,6 +361,7 @@ fn incident_triage_task_is_glm_command_responder_contract() {
                 values.contains(&serde_json::json!("canary"))
                     && values.contains(&serde_json::json!("bastion"))
                     && values.contains(&serde_json::json!("powder"))
+                    && values.contains(&serde_json::json!("linejam"))
             })
     }));
     assert!(
@@ -366,6 +375,9 @@ fn incident_triage_task_is_glm_command_responder_contract() {
         "misty-step/canary",
         "misty-step/bastion",
         "misty-step/powder",
+        "misty-step/linejam",
+        "linejam-production-smoke",
+        "Powder",
         "Cerberus",
         "CI green is mandatory",
         "maximum 3 fix attempts",
@@ -751,11 +763,11 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     assert_eq!(duplicate.status, 202);
     assert!(duplicate.body.contains("\"duplicate\":true"));
 
+    let linejam =
+        r#"{"event":"incident.opened","incident":{"id":"INC-linejam","service":"linejam"}}"#;
+    assert_eq!(deliver(&mut ledger, linejam, "DLV-2").status, 202);
+
     for (body, delivery) in [
-        (
-            r#"{"event":"incident.opened","incident":{"id":"INC-linejam","service":"linejam"}}"#,
-            "DLV-2",
-        ),
         (
             r#"{"event":"annotation.added","incident":{"id":"INC-factory","service":"canary"}}"#,
             "DLV-3",
@@ -771,7 +783,7 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     }
     assert_eq!(
         ledger.list_runs(Some("canary-triage"), None).unwrap().len(),
-        1
+        2
     );
 }
 
