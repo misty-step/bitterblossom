@@ -318,6 +318,18 @@ a:hover { color: var(--accent); text-decoration-color: currentColor; }
   cursor: pointer;
 }
 .agent-link:hover { color: var(--accent); text-decoration-color: currentColor; }
+.config-details { min-width: 15rem; }
+.config-details summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: lowercase;
+}
+.config-details[open] summary { margin-bottom: .35rem; }
+.config-details dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .12rem .55rem; }
+.config-details dt { color: var(--muted); }
+.config-details dd { margin: 0; overflow-wrap: anywhere; }
+.config-details code { white-space: normal; }
 .table-wrap { overflow-x: auto; }
 table {
   width: 100%;
@@ -600,7 +612,7 @@ tbody tr:first-child td { border-top: 0; }
           <label class="chrome"><input id="taskShowArchived" type="checkbox"> show archived</label>
         </form>
         <div class="table-wrap"><table>
-          <thead><tr><th>task</th><th>agent</th><th>substrate</th><th>triggers</th><th>budget</th><th>key</th><th>state</th></tr></thead>
+          <thead><tr><th>workflow</th><th>agent</th><th>substrate</th><th>triggers</th><th>budget</th><th>key</th><th>state</th><th>config</th></tr></thead>
           <tbody id="taskRows"></tbody>
         </table></div>
       </article>
@@ -613,7 +625,7 @@ tbody tr:first-child td { border-top: 0; }
           <input id="agentFilter" type="search" placeholder="filter by agent, role, harness...">
         </form>
         <div class="table-wrap"><table>
-          <thead><tr><th>agent</th><th>role</th><th>harness / model</th><th>provenance</th><th>secrets</th><th>tasks</th></tr></thead>
+          <thead><tr><th>agent</th><th>role</th><th>harness / model</th><th>provenance</th><th>secrets</th><th>workflows</th><th>config</th></tr></thead>
           <tbody id="agentRows"></tbody>
         </table></div>
       </article>
@@ -991,8 +1003,13 @@ function runRow(run, totals, freshness, compact = false) {
     <td>${fmtDuration(run.duration_ms)}</td>
     <td class="right">${fmtSmallMoney(run.cost_usd)}</td>
     <td class="right">${esc(tokens)}</td>
-    <td>${esc(short(run.trace_id))}</td>
+    <td>${runDetailLink(run)}</td>
   </tr>`;
+}
+
+function runDetailLink(run) {
+  if (run.source === "external") return evidenceCell(run);
+  return `<a href="/api/runs/${encodeURIComponent(run.id)}">${esc(short(run.trace_id || run.id))}</a>`;
 }
 
 function sourceLabel(run) {
@@ -1026,8 +1043,72 @@ function filteredTasks() {
   });
 }
 
+function configValue(value) {
+  if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) return `<span class="faint">-</span>`;
+  if (Array.isArray(value)) return value.map(esc).join("<br>");
+  if (typeof value === "object") return `<code>${esc(JSON.stringify(value))}</code>`;
+  return esc(value);
+}
+
+function configDetails(label, entries) {
+  const rows = entries
+    .map(([name, value]) => `<dt>${esc(name)}</dt><dd>${configValue(value)}</dd>`)
+    .join("");
+  return `<details class="config-details"><summary>${esc(label)}</summary><dl>${rows}</dl></details>`;
+}
+
+function policyDetails(policy = {}) {
+  return [
+    ["authority", policy.authority],
+    ["provider key", policy.provider_key_name],
+    ["provider spend cap", policy.provider_spend_cap_usd == null ? null : fmtMoney(policy.provider_spend_cap_usd)],
+    ["model allowlist", policy.model_allowlist],
+    ["trigger bindings", policy.trigger_bindings],
+    ["iteration cap", policy.iteration_cap],
+    ["turn cap", policy.turn_cap],
+    ["tool action cap", policy.tool_action_cap],
+    ["output bytes cap", policy.output_bytes_cap],
+    ["wall clock", policy.wall_clock_minutes == null ? null : `${policy.wall_clock_minutes}m`],
+    ["side effects", policy.side_effect_policy],
+  ];
+}
+
+function triggerDetails(trigger) {
+  return configDetails(`${triggerLabel(trigger)} config`, [
+    ["secret binding", trigger.secret_env],
+    ["dedupe", trigger.dedupe_key],
+    ["action", trigger.action],
+    ["filters", trigger.filters],
+  ]);
+}
+
+function workflowConfigDetails(task) {
+  return configDetails("workflow config", [
+    ["role", task.agent_role],
+    ["skills", task.agent_skills],
+    ["verdict", task.verdict],
+    ["admission", task.admission],
+    ["rollout", task.rollout],
+    ["turn cap", task.turn_cap],
+    ["tool action cap", task.tool_action_cap],
+    ["output bytes cap", task.output_bytes_cap],
+    ...policyDetails(task.policy),
+  ]);
+}
+
+function agentConfigDetails(agent) {
+  return configDetails("agent config", [
+    ["provider", agent.provider],
+    ["auth", agent.auth],
+    ["skills", agent.skills],
+    ["required secrets", agent.secrets],
+    ["optional secrets", agent.optional_secrets],
+    ...policyDetails(agent.policy),
+  ]);
+}
+
 function taskRowHtml(task) {
-  const triggers = (task.trigger_details || []).map(triggerLabel).join("<br>");
+  const triggers = (task.trigger_details || []).map(triggerDetails).join("");
   const budget = [
     task.max_runs_per_day == null ? null : `${task.runs_today}/${task.max_runs_per_day} runs`,
     task.max_cost_per_run_usd == null ? null : `${fmtMoney(task.max_cost_per_run_usd)} per run`,
@@ -1043,6 +1124,7 @@ function taskRowHtml(task) {
     <td>${budget}</td>
     <td>${providerKeyCell(task.provider_key)}</td>
     <td>${parked}</td>
+    <td>${workflowConfigDetails(task)}</td>
   </tr>`;
 }
 
@@ -1057,13 +1139,13 @@ function renderTasks() {
       groups.get(key).push(task);
     }
     const html = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([source, tasks]) =>
-      `<tr class="group-row"><td colspan="7">${esc(source)} (${tasks.length})</td></tr>` +
+      `<tr class="group-row"><td colspan="8">${esc(source)} (${tasks.length})</td></tr>` +
       tasks.map(taskRowHtml).join("")
     ).join("");
-    $("taskRows").innerHTML = html || `<tr><td colspan="7" class="empty">no tasks match</td></tr>`;
+    $("taskRows").innerHTML = html || `<tr><td colspan="8" class="empty">no tasks match</td></tr>`;
     return;
   }
-  $("taskRows").innerHTML = rows.map(taskRowHtml).join("") || `<tr><td colspan="7" class="empty">no tasks match</td></tr>`;
+  $("taskRows").innerHTML = rows.map(taskRowHtml).join("") || `<tr><td colspan="8" class="empty">no tasks match</td></tr>`;
 }
 
 // bitterblossom-934: task -> agent click-through. Switches to the Agents
@@ -1099,7 +1181,8 @@ function renderAgents() {
     <td>${agentProvenanceCell(agent)}</td>
     <td>${(agent.secrets || []).map(esc).join("<br>") || `<span class="faint">-</span>`}</td>
     <td>${(agent.bound_tasks || []).map(esc).join("<br>") || `<span class="faint">unbound</span>`}</td>
-  </tr>`).join("") || `<tr><td colspan="6" class="empty">no agents configured</td></tr>`;
+    <td>${agentConfigDetails(agent)}</td>
+  </tr>`).join("") || `<tr><td colspan="7" class="empty">no agents configured</td></tr>`;
 }
 
 function providerKeyCell(key) {

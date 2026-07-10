@@ -995,7 +995,8 @@ fn agents_view_reports_roster_provenance_sha_from_vendored_source_file() {
 fn operator_html_escapes_trigger_labels_before_inserting_task_rows() {
     let html = include_str!("../src/operator.html");
 
-    assert!(html.contains("map(triggerLabel).join(\"<br>\")"));
+    assert!(html.contains("map(triggerDetails).join(\"\")"));
+    assert!(html.contains("function triggerDetails(trigger)"));
     assert!(html.contains("return `cron ${esc(trigger.schedule)}`"));
     assert!(html.contains("return `webhook /hooks/${esc(trigger.route)}`"));
     assert!(html.contains("return esc(trigger.kind);"));
@@ -1118,6 +1119,46 @@ fn operator_html_ships_agents_view_with_click_through_and_task_filtering() {
         html.contains(r#"id="taskShowArchived""#),
         "task list needs an archive toggle"
     );
+}
+
+#[test]
+fn operator_html_exposes_complete_agent_and_workflow_configuration() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains("function policyDetails("));
+    assert!(html.contains("function triggerDetails("));
+    assert!(html.contains("function workflowConfigDetails("));
+    assert!(html.contains("function agentConfigDetails("));
+    for field in [
+        "provider_spend_cap_usd",
+        "model_allowlist",
+        "trigger_bindings",
+        "iteration_cap",
+        "turn_cap",
+        "tool_action_cap",
+        "output_bytes_cap",
+        "wall_clock_minutes",
+        "side_effect_policy",
+        "optional_secrets",
+        "agent_skills",
+        "admission",
+        "rollout",
+        "dedupe_key",
+        "filters",
+    ] {
+        assert!(html.contains(field), "dashboard must render {field}");
+    }
+    assert!(html.contains("workflow config"));
+    assert!(html.contains("agent config"));
+}
+
+#[test]
+fn operator_html_links_full_run_history_rows_to_run_detail() {
+    let html = include_str!("../src/operator.html");
+
+    assert!(html.contains("function runDetailLink("));
+    assert!(html.contains("runDetailLink(run)"));
+    assert!(html.contains("/api/runs/${encodeURIComponent(run.id)}"));
 }
 
 #[test]

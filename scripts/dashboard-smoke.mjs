@@ -4,8 +4,8 @@
 // UX states look right, at both widths, via manual capture): this is the
 // automated, CI-wired check that the dashboard's inline script is at least
 // syntactically valid, that a real headless browser can load it with zero
-// console errors, and that one real behavioral click path (auth, then a
-// view switch) actually works -- at desktop and mobile widths both.
+// console errors, and that the operator's core inspection paths (run detail,
+// workflow config, and agent config) actually work -- at desktop and mobile.
 //
 // Not a repo dependency: this is a Rust-only crate (no package.json, no
 // node_modules committed). Node and Playwright are invoked exactly like any
@@ -134,11 +134,31 @@ try {
     await page.waitForTimeout(300);
     const runsActive = await page.locator('[data-view-button="runs"].is-active').count();
     if (runsActive !== 1) fail(`${dims.width}px: clicking the Runs view button did not mark it active`);
+    const runDetailLinks = await page.locator('#runRows a[href^="/api/runs/"]').count();
+    if (runDetailLinks === 0) fail(`${dims.width}px: run history has no links to full attempt/event detail`);
+
+    await page.click('[data-view-button="tasks"]');
+    const workflowDetails = page.locator('#taskRows details.config-details');
+    if (await workflowDetails.count() === 0) {
+      fail(`${dims.width}px: workflows have no expandable configuration`);
+    } else {
+      await workflowDetails.first().locator('summary').click();
+      if (!(await workflowDetails.first().evaluate((node) => node.open))) fail(`${dims.width}px: workflow configuration did not expand`);
+    }
+
+    await page.click('[data-view-button="agents"]');
+    const agentDetails = page.locator('#agentRows details.config-details');
+    if (await agentDetails.count() === 0) {
+      fail(`${dims.width}px: agents have no expandable configuration`);
+    } else {
+      await agentDetails.first().locator('summary').click();
+      if (!(await agentDetails.first().evaluate((node) => node.open))) fail(`${dims.width}px: agent configuration did not expand`);
+    }
 
     if (consoleErrors.length > 0) {
       fail(`${dims.width}px: ${consoleErrors.length} console error(s): ${consoleErrors.join(' | ')}`);
     } else {
-      console.log(`${dims.width}px: headless load + auth + view-switch clean, zero console errors`);
+      console.log(`${dims.width}px: run detail + workflow config + agent config clean, zero console errors`);
     }
     await context.close();
   }
