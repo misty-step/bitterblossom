@@ -353,37 +353,46 @@ run_remote() {
 
   app_readback=$(doctl apps get "$BB_DO_APP_ID" \
     --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID --no-header)
-  # The selected fields contain no whitespace, so positional parsing is stable
-  # without persisting the full app spec (which includes encrypted secrets).
-  # shellcheck disable=SC2086
-  set -- $app_readback
-  [ "$#" -eq 4 ] || {
+  # Parse only the non-secret fields instead of persisting the full app spec.
+  # `read` performs field splitting without pathname expansion.
+  app_id=
+  app_name=
+  app_ingress=
+  deployment_id=
+  extra=
+  IFS=' 	' read -r app_id app_name app_ingress deployment_id extra <<EOF
+$app_readback
+EOF
+  [ -n "$deployment_id" ] && [ -z "$extra" ] || {
     echo "FAIL remote-do-app: expected id, name, ingress, and an active deployment id" >&2
     exit 1
   }
-  [ "$1" = "$BB_DO_APP_ID" ] || {
+  [ "$app_id" = "$BB_DO_APP_ID" ] || {
     echo "FAIL remote-do-app: provider returned a different app id" >&2
     exit 1
   }
-  [ "$2" = "bitterblossom-plane" ] || {
+  [ "$app_name" = "bitterblossom-plane" ] || {
     echo "FAIL remote-do-app: app name was not bitterblossom-plane" >&2
     exit 1
   }
-  [ "${3%/}" = "${BB_URL%/}" ] || {
+  [ "${app_ingress%/}" = "${BB_URL%/}" ] || {
     echo "FAIL remote-do-app: ingress did not match BB_URL" >&2
     exit 1
   }
-  deployment_id=$4
 
   deployment_readback=$(doctl apps get-deployment "$BB_DO_APP_ID" "$deployment_id" \
     --format ID,Phase --no-header)
-  # shellcheck disable=SC2086
-  set -- $deployment_readback
-  [ "$#" -eq 2 ] && [ "$1" = "$deployment_id" ] || {
+  returned_deployment_id=
+  deployment_phase=
+  extra=
+  IFS=' 	' read -r returned_deployment_id deployment_phase extra <<EOF
+$deployment_readback
+EOF
+  [ -z "$extra" ] && [ "$returned_deployment_id" = "$deployment_id" ] || {
     echo "FAIL remote-do-deployment: unexpected deployment readback" >&2
     exit 1
   }
-  [ "$2" = "ACTIVE" ] || {
+  [ "$deployment_phase" = "ACTIVE" ] || {
     echo "FAIL remote-do-deployment: phase was not ACTIVE" >&2
     exit 1
   }

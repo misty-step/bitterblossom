@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -343,6 +345,93 @@ fn active_operations_cannot_recreate_the_retired_fly_app() {
             );
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_operations_drill_parses_read_only_provider_output_without_globbing() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+
+    let curl = bin.join("curl");
+    fs::write(
+        &curl,
+        r#"#!/bin/sh
+set -eu
+out=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --config) cat >/dev/null; shift 2 ;;
+    -o) out=$2; shift 2 ;;
+    -w) shift 2 ;;
+    *) shift ;;
+  esac
+done
+: "${out:?missing -o}"
+printf '{}\n' >"$out"
+printf '200'
+"#,
+    )
+    .unwrap();
+
+    let doctl = bin.join("doctl");
+    fs::write(
+        &doctl,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$FAKE_DOCTL_LOG"
+case "$1:$2" in
+  apps:get)
+    printf '%s    bitterblossom-plane    %s    *\n' "$FAKE_APP_ID" "$FAKE_APP_URL"
+    ;;
+  apps:get-deployment)
+    printf '*    ACTIVE\n'
+    ;;
+  *) exit 64 ;;
+esac
+"#,
+    )
+    .unwrap();
+
+    for path in [&curl, &doctl] {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    let app_id = "test-app-id";
+    let app_url = "https://bitterblossom.example.test";
+    let log = temp.path().join("doctl.log");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new("sh")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/production-ops-drill.sh"))
+        .args(["--remote", "--url", app_url, "--do-app-id", app_id])
+        .env("BB_API_TOKEN", "test-token")
+        .env("FAKE_APP_ID", app_id)
+        .env("FAKE_APP_URL", app_url)
+        .env("FAKE_DOCTL_LOG", &log)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("ok:remote-do app=test-app-id deployment=* phase=ACTIVE"));
+    let calls = fs::read_to_string(log).unwrap();
+    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
+    assert!(calls
+        .lines()
+        .all(|call| { call.starts_with("apps get ") || call.starts_with("apps get-deployment ") }));
 }
 
 #[test]

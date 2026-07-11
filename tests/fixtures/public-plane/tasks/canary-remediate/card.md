@@ -40,10 +40,10 @@ exactly one pull request via `gh pr create` (draft or ready, never
 auto-merge-enabled); write `REPORT.json`.
 
 Forbidden, always, with no exception: merging the PR (`gh pr merge`) or
-enabling auto-merge. No merges, no deploys, no provider deployment commands, or any
-equivalent), no resolving, acknowledging, annotating, or otherwise mutating
-the Canary incident, no parking or unparking any BB task, no resolving any
-BB run. No second active pull request for this incident's fingerprint against
+enabling auto-merge. No merges, no deploys, no provider deployment commands,
+or equivalent operations; no resolving, acknowledging, annotating, or otherwise
+mutating the Canary incident, no parking or unparking any BB task, no resolving
+any BB run. No second active pull request for this incident's fingerprint against
 the allowlisted repo -- before creating a branch, check for an existing open
 PR from this task family against the same repo; if one already exists, write
 a `duplicate` report naming it instead. No touching any repository outside
