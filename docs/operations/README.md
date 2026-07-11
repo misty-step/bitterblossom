@@ -1,21 +1,24 @@
 # Bitterblossom Operations
 
-These runbooks are the operator contract for the Fly-hosted plane. They are
-safe to paste into a terminal after replacing the environment variables; do not
-put bearer tokens in URLs or command arguments that will be logged.
+These runbooks are the operator contract for the DigitalOcean App Platform
+plane. They are safe to paste into a terminal after replacing the environment
+variables; do not put bearer tokens in URLs or command arguments that will be
+logged.
 
 Canonical app and state:
 
 ```sh
-export BB_FLY_APP=bitterblossom-plane
+export BB_DO_APP_ID=<operator-local-app-id>
 export BB_URL=https://bitterblossom-plane-9xpa5.ondigitalocean.app
 export BB_RUNTIME_PLANE=/path/to/private/plane
+export BB_DO_APP_SPEC=/path/to/private/bitterblossom-app.yaml
+export BB_LITESTREAM_CONFIG_LOCAL=/path/to/private/litestream.yml
 ```
 
-The production instance plane lives on the Fly volume mounted at `/app/plane`.
-That volume contains runtime config (`plane.toml`, `agents/`, `tasks/`) plus
-state (`.bb/plane.db`, child-key metadata, run artifacts). The Docker image must
-not contain the production `plane/` directory.
+App Platform's container disk is ephemeral. Runtime config is fetched into
+`/app/plane` at boot and ledger state is restored and replicated by Litestream;
+the product image must not contain the production `plane/` directory. Do not
+describe `/app/plane` as a persistent provider volume.
 
 For the local reviewer dashboard served on Serenity over Tailscale, see
 [`bb-dashboard.md`](bb-dashboard.md). That service intentionally runs a local
@@ -27,7 +30,10 @@ Before dispatching a storm or touching production, check the operator surface:
 
 ```sh
 git status --short --branch --untracked-files=all
-flyctl orgs list
+doctl apps get "$BB_DO_APP_ID" \
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
 sprite org list
 sprite use -o misty-step lane-1
 sprite org list
@@ -73,13 +79,19 @@ plane. Recommended repository permissions:
   `CERBERUS_SUMMARY_TARGET=check-run`
 
 For GitHub App rotation, mint a fresh installation token outside the agent run,
-import it by name, restart/recover the plane, then verify the next review
-comment identity:
+update the secret in the operator-owned App Platform spec, validate and apply
+that complete spec, then verify the next review comment identity. Never put the
+token in the command line or a generated patch:
 
 ```sh
-printf 'CERBERUS_REVIEW_GH_TOKEN=%s\n' "$CERBERUS_REVIEW_GH_TOKEN" \
-  | flyctl secrets import --app "$BB_FLY_APP"
-flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"'
+doctl apps spec validate "$BB_DO_APP_SPEC"
+doctl apps update "$BB_DO_APP_ID" --spec "$BB_DO_APP_SPEC" --wait
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-created-by-this-update>
+BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh \
+  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 gh api repos/<owner>/<repo>/issues/<pr>/comments --jq '.[].user.login'
 ```
 
@@ -119,7 +131,7 @@ per-review child key inside its isolated `container-opencode` path.
 
 DO App Platform gives `bitterblossom-plane` no persistent volume, so
 `plane.toml`/`agents/`/`tasks/` cannot live baked into the image or on a
-mounted disk the way they did on the Fly volume above. Instead,
+mounted disk. Instead,
 `scripts/bb-litestream-entrypoint.sh` fetches and unpacks a tarball from
 `BB_PLANE_CONFIG_URL` (a presigned Spaces link, set as an app-spec secret)
 into `$BB_PLANE_DIR` on every fresh container boot, only when `plane.toml` is
@@ -129,7 +141,9 @@ separate dev/test plane, not a mirror of it.
 
 Current location: `s3://misty-step-litestream/bb-plane/plane-config-live.tgz`
 (DO Spaces, `nyc3`; `DO_SPACES_KEY`/`DO_SPACES_SECRET` sourced from
-`~/.secrets`). To change a live agent or task config:
+`~/.secrets`). Keep the downloaded original as the known-good rollback bundle
+until the replacement deployment and remote smoke are green. To change a live
+agent or task config:
 
 ```sh
 AWS_ACCESS_KEY_ID="$DO_SPACES_KEY" AWS_SECRET_ACCESS_KEY="$DO_SPACES_SECRET" \
@@ -226,50 +240,44 @@ Local gate first:
 ./scripts/verify.sh
 ```
 
-Deploy only from a clean, pushed `master`:
+App Platform follows `misty-step/bitterblossom:master` with deploy-on-push.
+Production therefore deploys only from a clean, reviewed, pushed `master`:
 
 ```sh
 git status --short --branch --untracked-files=all
 git rev-list --left-right --count master...origin/master
-flyctl deploy --app "$BB_FLY_APP" --remote-only
+git push origin master
 ```
 
-For a first deploy or a migration from the old image-baked plane, stage the
-instance plane on the volume before deploying an image that expects
-`BB_PLANE_DIR=/app/plane`:
+Do not declare success from the push. Read the deployment list and set
+`BB_EXPECTED_DEPLOYMENT_ID` to the exact row whose `Cause` names the commit just
+pushed. Never substitute whichever deployment happens to remain active: a
+failed rollout can leave the previous deployment active. Then exercise the
+provider, public, and authenticated read surfaces:
 
 ```sh
-# Run against the old deployment where /app/plane is image-backed and
-# /app/plane/.bb is the mounted volume root.
-flyctl ssh console --app "$BB_FLY_APP" --command '
-  set -eu
-  cd /app/plane/.bb
-  mkdir -p .bb
-  find . -mindepth 1 -maxdepth 1 ! -name .bb -exec mv {} .bb/ \;
-  cp -a /app/plane/plane.toml /app/plane/agents /app/plane/tasks .
-  test -f plane.toml
-  test -d agents
-  test -d tasks
-  test -f .bb/plane.db
-'
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-for-the-pushed-commit>
+doctl apps get "$BB_DO_APP_ID" \
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
+doctl apps get-deployment "$BB_DO_APP_ID" "$BB_EXPECTED_DEPLOYMENT_ID" \
+  --format ID,Phase,Cause,Created,Updated
 ```
-
-After that migration, the Fly volume can be mounted at `/app/plane`; budget,
-task-card, and allowlist changes are applied by updating runtime config on the
-volume and restarting/recovering the plane, not by rebuilding the product image.
-
-Run the production smoke after deploy:
 
 ```sh
 BB_API_TOKEN="$BB_API_TOKEN" \
-  ./scripts/production-ops-drill.sh --remote --url "$BB_URL" --fly-app "$BB_FLY_APP"
+  ./scripts/production-ops-drill.sh --remote --url "$BB_URL" \
+  --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 ```
 
-The smoke checks unauthenticated `/health`, bearer-only read APIs, Fly app and
-volume visibility, and `BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json`
-inside the machine. Fly SSH commands that include env assignment or shell
-syntax must be wrapped with `/bin/sh -lc`; otherwise Fly tries to execute the
-assignment as the binary name.
+The smoke checks unauthenticated `/health`, bearer-only read APIs, the canonical
+App Platform app identity, ingress URL, and the exact expected deployment. It
+fails while any deployment is in progress, if the expected deployment is not
+the active deployment, or if that deployment is not `ACTIVE`; therefore a
+failed rollout that leaves the previous deployment active cannot pass. It does
+not open a provider console or mutate runtime state.
 
 `bb status --json` also reports backup readiness from the runtime plane's
 `[backup]` stanza. The plane should declare the backup provider, RPO/RTO, the
@@ -290,9 +298,9 @@ Healthy output has `backup.status == "fresh"` and `backup.healthy == true`.
 Treat `stale`, `unknown`, or a missing heartbeat as a production-readiness
 failure before raising unattended workload volume.
 
-The production container starts through `bb-litestream-entrypoint`. Fly keeps
-the instance data volume mounted at `/app/plane` and sets the Litestream runtime
-contract by env name only:
+The production container starts through `bb-litestream-entrypoint`. App
+Platform sets the Litestream runtime contract by env name only; every path below
+is on ephemeral container storage:
 
 ```sh
 BB_LITESTREAM_REQUIRED=1
@@ -303,11 +311,12 @@ BB_LITESTREAM_HEARTBEAT_PATH=/app/plane/.bb/backup-last-success
 BB_LITESTREAM_STARTUP_TIMEOUT_SECONDS=60
 ```
 
-Set the actual replica URL as a Fly secret, never in git:
+Set the actual replica URL as an App Platform secret in the operator-owned app
+spec, never in git. Validate the complete spec before applying it:
 
 ```sh
-printf 'LITESTREAM_REPLICA_URL=%s\n' "$LITESTREAM_REPLICA_URL" \
-  | flyctl secrets import --app "$BB_FLY_APP"
+doctl apps spec validate "$BB_DO_APP_SPEC"
+doctl apps update "$BB_DO_APP_ID" --spec "$BB_DO_APP_SPEC" --wait
 ```
 
 On startup, the entrypoint writes a temporary Litestream config containing
@@ -328,10 +337,11 @@ version; otherwise the safe moves are roll forward or restore a compatible
 backup. Do not edit `PRAGMA user_version` to force an old binary to write into a
 newer ledger.
 
-Before rolling back, capture the current app and ledger version:
+Before rolling back, capture the current deployment and ledger version:
 
 ```sh
-flyctl releases --app "$BB_FLY_APP"
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
 {
   printf '%s\n' 'fail'
   printf '%s\n' 'silent'
@@ -343,22 +353,46 @@ flyctl releases --app "$BB_FLY_APP"
 
 If `ledger.schema_version` is newer than the rollback target supports, restore
 a backup from before that migration or roll forward to a binary that supports
-the new schema. If the schema is compatible, pick the previous known-good
-release, rollback, recover inherited runs, and run the smoke:
+the new schema.
+
+If the failure came from the Spaces-hosted runtime config, upload the downloaded
+known-good bundle and force a fresh deployment so the ephemeral container
+fetches it before serving traffic:
 
 ```sh
-flyctl releases --app "$BB_FLY_APP"
-flyctl releases rollback --app "$BB_FLY_APP" --yes
-flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"'
-BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh --remote
+AWS_ACCESS_KEY_ID="$DO_SPACES_KEY" AWS_SECRET_ACCESS_KEY="$DO_SPACES_SECRET" \
+  aws --endpoint-url https://nyc3.digitaloceanspaces.com s3 cp \
+  plane-config-live.tgz \
+  s3://misty-step-litestream/bb-plane/plane-config-live.tgz
+doctl apps create-deployment "$BB_DO_APP_ID" --force-rebuild --wait
 ```
 
-If rollback does not restore `/health` and bearer read APIs, stop dispatching
-new work and inspect machine logs:
+If the schema is compatible and the failure came from source, revert the
+offending commit on `master`; App Platform deploy-on-push will build a new
+deployment from the known-good source state:
 
 ```sh
-flyctl logs --app "$BB_FLY_APP"
-flyctl status --app "$BB_FLY_APP"
+git revert <bad-commit>
+git push origin master
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-for-the-revert-commit>
+BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh \
+  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
+```
+
+This is a rebuild, not an instant release pin. Pause new dispatch while it is in
+progress and keep the incident open until the replacement deployment is
+`ACTIVE` and the remote smoke passes.
+
+If rollback does not restore `/health` and bearer read APIs, stop dispatching
+new work and inspect App Platform logs:
+
+```sh
+doctl apps logs "$BB_DO_APP_ID" plane --type run --tail 200
+doctl apps get "$BB_DO_APP_ID" \
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
 ```
 
 If logs contain `newer than this bb binary supports`, the rollback binary is
@@ -370,7 +404,14 @@ do not force the schema version downward.
 After a restart or deploy, classify inherited running rows:
 
 ```sh
-flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"'
+doctl apps console "$BB_DO_APP_ID" plane
+# In the ephemeral console:
+BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json
+```
+
+Then read status from outside the instance:
+
+```sh
 {
   printf '%s\n' 'fail'
   printf '%s\n' 'silent'
@@ -403,45 +444,43 @@ an incident, run a dry-run restore inside the machine and read the backup health
 surface:
 
 ```sh
-flyctl ssh console --app "$BB_FLY_APP" --command '
-  litestream restore -config /tmp/bb-litestream.yml -dry-run -json /app/plane/.bb/plane.db
-  BB_PLANE_DIR=/app/plane bb status --json
-'
+doctl apps console "$BB_DO_APP_ID" plane
+# In the ephemeral console:
+litestream restore -config /tmp/bb-litestream.yml -dry-run -json /app/plane/.bb/plane.db
+BB_PLANE_DIR=/app/plane bb status --json
 ```
 
-For an operator-held backup copy, copy the volume-backed SQLite database from
-inside the Fly machine, then verify the copy locally before it is trusted:
+A sudden container loss can lose writes since the last successful replication;
+the observed heartbeat and configured `rpo_seconds` are the only bound. Treat a
+stale heartbeat as unprotected, and pause dispatch before planned replacements
+until `backup.status == "fresh"`.
+
+For an operator-held proof, restore the replica to a new local destination with
+an operator-local Litestream config, then verify that copy before it is trusted.
+Do not copy `/app/plane/.bb/plane.db` out of a live ephemeral container and call
+that the durable backup:
 
 ```sh
 mkdir -p .ops/backups
-flyctl ssh sftp shell --app "$BB_FLY_APP"
-# Inside sftp:
-# get /app/plane/.bb/plane.db .ops/backups/plane-$(date +%Y%m%dT%H%M%SZ).db
-python3 - <<'PY'
+backup=.ops/backups/plane-$(date +%Y%m%dT%H%M%SZ).db
+litestream restore -config "$BB_LITESTREAM_CONFIG_LOCAL" \
+  -o "$backup" /app/plane/.bb/plane.db
+python3 - "$backup" <<'PY'
 import sqlite3
-db = ".ops/backups/<backup-file>.db"
+import sys
+db = sys.argv[1]
 conn = sqlite3.connect(db)
 print(conn.execute("pragma integrity_check").fetchone()[0])
 print(conn.execute("select count(*) from runs").fetchone()[0])
 PY
 ```
 
-Restore is a manual incident action. Stop the machine, upload the verified
-backup or restore from the Litestream replica to the mounted path, restart, then
-run the smoke:
-
-```sh
-flyctl machines stop --app "$BB_FLY_APP" <machine-id>
-flyctl ssh console --app "$BB_FLY_APP" --command '
-  rm -f /app/plane/.bb/plane.db /app/plane/.bb/plane.db-wal /app/plane/.bb/plane.db-shm
-  litestream restore -config /tmp/bb-litestream.yml -json /app/plane/.bb/plane.db
-'
-flyctl ssh sftp shell --app "$BB_FLY_APP"
-# Inside sftp:
-# put .ops/backups/<backup-file>.db /app/plane/.bb/plane.db
-flyctl machines start --app "$BB_FLY_APP" <machine-id>
-BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh --remote
-```
+Restore is a manual incident action. App Platform has no durable disk to patch
+in place: select a compatible Litestream replica, make it the configured restore
+source, and start a fresh deployment so the entrypoint restores before `bb`
+serves traffic. Verify provider deployment phase, `backup.status`, run history,
+and authenticated reads before re-enabling dispatch. Never delete or rewrite a
+live replica as part of a speculative rollback.
 
 The local restore drill in `./scripts/production-ops-drill.sh --local` proves
 the backup mechanism preserves run history without touching production, and it
@@ -451,18 +490,19 @@ fixture submission and checks `bb check`, `bb status --json`, `bb runs list
 
 ## Secret Rotation
 
-Runtime secrets live in Fly, not git:
+Runtime secrets live in the private App Platform spec, not git. Rotate one value
+in that private file, validate the complete spec, apply it, and wait for the new
+deployment:
 
 ```sh
-flyctl secrets list --app "$BB_FLY_APP"
-{
-  printf 'BB_API_TOKEN=%s\n' "$BB_API_TOKEN"
-  printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY"
-  printf 'GH_TOKEN=%s\n' "$GH_TOKEN"
-  printf 'CERBERUS_REVIEW_GH_TOKEN=%s\n' "$CERBERUS_REVIEW_GH_TOKEN"
-  printf 'SPRITE_TOKEN=%s\n' "$SPRITE_TOKEN"
-  printf 'LITESTREAM_REPLICA_URL=%s\n' "$LITESTREAM_REPLICA_URL"
-} | flyctl secrets import --app "$BB_FLY_APP"
+doctl apps spec validate "$BB_DO_APP_SPEC"
+doctl apps update "$BB_DO_APP_ID" --spec "$BB_DO_APP_SPEC" --wait
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-created-by-this-update>
+BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh \
+  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 ```
 
 After rotation, run the smoke. For webhook secrets, also send a signed test

@@ -1,6 +1,8 @@
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 fn help(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_bb"))
@@ -238,18 +240,24 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
     assert!(ops.contains("scripts/production-ops-drill.sh --local"));
+    assert!(ops.contains("doctl apps get \"$BB_DO_APP_ID\""));
+    assert!(ops.contains("doctl apps get-deployment \"$BB_DO_APP_ID\""));
+    assert!(ops.contains("doctl apps list-deployments \"$BB_DO_APP_ID\""));
+    assert!(ops.contains("BB_EXPECTED_DEPLOYMENT_ID"));
+    assert!(ops.contains("InProgressDeployment.ID"));
+    assert!(ops.contains("failed rollout that leaves the previous deployment active cannot pass"));
+    assert!(ops.contains("doctl apps logs \"$BB_DO_APP_ID\" plane --type run"));
     assert!(ops.contains("BB_LITESTREAM_REQUIRED=1"));
     assert!(ops.contains("BB_LITESTREAM_REPLICA_URL_ENV=LITESTREAM_REPLICA_URL"));
-    assert!(ops.contains("LITESTREAM_REPLICA_URL=%s"));
+    assert!(ops.contains("BB_PLANE_CONFIG_URL"));
     assert!(ops.contains("litestream restore -config /tmp/bb-litestream.yml"));
     assert!(ops.contains("ledger.schema_version"));
     assert!(ops.contains("newer than the rollback target supports"));
     assert!(ops.contains("Do not edit `PRAGMA user_version`"));
     assert!(ops.contains("backup.status == \"fresh\""));
     assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
-    assert!(ops.contains("flyctl releases rollback"));
-    assert!(ops.contains("BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"));
-    assert!(ops.contains("flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"));
+    assert!(ops.contains("git revert <bad-commit>"));
+    assert!(ops.contains("doctl apps console \"$BB_DO_APP_ID\" plane"));
     assert!(ops.contains("bb dlq replay <id> --json"));
     assert!(ops.contains("bb dlq ack <id> --reason <text>"));
     assert!(!ops.contains("there is no first-class acknowledge"));
@@ -261,7 +269,14 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(script.contains("gate --change ops-drill --json"));
     assert!(script.contains("backup status was not fresh"));
     assert!(script.contains("expect_bearer_code remote-tasks"));
-    assert!(script.contains("flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"));
+    assert!(script.contains("--do-app-id"));
+    assert!(script.contains("--expected-deployment-id"));
+    assert!(script.contains("doctl apps get \"$BB_DO_APP_ID\""));
+    assert!(script.contains("doctl apps get-deployment \"$BB_DO_APP_ID\""));
+    assert!(script.contains("InProgressDeployment.ID"));
+    assert!(script.contains("is still in progress"));
+    assert!(script.contains("did not match expected"));
+    assert!(script.contains("phase was not ACTIVE"));
     assert!(script.contains("curl --config -"));
     assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));
     assert!(!script.contains("?token="));
@@ -288,12 +303,9 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ci = read(".github/workflows/ci.yml");
     assert!(ci.contains("scripts/mint-tailnet-container-smoke.sh"));
 
-    let fly = read("fly.toml");
-    assert!(fly.contains("BB_LITESTREAM_REQUIRED = \"1\""));
-    assert!(fly.contains("BB_LITESTREAM_DB_PATH = \"/app/plane/.bb/plane.db\""));
-    assert!(fly.contains("BB_LITESTREAM_REPLICA_URL_ENV = \"LITESTREAM_REPLICA_URL\""));
-    assert!(fly.contains("BB_LITESTREAM_HEARTBEAT_PATH = \"/app/plane/.bb/backup-last-success\""));
-    assert!(!fly.contains("s3://"));
+    assert!(!Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fly.toml")
+        .exists());
 
     let entrypoint = read("scripts/bb-litestream-entrypoint.sh");
     assert!(entrypoint.contains("litestream replicate -config \"$config_path\""));
@@ -313,6 +325,228 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let verify = read("scripts/verify.sh");
     assert!(verify.contains("scripts/production-ops-drill.sh --local"));
+}
+
+#[test]
+fn active_operations_cannot_recreate_the_retired_fly_app() {
+    for rel in [
+        "docs/operations/README.md",
+        "docs/spine.md",
+        "scripts/production-ops-drill.sh",
+        ".agents/skills/bb-dogfood/SKILL.md",
+        ".agents/skills/bb-dogfood/references/session-notes-template.md",
+    ] {
+        let content = read(rel);
+        for forbidden in [
+            "BB_FLY_APP",
+            "flyctl deploy",
+            "flyctl status",
+            "flyctl volumes",
+            "flyctl ssh",
+            "flyctl secrets",
+            "flyctl releases",
+        ] {
+            assert!(
+                !content.contains(forbidden),
+                "{rel} still contains retired hosted-app operation `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+struct FakeRemoteDrill {
+    _temp: tempfile::TempDir,
+    path: String,
+    log: PathBuf,
+}
+
+#[cfg(unix)]
+impl FakeRemoteDrill {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+
+        let curl = bin.join("curl");
+        fs::write(
+            &curl,
+            r#"#!/bin/sh
+set -eu
+out=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --config) cat >/dev/null; shift 2 ;;
+    -o) out=$2; shift 2 ;;
+    -w) shift 2 ;;
+    *) shift ;;
+  esac
+done
+: "${out:?missing -o}"
+printf '{}\n' >"$out"
+printf '200'
+"#,
+        )
+        .unwrap();
+
+        let doctl = bin.join("doctl");
+        fs::write(
+            &doctl,
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$FAKE_DOCTL_LOG"
+case "$1:$2" in
+  apps:get)
+    case "$*" in
+      *InProgressDeployment.ID*)
+        printf '%s\n' "$FAKE_IN_PROGRESS"
+        ;;
+      *)
+        printf '%s    bitterblossom-plane    %s    %s\n' \
+          "$FAKE_APP_ID" "$FAKE_APP_URL" "$FAKE_ACTIVE"
+        ;;
+    esac
+    ;;
+  apps:get-deployment)
+    printf '*    ACTIVE\n'
+    ;;
+  *) exit 64 ;;
+esac
+"#,
+        )
+        .unwrap();
+
+        for path in [&curl, &doctl] {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+
+        let log = temp.path().join("doctl.log");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        Self {
+            _temp: temp,
+            path,
+            log,
+        }
+    }
+
+    fn run(&self, active: &str, in_progress: &str, expected_deployment: &str) -> Output {
+        Command::new("sh")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/production-ops-drill.sh"))
+            .args([
+                "--remote",
+                "--url",
+                "https://bitterblossom.example.test",
+                "--do-app-id",
+                "test-app-id",
+            ])
+            .env("BB_API_TOKEN", "test-token")
+            .env("FAKE_APP_ID", "test-app-id")
+            .env("FAKE_APP_URL", "https://bitterblossom.example.test")
+            .env("FAKE_ACTIVE", active)
+            .env("FAKE_IN_PROGRESS", in_progress)
+            .env("BB_EXPECTED_DEPLOYMENT_ID", expected_deployment)
+            .env("FAKE_DOCTL_LOG", &self.log)
+            .env("PATH", &self.path)
+            .output()
+            .unwrap()
+    }
+
+    fn calls(&self) -> String {
+        fs::read_to_string(&self.log).unwrap()
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_operations_drill_parses_read_only_provider_output_without_globbing() {
+    let fake = FakeRemoteDrill::new();
+    let output = fake.run("*", "", "*");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("ok:remote-do app=test-app-id deployment=* phase=ACTIVE"));
+    let calls = fake.calls();
+    assert_eq!(calls.lines().count(), 3, "unexpected doctl calls: {calls}");
+    assert!(calls
+        .lines()
+        .all(|call| { call.starts_with("apps get ") || call.starts_with("apps get-deployment ") }));
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_operations_drill_refuses_the_previous_active_deployment_during_rollout() {
+    let fake = FakeRemoteDrill::new();
+    let output = fake.run("*", "deployment-building", "deployment-building");
+
+    assert!(
+        !output.status.success(),
+        "smoke passed against the previous ACTIVE deployment during rollout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("deployment deployment-building is still in progress"),
+        "unexpected stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fake.calls();
+    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
+    assert!(calls.lines().all(|call| call.starts_with("apps get ")));
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_operations_drill_refuses_a_failed_rollout_that_left_the_previous_active() {
+    let fake = FakeRemoteDrill::new();
+    let output = fake.run("*", "", "deployment-failed");
+
+    assert!(
+        !output.status.success(),
+        "smoke passed after the expected rollout failed and left the previous deployment active:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("active deployment * did not match expected deployment-failed"),
+        "unexpected stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fake.calls();
+    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
+    assert!(calls.lines().all(|call| call.starts_with("apps get ")));
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_operations_drill_identifies_a_first_deployment_still_in_progress() {
+    let fake = FakeRemoteDrill::new();
+    let output = fake.run("", "deployment-first", "deployment-first");
+
+    assert!(
+        !output.status.success(),
+        "smoke passed a first deployment that was still building:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("deployment deployment-first is still in progress"),
+        "unexpected stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fake.calls();
+    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
+    assert!(calls.lines().all(|call| call.starts_with("apps get ")));
 }
 
 #[test]

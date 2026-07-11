@@ -1,6 +1,6 @@
 #!/bin/sh
 # Production-operations smoke drill. Default local mode is deterministic and
-# runs in CI; remote mode performs read-only probes against the Fly plane.
+# runs in CI; remote mode performs read-only probes against DO App Platform.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -8,7 +8,8 @@ cd "$(dirname "$0")/.."
 MODE=local
 BB_BIN=${BB_BIN:-./target/debug/bb}
 BB_URL=${BB_URL:-https://bitterblossom-plane-9xpa5.ondigitalocean.app}
-BB_FLY_APP=${BB_FLY_APP:-bitterblossom-plane}
+BB_DO_APP_ID=${BB_DO_APP_ID:-}
+BB_EXPECTED_DEPLOYMENT_ID=${BB_EXPECTED_DEPLOYMENT_ID:-}
 TMP=
 SERVER_PID=
 SERVER_LOG=
@@ -17,19 +18,20 @@ TOKEN=ops-drill-token
 
 usage() {
   cat <<'USAGE'
-usage: scripts/production-ops-drill.sh [--local|--remote] [--bb-bin PATH] [--url URL] [--fly-app APP]
+usage: scripts/production-ops-drill.sh [--local|--remote] [--bb-bin PATH] [--url URL]
+       [--do-app-id ID] [--expected-deployment-id ID]
 
 Local mode creates a temporary dev plane, runs one local workload, starts
 `bb serve`, probes /health and authenticated read APIs, runs `bb recover`, and
 proves the SQLite ledger can be backed up and restored without losing run
 history.
 
-Remote mode probes the Fly plane without sending tokens in query strings:
-  BB_API_TOKEN=... scripts/production-ops-drill.sh --remote
+Remote mode probes the DigitalOcean plane without sending tokens in query strings:
+  BB_API_TOKEN=... BB_DO_APP_ID=... BB_EXPECTED_DEPLOYMENT_ID=... \
+    scripts/production-ops-drill.sh --remote
 
-Remote mode additionally runs `flyctl status`, `flyctl volumes list`, and
-`BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json` inside the Fly machine when `flyctl` is
-available and authenticated.
+Remote mode also verifies that no deployment is in progress and that the exact
+expected App Platform deployment is ACTIVE. Every provider call is read-only.
 USAGE
 }
 
@@ -60,9 +62,14 @@ while [ "$#" -gt 0 ]; do
       BB_URL=${2%/}
       shift 2
       ;;
-    --fly-app)
-      [ "$#" -ge 2 ] || { echo "ops drill: --fly-app needs a value" >&2; exit 2; }
-      BB_FLY_APP=$2
+    --do-app-id)
+      [ "$#" -ge 2 ] || { echo "ops drill: --do-app-id needs a value" >&2; exit 2; }
+      BB_DO_APP_ID=$2
+      shift 2
+      ;;
+    --expected-deployment-id)
+      [ "$#" -ge 2 ] || { echo "ops drill: --expected-deployment-id needs a value" >&2; exit 2; }
+      BB_EXPECTED_DEPLOYMENT_ID=$2
       shift 2
       ;;
     -h | --help)
@@ -341,20 +348,91 @@ run_remote() {
     echo "ops drill: BB_API_TOKEN is required for --remote" >&2
     exit 2
   }
+  [ -n "$BB_DO_APP_ID" ] || {
+    echo "ops drill: BB_DO_APP_ID is required for --remote" >&2
+    exit 2
+  }
+  [ -n "$BB_EXPECTED_DEPLOYMENT_ID" ] || {
+    echo "ops drill: BB_EXPECTED_DEPLOYMENT_ID is required for --remote" >&2
+    exit 2
+  }
+  need doctl
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/bb-ops-remote.XXXXXX")
   expect_code remote-health 200 "$BB_URL/health"
   expect_bearer_code remote-tasks 200 "$BB_API_TOKEN" "$BB_URL/api/tasks"
   expect_bearer_code remote-runs 200 "$BB_API_TOKEN" "$BB_URL/api/runs"
   expect_bearer_code remote-status 200 "$BB_API_TOKEN" "$BB_URL/api/status"
 
-  if command -v flyctl >/dev/null 2>&1; then
-    flyctl status --app "$BB_FLY_APP" >/dev/null
-    flyctl volumes list --app "$BB_FLY_APP" >/dev/null
-    flyctl ssh console --app "$BB_FLY_APP" --command '/bin/sh -lc "BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"' >"$TMP/recover.json"
-    echo "ok:remote-fly status volumes recover"
-  else
-    echo "skip:remote-fly flyctl not found"
-  fi
+  app_readback=$(doctl apps get "$BB_DO_APP_ID" \
+    --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID --no-header)
+  # Parse only the non-secret fields instead of persisting the full app spec.
+  # `read` performs field splitting without pathname expansion.
+  app_id=
+  app_name=
+  app_ingress=
+  deployment_id=
+  extra=
+  IFS=' 	' read -r app_id app_name app_ingress deployment_id extra <<EOF
+$app_readback
+EOF
+  [ -n "$app_id" ] && [ -n "$app_name" ] && [ -n "$app_ingress" ] && [ -z "$extra" ] || {
+    echo "FAIL remote-do-app: expected id, name, ingress, and optional active deployment id" >&2
+    exit 1
+  }
+  [ "$app_id" = "$BB_DO_APP_ID" ] || {
+    echo "FAIL remote-do-app: provider returned a different app id" >&2
+    exit 1
+  }
+  [ "$app_name" = "bitterblossom-plane" ] || {
+    echo "FAIL remote-do-app: app name was not bitterblossom-plane" >&2
+    exit 1
+  }
+  [ "${app_ingress%/}" = "${BB_URL%/}" ] || {
+    echo "FAIL remote-do-app: ingress did not match BB_URL" >&2
+    exit 1
+  }
+
+  in_progress_readback=$(doctl apps get "$BB_DO_APP_ID" \
+    --format InProgressDeployment.ID --no-header)
+  in_progress_deployment_id=
+  extra=
+  IFS=' 	' read -r in_progress_deployment_id extra <<EOF
+$in_progress_readback
+EOF
+  [ -z "$extra" ] || {
+    echo "FAIL remote-do-app: unexpected in-progress deployment readback" >&2
+    exit 1
+  }
+  [ -z "$in_progress_deployment_id" ] || {
+    echo "FAIL remote-do-app: deployment $in_progress_deployment_id is still in progress" >&2
+    exit 1
+  }
+  [ -n "$deployment_id" ] || {
+    echo "FAIL remote-do-app: provider returned no active deployment id" >&2
+    exit 1
+  }
+  [ "$deployment_id" = "$BB_EXPECTED_DEPLOYMENT_ID" ] || {
+    echo "FAIL remote-do-app: active deployment $deployment_id did not match expected $BB_EXPECTED_DEPLOYMENT_ID" >&2
+    exit 1
+  }
+
+  deployment_readback=$(doctl apps get-deployment "$BB_DO_APP_ID" "$BB_EXPECTED_DEPLOYMENT_ID" \
+    --format ID,Phase --no-header)
+  returned_deployment_id=
+  deployment_phase=
+  extra=
+  IFS=' 	' read -r returned_deployment_id deployment_phase extra <<EOF
+$deployment_readback
+EOF
+  [ -z "$extra" ] && [ "$returned_deployment_id" = "$BB_EXPECTED_DEPLOYMENT_ID" ] || {
+    echo "FAIL remote-do-deployment: unexpected deployment readback" >&2
+    exit 1
+  }
+  [ "$deployment_phase" = "ACTIVE" ] || {
+    echo "FAIL remote-do-deployment: phase was not ACTIVE" >&2
+    exit 1
+  }
+  echo "ok:remote-do app=$BB_DO_APP_ID deployment=$deployment_id phase=ACTIVE"
   echo "ops drill: remote pass"
 }
 
