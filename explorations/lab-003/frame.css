@@ -1,0 +1,24 @@
+html, body { margin: 0; width: 100%; min-height: 100%; overflow: hidden; }
+body { min-height: 100dvh; }
+#mount { min-height: 100dvh; }
+.fixture-badge {
+  position: fixed;
+  z-index: 2147483647;
+  right: 8px;
+  bottom: 8px;
+  max-width: calc(100vw - 16px);
+  padding: 4px 7px;
+  border: 1px solid currentColor;
+  background: Canvas;
+  color: CanvasText;
+  font: 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .02em;
+  text-transform: none;
+  pointer-events: none;
+}
+* { box-sizing: border-box; }
+button, a, input, textarea, select { font: inherit; }
+:focus-visible { outline: 3px solid currentColor; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}

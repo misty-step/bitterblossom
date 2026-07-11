@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bitterblossom LAB-003</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+  <header class="labbar">
+    <div><strong>Bitterblossom · LAB-003</strong><span>workflow control plane · round 1</span></div>
+    <div class="viewport-controls" aria-label="Viewport controls">
+      <label>Viewport <select id="preset"><option value="fit">Fit</option><option value="1440x900">1440×900</option><option value="1280x800">1280×800</option><option value="1024x768">1024×768</option><option value="768x1024">Tablet</option><option value="390x844">Phone</option><option value="custom" hidden>Custom</option></select></label>
+      <label><span class="sr-only">Width</span><input id="width" type="number" min="320" max="2560" value="1440"></label>
+      <span>×</span>
+      <label><span class="sr-only">Height</span><input id="height" type="number" min="480" max="1600" value="900"></label>
+      <output id="scale">Fit</output>
+    </div>
+  </header>
+  <div class="lab">
+    <aside class="registry">
+      <div class="registry-head"><p>System propositions</p><span id="counter">1 / 16</span></div>
+      <nav id="options" aria-label="Design options"></nav>
+      <div class="help">↑ ↓ options · viewport and selection persist</div>
+    </aside>
+    <main class="stage">
+      <div id="viewport" class="viewport"><iframe id="frame" title="Selected design option" src="frame.html?v=3#BASE-1"></iframe></div>
+    </main>
+  </div>
+  <script type="module" src="app.js?v=3"></script>
+</body>
+</html>

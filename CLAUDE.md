@@ -4,18 +4,24 @@ Claude-family tools read this file first. `AGENTS.md` symlinks here.
 
 Also read:
 - `VISION.md` — product boundary and north star
-- `project.md` — the v3 direction lock record (2026-06-10)
-- `docs/spine.md` — the operator contract for `bb`
+- `docs/workflow-control-plane.md` — ratified 2026-07-11 product/UX contract
+- `project.md` — historical v3 direction lock record (2026-06-10)
+- `docs/spine.md` — current file-defined runtime contract during migration
 - `docs/adr/005-rust-event-plane.md` — why this shape
 - `docs/plans/2026-06-10-031-event-plane-spine.md` — design + critique record
 
 ## What This Is
 
-Bitterblossom is the **event plane** for agent workloads: define a task,
-bind an agent, attach a trigger — all as files — and the plane runs it
-durably on a declared substrate (Sprites today, local for dev/test, future
-adapters only after they beat the same workload contract) with cost, budget,
-and trace visible from the CLI.
+Bitterblossom is the **workflow control plane** for unattended, trigger-driven
+agent operations. Workflow is the primary product object; steps commission
+pinned Roster agents with natural-language goals, and the plane makes triggers,
+live instances, authority, spend, evidence, and history inspectable.
+
+The Rust runtime currently loads task and agent files. Treat that as migration
+truth, not the final product ontology: active configuration is moving to
+immutable database revisions with declarative import/export. Do not extend
+supervised local-agent registration or preserve file-first/task-first UX; those
+directions were superseded on 2026-07-11.
 
 One Rust crate, one binary (`bb`), two personalities:
 
@@ -27,10 +33,10 @@ One Rust crate, one binary (`bb`), two personalities:
   models, hermetic. Dispatch work = operator-initiated, may use
   claude/codex on subscription auth. Never Anthropic/OpenAI API keys.
 
-Mode boundary (Roster `docs/CONTRACTS.md`): ad-hoc operator sessions
-use Roster (Mode A); recurring event-driven workflows live here
-(Mode B). The plane holds **no judgment** — no workload logic, mechanical
-retries only, agents own their own decomposition.
+Mode boundary (Roster `docs/CONTRACTS.md`): ad-hoc operator sessions use Roster
+(Mode A); recurring event-driven workflows live here (Mode B). Bitterblossom
+initially serves Mode B only. The plane holds **no judgment** — no workload
+logic, mechanical retries only, agents own their own decomposition.
 
 ## Layout
 

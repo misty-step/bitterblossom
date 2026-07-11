@@ -1,5 +1,12 @@
 # The event-plane spine (`bb`)
 
+> **Current-runtime contract during migration.** This document describes the
+> file-defined `bb` surface that ships today. The active product direction is
+> workflow-first, database-authoritative, and strictly trigger-driven at first;
+> see `VISION.md` and `docs/workflow-control-plane.md`. Do not treat the task/
+> agent files below as the final product ontology or preserve them merely for
+> compatibility.
+
 Bitterblossom v3 is one Rust binary, `bb`, with two personalities:
 
 - `bb serve` — the plane: webhook ingress, cron scheduler, queue, dispatch.

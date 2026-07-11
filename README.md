@@ -1,17 +1,18 @@
 # Bitterblossom
 
-The event plane for agent workloads. Define a **task**, bind an **agent**,
-attach a **trigger** — all as files — and the plane runs it durably on a
-remote substrate (Fly Sprites, or any Tailscale-reachable machine via the
-`tailnet` substrate, bitterblossom-938) with cost, budget, and trace
-visible from the CLI.
+The control plane for unattended agent workflows. A trigger commissions a
+Roster agent with a natural-language goal; Bitterblossom makes the configured
+workflow, live instances, authority, spend, evidence, and history inspectable.
 
-Two kinds of work, named so we can talk about them:
+The product direction is workflow-first and initially trigger-driven only.
+Interactive and supervised local-agent presence is deferred. See
+[`VISION.md`](VISION.md) and
+[`docs/workflow-control-plane.md`](docs/workflow-control-plane.md).
 
-- **Reflex** work — standing, trigger-fired (webhook/cron). The plane
-  reacts without judgment, on cheap open-weight models, hermetically.
-- **Dispatch** work — deliberate, operator- or agent-initiated from a
-  terminal (`bb run`). May run as the operator on subscription auth.
+The current Rust runtime remains the migration source: it loads file-defined
+tasks and agents from an instance plane. Those files are current operational
+truth, not the final product model; active workflow configuration will move to
+immutable database revisions with declarative import/export.
 
 ```
 plane.toml                  # db path, ingress bind, notify webhook, global budget

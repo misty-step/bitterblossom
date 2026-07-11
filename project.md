@@ -1,11 +1,13 @@
 # Project: Bitterblossom
 
-Canonical north star: `VISION.md`. This file records the 2026-06-10 v3
-direction lock and historical pivot into the Rust event-plane shape.
+Canonical north star: `VISION.md`. This file records the historical 2026-06-10
+v3 pivot into the Rust event plane. The active product direction was superseded
+on 2026-07-11 by the workflow-first control-plane lock in `VISION.md` and
+`docs/workflow-control-plane.md`.
 
-## Direction Lock
+## Historical Direction Lock
 
-**Current direction lock (2026-06-10): reimagined as the event plane.**
+**Historical direction lock (2026-06-10): reimagined as the event plane.**
 Bitterblossom is the Mode B runtime in the portfolio boundary
 (harness-kit `meta/CONTRACTS.md`): an opinionated, thin control plane for
 **event-driven agent workloads** — Olympus's shape, generalized beyond one
@@ -23,10 +25,9 @@ There are two ways to work with agents:
    bespoke agent workflow executes on isolated infrastructure, unattended.
    That is bitterblossom's job (Mode B).
 
-Bitterblossom is optimized for the second and usable for the first: every
-workload is also runnable from a terminal, and local ad-hoc agents can use
-the same surface to spin up sprites for heavy lifting they don't want to do
-locally.
+Bitterblossom remains optimized for the second. The 2026-07-11 direction lock
+narrows the initial product further: supervised and interactive local-agent
+presence is deferred until trigger-driven workflows are excellent.
 
 **North Star:** Define a task, bind an agent to it, attach a trigger — and
 then watch it: durable run ledger, budgets, traces, receipts. Swap the
