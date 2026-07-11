@@ -17,7 +17,7 @@ Use this shape for `docs/plans/YYYY-MM-DD-<topic>-dogfood.md`.
 ## Preflight
 
 - `git status`:
-- `flyctl orgs list`:
+- `doctl apps get "$BB_DO_APP_ID"`:
 - `sprite org list` before/after:
 - `bb check`:
 - `bb task list --json` summary:

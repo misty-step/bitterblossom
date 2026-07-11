@@ -238,18 +238,21 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
     assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
     assert!(ops.contains("scripts/production-ops-drill.sh --local"));
+    assert!(ops.contains("doctl apps get \"$BB_DO_APP_ID\""));
+    assert!(ops.contains("doctl apps get-deployment \"$BB_DO_APP_ID\""));
+    assert!(ops.contains("doctl apps list-deployments \"$BB_DO_APP_ID\""));
+    assert!(ops.contains("doctl apps logs \"$BB_DO_APP_ID\" plane --type run"));
     assert!(ops.contains("BB_LITESTREAM_REQUIRED=1"));
     assert!(ops.contains("BB_LITESTREAM_REPLICA_URL_ENV=LITESTREAM_REPLICA_URL"));
-    assert!(ops.contains("LITESTREAM_REPLICA_URL=%s"));
+    assert!(ops.contains("BB_PLANE_CONFIG_URL"));
     assert!(ops.contains("litestream restore -config /tmp/bb-litestream.yml"));
     assert!(ops.contains("ledger.schema_version"));
     assert!(ops.contains("newer than the rollback target supports"));
     assert!(ops.contains("Do not edit `PRAGMA user_version`"));
     assert!(ops.contains("backup.status == \"fresh\""));
     assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
-    assert!(ops.contains("flyctl releases rollback"));
-    assert!(ops.contains("BB_PLANE_DIR=${BB_PLANE_DIR:-/app/plane} bb recover --json"));
-    assert!(ops.contains("flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"));
+    assert!(ops.contains("git revert <bad-commit>"));
+    assert!(ops.contains("doctl apps console \"$BB_DO_APP_ID\" plane"));
     assert!(ops.contains("bb dlq replay <id> --json"));
     assert!(ops.contains("bb dlq ack <id> --reason <text>"));
     assert!(!ops.contains("there is no first-class acknowledge"));
@@ -261,7 +264,10 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     assert!(script.contains("gate --change ops-drill --json"));
     assert!(script.contains("backup status was not fresh"));
     assert!(script.contains("expect_bearer_code remote-tasks"));
-    assert!(script.contains("flyctl ssh console --app \"$BB_FLY_APP\" --command '/bin/sh -lc"));
+    assert!(script.contains("--do-app-id"));
+    assert!(script.contains("doctl apps get \"$BB_DO_APP_ID\""));
+    assert!(script.contains("doctl apps get-deployment \"$BB_DO_APP_ID\""));
+    assert!(script.contains("phase was not ACTIVE"));
     assert!(script.contains("curl --config -"));
     assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));
     assert!(!script.contains("?token="));
@@ -288,12 +294,9 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ci = read(".github/workflows/ci.yml");
     assert!(ci.contains("scripts/mint-tailnet-container-smoke.sh"));
 
-    let fly = read("fly.toml");
-    assert!(fly.contains("BB_LITESTREAM_REQUIRED = \"1\""));
-    assert!(fly.contains("BB_LITESTREAM_DB_PATH = \"/app/plane/.bb/plane.db\""));
-    assert!(fly.contains("BB_LITESTREAM_REPLICA_URL_ENV = \"LITESTREAM_REPLICA_URL\""));
-    assert!(fly.contains("BB_LITESTREAM_HEARTBEAT_PATH = \"/app/plane/.bb/backup-last-success\""));
-    assert!(!fly.contains("s3://"));
+    assert!(!Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fly.toml")
+        .exists());
 
     let entrypoint = read("scripts/bb-litestream-entrypoint.sh");
     assert!(entrypoint.contains("litestream replicate -config \"$config_path\""));
@@ -313,6 +316,33 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
 
     let verify = read("scripts/verify.sh");
     assert!(verify.contains("scripts/production-ops-drill.sh --local"));
+}
+
+#[test]
+fn active_operations_cannot_recreate_the_retired_fly_app() {
+    for rel in [
+        "docs/operations/README.md",
+        "docs/spine.md",
+        "scripts/production-ops-drill.sh",
+        ".agents/skills/bb-dogfood/SKILL.md",
+        ".agents/skills/bb-dogfood/references/session-notes-template.md",
+    ] {
+        let content = read(rel);
+        for forbidden in [
+            "BB_FLY_APP",
+            "flyctl deploy",
+            "flyctl status",
+            "flyctl volumes",
+            "flyctl ssh",
+            "flyctl secrets",
+            "flyctl releases",
+        ] {
+            assert!(
+                !content.contains(forbidden),
+                "{rel} still contains retired hosted-app operation `{forbidden}`"
+            );
+        }
+    }
 }
 
 #[test]

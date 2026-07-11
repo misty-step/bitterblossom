@@ -40,7 +40,7 @@ exactly one pull request via `gh pr create` (draft or ready, never
 auto-merge-enabled); write `REPORT.json`.
 
 Forbidden, always, with no exception: merging the PR (`gh pr merge`) or
-enabling auto-merge. No merges, no deploys (`flyctl deploy` or any
+enabling auto-merge. No merges, no deploys, no provider deployment commands, or any
 equivalent), no resolving, acknowledging, annotating, or otherwise mutating
 the Canary incident, no parking or unparking any BB task, no resolving any
 BB run. No second active pull request for this incident's fingerprint against

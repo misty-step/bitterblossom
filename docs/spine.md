@@ -384,7 +384,7 @@ Feature/package judgment into the Rust spine.
 The operator plane runs as a hosted app, not as a laptop process. Product
 images contain the `bb` binary and substrate tools only; the production
 `plane.toml`, `agents/`, `tasks/`, cards, budgets, org allowlists, and ledger
-state are instance data supplied at runtime. Fly sets
+state are instance data supplied at runtime. DigitalOcean App Platform sets
 `BB_INGRESS_BIND=0.0.0.0:8080` so its public URL can reach `bb serve`; set
 `BB_API_TOKEN` before binding wider because the read API and HTML operator shell
 are token-gated, and `bb serve` refuses non-loopback binds without it.
@@ -393,12 +393,13 @@ counts; webhook ingress is authenticated by each trigger's HMAC secret.
 
 Deployment contract:
 
-- Host: one always-on Fly machine, command `bb serve`, with
-  `BB_PLANE_DIR=/app/plane`.
-- Config and state: encrypted Fly volume `bb_plane_data` mounted at
-  `/app/plane`. The volume root contains `plane.toml`, `agents/`, `tasks/`, and
-  `.bb/plane.db`, so ordinary card, budget, and allowlist changes are runtime
-  config changes rather than image rebuilds.
+- Host: one DigitalOcean App Platform service, command `bb serve`, with
+  `BB_PLANE_DIR=/app/plane`. Its container disk is ephemeral.
+- Config and state: the entrypoint fetches the private config bundle named by
+  `BB_PLANE_CONFIG_URL` into `/app/plane` on a fresh boot. Litestream restores
+  and replicates `.bb/plane.db`; no App Platform volume exists. Ordinary card,
+  budget, and allowlist changes update the Spaces-hosted config bundle and take
+  effect on a fresh deployment.
 - Backup readiness: `[backup]` in `plane.toml` declares the provider, replica
   secret env name, RPO/RTO, and heartbeat file. `bb status --json` reports
   `backup.status` from that heartbeat without reading replica secrets; a stale
@@ -407,7 +408,7 @@ Deployment contract:
   fails closed when `BB_LITESTREAM_REQUIRED=1` and the replica secret env is
   missing, starts `litestream replicate -config`, waits for the first
   `litestream sync -wait`, and writes the heartbeat only after sync confirms the
-  volume-backed ledger has replicated.
+  ephemeral ledger has replicated.
 - Schema rollback: `bb` stamps SQLite `PRAGMA user_version` as
   `ledger.schema_version` in `bb status --json`/`bb check --json` and refuses to
   open a ledger newer than the binary supports. Rollbacks across a schema bump
@@ -415,9 +416,9 @@ Deployment contract:
   downward.
 - Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
   the pinned Linux Sprite CLI plus pinned Litestream; it must not `COPY plane`.
-  [fly.toml](../fly.toml) sets `BB_PLANE_DIR`, `BB_SPRITE_BIN`, and the
-  Litestream env-name contract without storing the replica URL.
-- Runtime secrets live on Fly, never in git: `BB_API_TOKEN`,
+  The operator-owned App Platform spec sets `BB_PLANE_DIR`, `BB_SPRITE_BIN`,
+  and the Litestream env-name contract without committing the replica URL.
+- Runtime secrets live in App Platform, never in git: `BB_API_TOKEN`,
   `BB_HOOK_REVIEW`, `BB_HOOK_CI_DIAGNOSE`, `OPENROUTER_API_KEY`, `GH_TOKEN`,
   `CERBERUS_REVIEW_GH_TOKEN`, `SPRITE_TOKEN`, and
   `LITESTREAM_REPLICA_URL`. The Cerberus review task uses
@@ -442,14 +443,14 @@ Deployment contract:
   report-only and may recommend a builder command, but never creates one.
 - Health and recovery checks after a host restart are: unauthenticated
   `GET /health`, `GET /api/tasks` with `Authorization: Bearer $BB_API_TOKEN`,
-  `flyctl status --app bitterblossom-plane`, `flyctl volumes list --app
-  bitterblossom-plane`, and `BB_PLANE_DIR=/app/plane bb recover` inside the Fly
-  machine.
+  `doctl apps get "$BB_DO_APP_ID"`, the active deployment readback from
+  `doctl apps get-deployment`, and, when run classification is needed,
+  `BB_PLANE_DIR=/app/plane bb recover` in a `doctl apps console` session.
 - Production operations live in [`docs/operations/`](operations/). The
   maintained smoke and restore drill is
   `./scripts/production-ops-drill.sh --local` for CI/local proof and
-  `BB_API_TOKEN=... ./scripts/production-ops-drill.sh --remote` for the Fly
-  plane.
+  `BB_API_TOKEN=... BB_DO_APP_ID=... ./scripts/production-ops-drill.sh --remote`
+  for the DigitalOcean plane.
 
 The GitHub webhook is deliberately a per-repo hook for v1, not a GitHub
 App. It exercises the same HMAC/dedupe/filter path as a future App
@@ -549,7 +550,7 @@ admission and execution for more local roles, but that authority waits for the
 role/substrate contracts named on the ratified card. Until then, external rows
 are observability receipts, not dispatch leases.
 - Canary self-report: `src/canary.rs` posts a `bb-plane` check-in every 60s
-  and ad hoc error reports to canary-obs, gated on two Fly secrets —
+  and ad hoc error reports to canary-obs, gated on two App Platform secrets —
   `CANARY_ENDPOINT` (e.g. `https://canary-obs-3jzhr.ondigitalocean.app`) and
   `CANARY_INGEST_KEY` (a scoped `ingest-only` key bound to service
   `bitterblossom-plane`, minted via canary's `POST /api/v1/keys`). Both must
@@ -591,8 +592,8 @@ one coherent glass session instead of two unrelated posts.
 Operational note: glass instances typically live behind Tailscale (e.g.
 `https://<host>.<tailnet>.ts.net:<port>`, "tailnet only" -- the short
 MagicDNS name alone fails TLS SNI matching, use the full `.ts.net` FQDN). A
-plane dispatched from a network that is not itself on that tailnet (for
-example, a Fly-hosted `bb serve` with no Tailscale sidecar) cannot reach it;
+  plane dispatched from a network that is not itself on that tailnet (for
+  example, a hosted `bb serve` with no Tailscale sidecar) cannot reach it;
 `[glass].base_url` should only be set once the dispatching plane's network
 can actually resolve and reach that host, or every post silently no-ops
 into stderr warnings.

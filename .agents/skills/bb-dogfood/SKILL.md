@@ -32,8 +32,10 @@ Run:
 
 ```bash
 export BB_RUNTIME_PLANE="${BB_RUNTIME_PLANE:-/path/to/private/plane}"
+export BB_DO_APP_ID="${BB_DO_APP_ID:?set from operator-local app inventory}"
 git status --short --branch --untracked-files=all
-flyctl orgs list
+doctl apps get "$BB_DO_APP_ID" \
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID
 sprite org list
 sprite use -o misty-step lane-1
 sprite org list
