@@ -9,6 +9,7 @@ MODE=local
 BB_BIN=${BB_BIN:-./target/debug/bb}
 BB_URL=${BB_URL:-https://bitterblossom-plane-9xpa5.ondigitalocean.app}
 BB_DO_APP_ID=${BB_DO_APP_ID:-}
+BB_EXPECTED_DEPLOYMENT_ID=${BB_EXPECTED_DEPLOYMENT_ID:-}
 TMP=
 SERVER_PID=
 SERVER_LOG=
@@ -17,7 +18,8 @@ TOKEN=ops-drill-token
 
 usage() {
   cat <<'USAGE'
-usage: scripts/production-ops-drill.sh [--local|--remote] [--bb-bin PATH] [--url URL] [--do-app-id ID]
+usage: scripts/production-ops-drill.sh [--local|--remote] [--bb-bin PATH] [--url URL]
+       [--do-app-id ID] [--expected-deployment-id ID]
 
 Local mode creates a temporary dev plane, runs one local workload, starts
 `bb serve`, probes /health and authenticated read APIs, runs `bb recover`, and
@@ -25,10 +27,11 @@ proves the SQLite ledger can be backed up and restored without losing run
 history.
 
 Remote mode probes the DigitalOcean plane without sending tokens in query strings:
-  BB_API_TOKEN=... BB_DO_APP_ID=... scripts/production-ops-drill.sh --remote
+  BB_API_TOKEN=... BB_DO_APP_ID=... BB_EXPECTED_DEPLOYMENT_ID=... \
+    scripts/production-ops-drill.sh --remote
 
-Remote mode also verifies that the configured App Platform app has an ACTIVE
-deployment. Every provider call is read-only.
+Remote mode also verifies that no deployment is in progress and that the exact
+expected App Platform deployment is ACTIVE. Every provider call is read-only.
 USAGE
 }
 
@@ -62,6 +65,11 @@ while [ "$#" -gt 0 ]; do
     --do-app-id)
       [ "$#" -ge 2 ] || { echo "ops drill: --do-app-id needs a value" >&2; exit 2; }
       BB_DO_APP_ID=$2
+      shift 2
+      ;;
+    --expected-deployment-id)
+      [ "$#" -ge 2 ] || { echo "ops drill: --expected-deployment-id needs a value" >&2; exit 2; }
+      BB_EXPECTED_DEPLOYMENT_ID=$2
       shift 2
       ;;
     -h | --help)
@@ -344,6 +352,10 @@ run_remote() {
     echo "ops drill: BB_DO_APP_ID is required for --remote" >&2
     exit 2
   }
+  [ -n "$BB_EXPECTED_DEPLOYMENT_ID" ] || {
+    echo "ops drill: BB_EXPECTED_DEPLOYMENT_ID is required for --remote" >&2
+    exit 2
+  }
   need doctl
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/bb-ops-remote.XXXXXX")
   expect_code remote-health 200 "$BB_URL/health"
@@ -363,8 +375,8 @@ run_remote() {
   IFS=' 	' read -r app_id app_name app_ingress deployment_id extra <<EOF
 $app_readback
 EOF
-  [ -n "$deployment_id" ] && [ -z "$extra" ] || {
-    echo "FAIL remote-do-app: expected id, name, ingress, and an active deployment id" >&2
+  [ -n "$app_id" ] && [ -n "$app_name" ] && [ -n "$app_ingress" ] && [ -z "$extra" ] || {
+    echo "FAIL remote-do-app: expected id, name, ingress, and optional active deployment id" >&2
     exit 1
   }
   [ "$app_id" = "$BB_DO_APP_ID" ] || {
@@ -380,7 +392,31 @@ EOF
     exit 1
   }
 
-  deployment_readback=$(doctl apps get-deployment "$BB_DO_APP_ID" "$deployment_id" \
+  in_progress_readback=$(doctl apps get "$BB_DO_APP_ID" \
+    --format InProgressDeployment.ID --no-header)
+  in_progress_deployment_id=
+  extra=
+  IFS=' 	' read -r in_progress_deployment_id extra <<EOF
+$in_progress_readback
+EOF
+  [ -z "$extra" ] || {
+    echo "FAIL remote-do-app: unexpected in-progress deployment readback" >&2
+    exit 1
+  }
+  [ -z "$in_progress_deployment_id" ] || {
+    echo "FAIL remote-do-app: deployment $in_progress_deployment_id is still in progress" >&2
+    exit 1
+  }
+  [ -n "$deployment_id" ] || {
+    echo "FAIL remote-do-app: provider returned no active deployment id" >&2
+    exit 1
+  }
+  [ "$deployment_id" = "$BB_EXPECTED_DEPLOYMENT_ID" ] || {
+    echo "FAIL remote-do-app: active deployment $deployment_id did not match expected $BB_EXPECTED_DEPLOYMENT_ID" >&2
+    exit 1
+  }
+
+  deployment_readback=$(doctl apps get-deployment "$BB_DO_APP_ID" "$BB_EXPECTED_DEPLOYMENT_ID" \
     --format ID,Phase --no-header)
   returned_deployment_id=
   deployment_phase=
@@ -388,7 +424,7 @@ EOF
   IFS=' 	' read -r returned_deployment_id deployment_phase extra <<EOF
 $deployment_readback
 EOF
-  [ -z "$extra" ] && [ "$returned_deployment_id" = "$deployment_id" ] || {
+  [ -z "$extra" ] && [ "$returned_deployment_id" = "$BB_EXPECTED_DEPLOYMENT_ID" ] || {
     echo "FAIL remote-do-deployment: unexpected deployment readback" >&2
     exit 1
   }

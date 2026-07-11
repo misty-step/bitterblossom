@@ -449,8 +449,10 @@ Deployment contract:
 - Production operations live in [`docs/operations/`](operations/). The
   maintained smoke and restore drill is
   `./scripts/production-ops-drill.sh --local` for CI/local proof and
-  `BB_API_TOKEN=... BB_DO_APP_ID=... ./scripts/production-ops-drill.sh --remote`
-  for the DigitalOcean plane.
+  `BB_API_TOKEN=... BB_DO_APP_ID=... BB_EXPECTED_DEPLOYMENT_ID=... ./scripts/production-ops-drill.sh --remote`
+  for the DigitalOcean plane. The expected ID must identify the exact rollout
+  under verification; the smoke rejects an older active deployment and any
+  rollout still in progress.
 
 The GitHub webhook is deliberately a per-repo hook for v1, not a GitHub
 App. It exercises the same HMAC/dedupe/filter path as a future App

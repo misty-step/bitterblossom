@@ -31,7 +31,7 @@ Before dispatching a storm or touching production, check the operator surface:
 ```sh
 git status --short --branch --untracked-files=all
 doctl apps get "$BB_DO_APP_ID" \
-  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
 doctl apps list-deployments "$BB_DO_APP_ID" \
   --format ID,Phase,Cause,Created,Updated
 sprite org list
@@ -86,8 +86,12 @@ token in the command line or a generated patch:
 ```sh
 doctl apps spec validate "$BB_DO_APP_SPEC"
 doctl apps update "$BB_DO_APP_ID" --spec "$BB_DO_APP_SPEC" --wait
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-created-by-this-update>
 BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh \
-  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID"
+  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 gh api repos/<owner>/<repo>/issues/<pr>/comments --jq '.[].user.login'
 ```
 
@@ -245,27 +249,35 @@ git rev-list --left-right --count master...origin/master
 git push origin master
 ```
 
-Do not declare success from the push. Wait for the provider deployment to become
-`ACTIVE`, then exercise the public and authenticated read surfaces:
+Do not declare success from the push. Read the deployment list and set
+`BB_EXPECTED_DEPLOYMENT_ID` to the exact row whose `Cause` names the commit just
+pushed. Never substitute whichever deployment happens to remain active: a
+failed rollout can leave the previous deployment active. Then exercise the
+provider, public, and authenticated read surfaces:
 
 ```sh
 doctl apps list-deployments "$BB_DO_APP_ID" \
   --format ID,Phase,Cause,Created,Updated
-deployment_id=$(doctl apps get "$BB_DO_APP_ID" \
-  --format ActiveDeployment.ID --no-header)
-doctl apps get-deployment "$BB_DO_APP_ID" "$deployment_id" \
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-for-the-pushed-commit>
+doctl apps get "$BB_DO_APP_ID" \
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
+doctl apps get-deployment "$BB_DO_APP_ID" "$BB_EXPECTED_DEPLOYMENT_ID" \
   --format ID,Phase,Cause,Created,Updated
 ```
 
 ```sh
 BB_API_TOKEN="$BB_API_TOKEN" \
   ./scripts/production-ops-drill.sh --remote --url "$BB_URL" \
-  --do-app-id "$BB_DO_APP_ID"
+  --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 ```
 
 The smoke checks unauthenticated `/health`, bearer-only read APIs, the canonical
-App Platform app identity, ingress URL, and active deployment phase. It does not
-open a provider console or mutate runtime state.
+App Platform app identity, ingress URL, and the exact expected deployment. It
+fails while any deployment is in progress, if the expected deployment is not
+the active deployment, or if that deployment is not `ACTIVE`; therefore a
+failed rollout that leaves the previous deployment active cannot pass. It does
+not open a provider console or mutate runtime state.
 
 `bb status --json` also reports backup readiness from the runtime plane's
 `[backup]` stanza. The plane should declare the backup provider, RPO/RTO, the
@@ -364,8 +376,10 @@ git revert <bad-commit>
 git push origin master
 doctl apps list-deployments "$BB_DO_APP_ID" \
   --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-for-the-revert-commit>
 BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh \
-  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID"
+  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 ```
 
 This is a rebuild, not an instant release pin. Pause new dispatch while it is in
@@ -378,7 +392,7 @@ new work and inspect App Platform logs:
 ```sh
 doctl apps logs "$BB_DO_APP_ID" plane --type run --tail 200
 doctl apps get "$BB_DO_APP_ID" \
-  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID
+  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
 ```
 
 If logs contain `newer than this bb binary supports`, the rollback binary is
@@ -483,8 +497,12 @@ deployment:
 ```sh
 doctl apps spec validate "$BB_DO_APP_SPEC"
 doctl apps update "$BB_DO_APP_ID" --spec "$BB_DO_APP_SPEC" --wait
+doctl apps list-deployments "$BB_DO_APP_ID" \
+  --format ID,Phase,Cause,Created,Updated
+export BB_EXPECTED_DEPLOYMENT_ID=<deployment-id-created-by-this-update>
 BB_API_TOKEN="$BB_API_TOKEN" ./scripts/production-ops-drill.sh \
-  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID"
+  --remote --url "$BB_URL" --do-app-id "$BB_DO_APP_ID" \
+  --expected-deployment-id "$BB_EXPECTED_DEPLOYMENT_ID"
 ```
 
 After rotation, run the smoke. For webhook secrets, also send a signed test
