@@ -1,0 +1,28 @@
+export const SPECS = [
+  {
+    id: "spatial-atlas",
+    label: "Workflow Atlas",
+    philosophy: "Spatial Sequence",
+    move: "Use a numbered workflow index as the landing table of contents, then open the selected workflow as a compact two-plane atlas: its configured topology owns the broad reading field and its exact trigger, policy, and revision facts form the adjacent legend; the single primary action advances from this configured map to the current run.",
+    layout: "roster-detail",
+    roster: "index",
+    detail: "topology-first",
+    navigation: "top",
+    density: "compact",
+    mobile: "At 390px the index is the first task, selection cuts to a pannable configured topology followed by its legend in one configuration task, and current runtime then immutable evidence replace that task only when requested.",
+    accent: "active-only",
+  },
+  {
+    id: "spatial-run-path",
+    label: "Run Path",
+    philosophy: "Spatial Sequence",
+    move: "Invert persistent spatial adjacency into depth: a quiet workflow ledger cuts to one full-width configured definition, View current run replaces it with the traced topology and an accented run instrument, and Open evidence replaces that with the immutable record; the rail preserves place without keeping another information plane visible.",
+    layout: "focus-stack",
+    roster: "ledger",
+    detail: "run-overlay",
+    navigation: "rail",
+    density: "quiet",
+    mobile: "At 390px the ledger fills the first view, selection opens only configured truth, View current run replaces it with the live path and run instrument, and Open evidence makes the final separate task.",
+    accent: "rare",
+  },
+];
