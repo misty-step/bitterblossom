@@ -1017,10 +1017,41 @@ impl Ledger {
         Ok(rows)
     }
 
+    /// Every ask that still needs operator action. Besides unanswered asks,
+    /// this includes an answered parked ask whose resume child was not
+    /// durably ingested yet, so a failed answer request is retryable instead
+    /// of disappearing from the operator queue.
+    pub fn unanswered_asks(&self) -> Result<Vec<AskRow>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{ASK_SELECT} WHERE
+             (answer IS NULL AND state IN ('open', 'parked'))
+             OR (
+               answer IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM runs parent
+                 WHERE parent.id = asks.run_id AND parent.state = 'parked_on_ask'
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM runs child
+                 WHERE child.parent_run_id = asks.run_id
+                   AND child.trigger_kind = 'resume'
+                   AND child.idempotency_key = 'resume:' || asks.id
+               )
+             ) \
+             ORDER BY created_at ASC, id ASC"
+        ))?;
+        let rows = stmt
+            .query_map([], row_to_ask)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Record an answer. Works whether the ask is still `open` (the raising
     /// attempt's next poll sees it -- fast path) or already `parked` (the
     /// caller is responsible for creating the resume run; this only records
-    /// the answer). Refuses an ask that already has an answer.
+    /// the answer). Replaying the identical answer is idempotent so a request
+    /// that recorded its answer but failed before ingesting the resume can
+    /// recover.
     pub fn answer_ask(&self, id: &str, answer: &str, answered_by: &str) -> Result<AskRow> {
         let changed = self.conn.execute(
             "UPDATE asks SET answer = ?2, answered_at = ?3, answered_by = ?4,
@@ -1030,6 +1061,11 @@ impl Ledger {
         )?;
         if changed != 1 {
             let current = self.ask(id)?;
+            if current.answer.as_deref() == Some(answer)
+                && current.answered_by.as_deref() == Some(answered_by)
+            {
+                return Ok(current);
+            }
             bail!("ask {id} already answered at {:?}", current.answered_at);
         }
         self.ask(id)

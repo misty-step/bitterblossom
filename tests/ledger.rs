@@ -321,3 +321,129 @@ fn ask_parks_once_its_window_has_elapsed() {
     assert_eq!(answered.state, "answered");
     assert_eq!(answered.answer.as_deref(), Some("approve"));
 }
+
+#[test]
+fn unanswered_asks_lists_open_and_parked_but_not_answered() {
+    let (_dir, mut ledger) = open_ledger();
+    let run_id = ingest_manual(&mut ledger, "demo", None).run_id;
+    ledger.transition(&run_id, "running", None).unwrap();
+
+    ledger
+        .raise_ask(
+            "ask-open",
+            &run_id,
+            "demo",
+            "question",
+            "still running?",
+            None,
+            true,
+            600,
+        )
+        .unwrap();
+    ledger
+        .raise_ask(
+            "ask-parked",
+            &run_id,
+            "demo",
+            "decision",
+            "resume later?",
+            None,
+            true,
+            0,
+        )
+        .unwrap();
+    ledger.park_ask_if_expired("ask-parked").unwrap();
+    ledger
+        .raise_ask(
+            "ask-answered",
+            &run_id,
+            "demo",
+            "approval",
+            "ship?",
+            None,
+            true,
+            600,
+        )
+        .unwrap();
+    ledger
+        .answer_ask("ask-answered", "yes", "operator")
+        .unwrap();
+
+    let asks = ledger.unanswered_asks().unwrap();
+    assert_eq!(
+        asks.iter().map(|ask| ask.id.as_str()).collect::<Vec<_>>(),
+        vec!["ask-open", "ask-parked"]
+    );
+}
+
+#[test]
+fn answered_parked_ask_stays_actionable_until_resume_child_exists() {
+    let (_dir, mut ledger) = open_ledger();
+    let run_id = ingest_manual(&mut ledger, "demo", None).run_id;
+    ledger.transition(&run_id, "running", None).unwrap();
+    ledger
+        .raise_ask(
+            "ask-recovery",
+            &run_id,
+            "demo",
+            "question",
+            "continue?",
+            None,
+            true,
+            0,
+        )
+        .unwrap();
+    ledger.park_ask_if_expired("ask-recovery").unwrap();
+    ledger
+        .transition(&run_id, "parked_on_ask", Some("waiting"))
+        .unwrap();
+    ledger
+        .answer_ask("ask-recovery", "continue", "operator")
+        .unwrap();
+    ledger
+        .answer_ask("ask-recovery", "continue", "operator")
+        .expect("identical retry is idempotent");
+
+    assert_eq!(
+        ledger
+            .unanswered_asks()
+            .unwrap()
+            .iter()
+            .map(|ask| ask.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ask-recovery"]
+    );
+
+    ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "replay",
+            idempotency_key: Some("unrelated-child"),
+            source_event_id: None,
+            payload: Some("{}"),
+            parent_run_id: Some(&run_id),
+        })
+        .unwrap();
+    assert_eq!(
+        ledger
+            .unanswered_asks()
+            .unwrap()
+            .iter()
+            .map(|ask| ask.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ask-recovery"],
+        "an unrelated child must not hide a failed resume"
+    );
+
+    ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "resume",
+            idempotency_key: Some("resume:ask-recovery"),
+            source_event_id: None,
+            payload: Some("{}"),
+            parent_run_id: Some(&run_id),
+        })
+        .unwrap();
+    assert!(ledger.unanswered_asks().unwrap().is_empty());
+}

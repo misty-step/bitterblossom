@@ -308,7 +308,8 @@ rm -rf "$self_drill_tmp"
 # maps that rejection onto the existing executed-attempt failure path (~20
 # lines). No workload identity or judgment enters the spine: this is generic
 # persistence and operator read-path mechanism for every task.
-SPINE_LOC_CAP=15500
+# powder-939: 15500 -> 15750 for the authenticated ask read/recovery API.
+SPINE_LOC_CAP=15750
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

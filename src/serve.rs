@@ -847,6 +847,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
         return match path {
+            "/api/asks" => Ok((200, serde_json::to_string(&ledger.unanswered_asks()?)?)),
             "/api/runs" => {
                 let task = query_param(&url, "task");
                 let state = query_param(&url, "state");

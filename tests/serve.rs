@@ -613,6 +613,47 @@ fn ask_raise_and_answer_fast_path_without_parking() {
 }
 
 #[test]
+fn operator_can_list_unanswered_asks() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let port_file = dir.path().join("bb-serve-port");
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
+    wait_for_http(port);
+
+    let run_id = running_run_with_ask_token(dir.path(), "demo", "ask-secret-list");
+    let body = format!(
+        r#"{{"run_id":"{run_id}","task":"demo","kind":"question","question":"proceed?","blocking":true,"window_seconds":600}}"#
+    );
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/asks",
+        Some("ask-secret-list"),
+        Some(&body),
+    );
+    assert_eq!(status, 201);
+
+    let (status, _) = http_get(port, "/api/asks", None);
+    assert_eq!(status, 401);
+    let (status, response) = http_get(port, "/api/asks", Some("test-token"));
+    assert_eq!(status, 200, "{response}");
+    let body = response.split("\r\n\r\n").nth(1).unwrap();
+    let asks: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(asks.as_array().unwrap().len(), 1);
+    assert_eq!(asks[0]["run_id"], run_id);
+    assert_eq!(asks[0]["question"], "proceed?");
+}
+
+#[test]
 fn ask_parks_after_window_and_answering_creates_a_lineage_linked_resume_run() {
     let dir = tempfile::tempdir().unwrap();
     write_dispatch_plane(dir.path());
