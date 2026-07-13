@@ -1,0 +1,28 @@
+export const SPECS = [
+  {
+    id: "mobile-focus-stack",
+    label: "Focus Stack",
+    philosophy: "Mobile Task Flow",
+    move: "Replace the workflow roster with one configuration-focused workspace after selection; a single Inspect current run action advances to a run overlay, and evidence is opened only from that run.",
+    layout: "focus-stack",
+    roster: "rows",
+    detail: "configuration-first",
+    navigation: "bottom-contextual",
+    density: "quiet",
+    mobile: "At 390px the operator reads the workflow roster, selects one workflow, reviews its configuration, then advances to its current run and finally its evidence as separate full-view tasks.",
+    accent: "rare",
+  },
+  {
+    id: "mobile-definition-sequence",
+    label: "Definition Sequence",
+    philosophy: "Mobile Task Flow",
+    move: "Invert the persistent roster-detail assumption: make the roster a numbered index that cuts to a stable trigger-to-result definition sequence, with one Follow current run action applying the selected path before any evidence is revealed.",
+    layout: "sequence",
+    roster: "index",
+    detail: "topology-first",
+    navigation: "top",
+    density: "compact",
+    mobile: "At 390px the operator moves forward through workflow index, configured topology, selected run path, and immutable evidence, with each stage replacing the previous stage and exposing one primary action.",
+    accent: "active-only",
+  },
+];

@@ -1,0 +1,28 @@
+export const SPECS = [
+  {
+    id: "restraint-workflow-folio",
+    label: "Workflow Folio",
+    philosophy: "Radical Restraint",
+    move: "Treat each workflow as a single editorial folio: the landing index names configured workflows plainly, selection opens one stable definition in reading order, and Inspect current run is the sole action that replaces it with runtime before evidence can be opened.",
+    layout: "folio",
+    roster: "index",
+    detail: "configuration-first",
+    navigation: "top",
+    density: "quiet",
+    mobile: "At 390px the operator reads the workflow index, opens one configuration folio, advances to one selected run, then opens its immutable evidence, with every step occupying the full stage alone.",
+    accent: "rare",
+  },
+  {
+    id: "restraint-context-command",
+    label: "Context Command",
+    philosophy: "Radical Restraint",
+    move: "Invert persistent application navigation into one terse contextual command strip: a ruled workflow ledger cuts to configured topology, then the strip offers only View current run, followed only by View evidence after that run is selected.",
+    layout: "command-strip",
+    roster: "ledger",
+    detail: "topology-first",
+    navigation: "bottom-contextual",
+    density: "quiet",
+    mobile: "At 390px the operator moves from workflow ledger to configured topology to selected run to evidence through one bottom contextual action, and each destination replaces the preceding task.",
+    accent: "active-only",
+  },
+];

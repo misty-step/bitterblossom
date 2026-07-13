@@ -1,0 +1,28 @@
+export const SPECS = [
+  {
+    id: "precision-register",
+    label: "Configuration Register",
+    philosophy: "Precision Instrument",
+    move: "Treat the roster as a narrow selection register beside one exact configuration sheet; the sole primary action deliberately opens the current run, which replaces configured truth before yielding to scoped evidence.",
+    layout: "split-register",
+    roster: "ledger",
+    detail: "configuration-first",
+    navigation: "rail",
+    density: "compact",
+    mobile: "At 390px the roster is the entire first task, selection cuts to the configuration sheet, and the operator deliberately opens the current-run overlay or evidence as a subsequent full-view task.",
+    accent: "active-only",
+  },
+  {
+    id: "precision-focus",
+    label: "Workflow Focus",
+    philosophy: "Precision Instrument",
+    move: "Remove the persistent master-detail split: begin with a measured workflow index, then promote the chosen workflow into a full-viewport configuration instrument whose topology leads; the sole primary action inspects the existing current run before opening its evidence.",
+    layout: "focus-stack",
+    roster: "index",
+    detail: "topology-first",
+    navigation: "top",
+    density: "quiet",
+    mobile: "At 390px the workflow index fills the view, selection cuts to configuration and topology, and runtime then evidence each open as separate ordered tasks with an explicit return to configured truth.",
+    accent: "rare",
+  },
+];
