@@ -34,6 +34,7 @@ fn mint_tailnet_wrapper_bootstraps_from_a_file_and_gives_bb_only_placeholders() 
         &format!(
             r#"#!/bin/sh
 set -eu
+case " $* " in *" --ephemeral "*) exit 64 ;; esac
 case "$*" in
   *" up "*)
     key_file=$(printf '%s\n' "$*" | sed -n 's/.*--auth-key=file:\([^ ]*\).*/\1/p')
@@ -128,7 +129,7 @@ sleep 1
     assert!(!dir.path().join("bb-mint-runtime/authkey").exists());
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("tailscale-up-file:"));
-    assert!(calls.contains("--ephemeral"));
+    assert!(!calls.contains("--ephemeral"));
     assert!(calls.contains("--accept-routes=false"));
     assert!(calls.contains("socat:TCP-LISTEN:4949,bind=127.0.0.1,reuseaddr,fork,max-children=16"));
     assert!(calls.contains(

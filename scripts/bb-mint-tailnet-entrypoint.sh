@@ -110,7 +110,6 @@ while ! env -i PATH="$PATH" tailscale --socket="$socket" up \
   --auth-key="file:$authkey_file" \
   --hostname="$hostname" \
   --advertise-tags="$tag" \
-  --ephemeral \
   --accept-routes=false >/dev/null 2>&1; do
   kill -0 "$tailscaled_pid" 2>/dev/null || { cleanup; fail "tailscaled exited before joining"; }
   [ "$(date +%s)" -lt "$deadline" ] || { cleanup; fail "tailnet join timed out"; }
