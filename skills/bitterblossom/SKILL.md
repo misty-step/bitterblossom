@@ -271,7 +271,9 @@ metadata travel with it.
 
 Roster integration keeps one source of truth: vendor this whole folder at a
 pinned Bitterblossom commit in `primitives/skills/.external/registry.yaml`,
-then project it with `roster sync`. Do not maintain a manual copied skill that
+then include that source-qualified skill in the roles that need it. Validate
+the catalog with `roster check`; inspect or launch composed agents with
+`roster show` and `roster dispatch`. Do not maintain a manual copied skill that
 can drift. The original distribution decision is documented in
 `docs/adr/006-skill-projection.md`.
 
