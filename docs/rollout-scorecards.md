@@ -100,9 +100,9 @@ Authority currently lives in three places, all product-generic:
 - **The task card** (`tasks/<name>/card.md`) states the allowed and forbidden
   actions in prose the agent reads.
 - **The run artifact** records the enforced posture for the attempt. Dry-run
-  and report-only reports carry it structurally, e.g. the backlog-chewer
-  dry-run report's `authority` object (`current`, `no_side_effects`,
-  `forbidden_actions`) and canary triage's non-mutation constraints.
+  and report-only reports carry it structurally through an `authority` object
+  (`current`, `no_side_effects`, `forbidden_actions`) and explicit
+  non-mutation constraints.
 
 `[rollout]` closes the status visibility gap. It intentionally does not decide
 whether metrics are green; that remains grooming/operator judgment backed by
@@ -183,22 +183,6 @@ Rollback / stop conditions: any single forbidden action (merge, deploy, incident
 Operator approval needed for next level: yes
 ```
 
-### backlog-chewer-dry-run (dry-run) — backlog 082
-
-```text
-Task family:            backlog-chewer-dry-run
-Current authority:      dry-run
-Allowed actions:        scan whitelisted repos, select only ready tickets, shape vague tickets, write a plan artifact naming ticket/verifier/budget/branch/expected paths/stop conditions
-Forbidden actions:      branch, pr, merge, deploy, code_edit (report authority object forbids all five)
-Evidence metrics:       >=20 dry-run selections; >=90% judged genuinely ready; 0 dangerous/blocked tickets selected; vague tickets shaped not coded; every plan names verifier/acceptance/budget/stop/branch/paths
-Promotion trigger:      per-repo dry-run scorecard green makes PR-only eligible for that repo family + operator approval
-Rollback / hold trigger: any dangerous/blocked ticket selected, or a plan missing required fields
-Budget / cost cap:      low dry-run per-run cap; daily run cap from the task budget block
-Duplicate-suppression key: max one active BB-authored PR per repo/task family (enforced before PR-only)
-Required artifacts:     REPORT.json (plan artifact)
-Operator approval needed for next level: yes
-```
-
 ### powder-chew (dry-run, shipping) — bitterblossom-959
 
 The pull-model counterpart to the push-model `dispatch-ready-builder`
@@ -215,9 +199,9 @@ branch (`master`) accepts direct pushes (its protection is
 request" rule -- so a repo-scoped `GH_TOKEN` could push straight to it;
 status checks gate merges, not pushes). So the shipping variant:
 
-- polls `powder list-ready`, selects ONE eligible card by the same oracle
-  `backlog-chewer-dry-run` uses (ready + unclaimed + concrete acceptance +
-  S/M-sized + no destructive ask), and writes a full execution PLAN to
+- polls `powder list-ready`, selects ONE eligible card using its declared
+  policy (ready + unclaimed + concrete acceptance + S/M-sized + no destructive
+  ask), and writes a full execution PLAN to
   `REPORT.json` (acceptance checklist, gate command, proposed branch name,
   expected changed paths, ordered implementation steps, best-effort proposed
   diff, stop conditions);

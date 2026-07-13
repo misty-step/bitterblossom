@@ -637,16 +637,13 @@ each manually dispatchable with
   writes evidence plus a suggested next run.
 - `canary-triage` turns a Canary incident into hypotheses, cited evidence,
   likely owner files/services, and recommended next commands.
-- `backlog-chewer-dry-run` scans whitelisted backlogs and writes a selection and
-  plan artifact: it selects only ready tickets, shapes vague ones, skips
-  blocked/destructive ones, and creates no branch.
 - `lifecycle-orchestrator` reads a lifecycle event plus plane state and emits an
   ordered run plan of exact `bb run ... --payload-file ... --idempotency-key ...`
   commands, stop conditions, and residual risk.
 
 Every reflex is manually dispatchable; `fix-prompt`, `deploy-prod-verify`, and
-`canary-triage` also carry a webhook trigger, `backlog-chewer-dry-run` a cron
-trigger, and `lifecycle-orchestrator` is manual-only for now. None edits code,
+`canary-triage` also carry a webhook trigger, and `lifecycle-orchestrator` is
+manual-only for now. None edits code,
 merges, deploys, or resolves runs. Their authority contracts and promotion
 scorecards live in [`lifecycle-orchestrator-authority.md`](lifecycle-orchestrator-authority.md)
 and [`rollout-scorecards.md`](rollout-scorecards.md).
