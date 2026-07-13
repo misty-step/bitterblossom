@@ -17,13 +17,13 @@ button { color: inherit; }
 .sidebar .ae-icon { width: 17px; height: 17px; flex: none; }
 .create-nav { margin: 0 10px; border-top: 1px solid var(--ae-line); border-left: 0; padding-top: 7px; }
 .sidebar footer { display: grid; gap: 3px; margin-top: auto; padding: 15px 18px; border-top: 1px solid var(--ae-line); color: var(--ae-ink-muted); font-family: var(--ae-font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-.sidebar footer small { color: var(--ae-ink-faint); font-size: inherit; }
+.sidebar footer small { color: var(--ae-ink-muted); font-size: inherit; }
 .mobile-close, .mobile-menu { display: none; }
 .app-main { display: grid; min-width: 0; grid-template-rows: 58px minmax(0,1fr); }
 .topbar { display: flex; min-width: 0; align-items: center; gap: 16px; padding: 0 22px; border-bottom: 1px solid var(--ae-line); background: var(--ae-surface); }
 .top-context { display: flex; min-width: 0; align-items: baseline; gap: 12px; color: var(--ae-ink-muted); font-size: 13px; }
-.top-context small { color: var(--ae-ink-faint); font-size: inherit; }
-.topbar > .ae-button { margin-left: auto; }
+.top-context small { color: var(--ae-ink-muted); font-size: inherit; }
+.topbar > .ae-button, .topbar > .ae-mode { margin-left: auto; }
 .mobile-brand { display: none; }
 .workspace { min-width: 0; overflow: auto; padding: 40px clamp(28px,5vw,74px) 80px; }
 .workspace > * { width: min(1160px,100%); margin-inline: auto; }
@@ -77,7 +77,7 @@ p, small, dt { color: var(--ae-ink-muted); }
 .topology-path li:nth-child(2) .topology-mark, .topology-path li:nth-child(3) .topology-mark { width: 48px; height: 40px; }
 .topology-mark .ae-icon { width: 17px; height: 17px; }
 .topology-path small { max-width: 150px; }
-.route-label { position: absolute; z-index: 2; top: 13px; right: -12px; padding: 0 5px; background: var(--ae-surface); color: var(--ae-ink-faint); font-family: var(--ae-font-mono); font-size: 10px; text-transform: uppercase; }
+.route-label { position: absolute; z-index: 2; top: 13px; right: -12px; padding: 0 5px; background: var(--ae-surface); color: var(--ae-ink-muted); font-family: var(--ae-font-mono); font-size: 10px; text-transform: uppercase; }
 .topology-note, .empty-copy { padding: 15px 0; border-top: 1px solid var(--ae-line); }
 .recent .run-row { grid-template-columns: minmax(220px,1.4fr) minmax(130px,.8fr) minmax(180px,1.1fr) minmax(130px,.7fr) 18px; }
 

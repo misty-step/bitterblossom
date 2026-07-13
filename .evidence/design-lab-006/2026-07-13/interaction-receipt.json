@@ -1,0 +1,62 @@
+{
+  "exercised_at": "2026-07-13T23:49:00Z",
+  "runner": "agent-browser 0.31.1",
+  "target": "http://127.0.0.1:4176",
+  "mode_control": [
+    {
+      "case": "system-default",
+      "stored": null,
+      "classes": "",
+      "label": "Switch to dark mode"
+    },
+    {
+      "case": "light-to-dark",
+      "stored": "dark",
+      "classes": "dark",
+      "label": "Switch to light mode",
+      "sun_opacity": "0",
+      "moon_opacity": "1"
+    },
+    {
+      "case": "dark-to-light",
+      "stored": "light",
+      "classes": "light",
+      "label": "Switch to dark mode",
+      "sun_opacity": "1",
+      "moon_opacity": "0"
+    },
+    {
+      "case": "rapid-double",
+      "stored": "light",
+      "classes": "light",
+      "label": "Switch to dark mode",
+      "transition_classes": []
+    },
+    {
+      "case": "reduced-motion",
+      "reduced": true,
+      "stored": "dark",
+      "classes": "dark",
+      "label": "Switch to light mode",
+      "transition_classes": []
+    }
+  ],
+  "lucide_resolution": {
+    "routes": {
+      "workflows": { "rendered": 16, "unresolved": 0 },
+      "runs": { "rendered": 17, "unresolved": 0 },
+      "agents": { "rendered": 17, "unresolved": 0 },
+      "spend": { "rendered": 11, "unresolved": 0 }
+    },
+    "authoring_steps": [
+      { "step": 0, "rendered": 13, "unresolved": 0 },
+      { "step": 1, "rendered": 16, "unresolved": 0 },
+      { "step": 2, "rendered": 18, "unresolved": 0 },
+      { "step": 3, "rendered": 15, "unresolved": 0 },
+      { "step": 4, "rendered": 16, "unresolved": 0 },
+      { "step": 5, "rendered": 18, "unresolved": 0 },
+      { "step": 6, "rendered": 17, "unresolved": 0 }
+    ]
+  },
+  "browser_errors": []
+}

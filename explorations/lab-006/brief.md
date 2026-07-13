@@ -7,7 +7,8 @@ blocked workflow-store and workflow-runtime APIs already exist.
 ## Binding direction
 
 - Use one Precision Register system with a persistent, icon-forward left rail.
-- Keep Bitterblossom's flower mark and Lucide-style product icons.
+- Keep Bitterblossom's Lucide `flower-2` mark and use Lucide 1.24.0 for every
+  product icon; do not maintain local approximations of the glyph set.
 - Put Workflows, Runs, Agents, and Spend in the rail. Never use bottom navigation.
 - Make workflow detail a standalone page led by name, description, stable
   configuration, an actually connected execution topology, and `View runs`.
@@ -28,6 +29,11 @@ Misty Step Aesthetic is pinned at commit `2bf1d8a`. Light and dark are equal.
 The composition uses the kit's square controls, hairlines, semantic ink, status
 colors, typography, spacing, and logo contract. One local derived line token
 fills a missing strong-line role without introducing a new palette.
+
+The theme switch uses Aesthetic's `.ae-mode` sun/moon control and its
+interruptible quick transition, with a 180 ms cleanup guard. The persisted key
+is the kit's canonical `ae-mode`, and reduced-motion preference makes the flip
+immediate.
 
 The known typography weakness is routed upstream rather than hidden with a
 Bitterblossom-only type system. Powder card `aesthetic-typography-hierarchy`

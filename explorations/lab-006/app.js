@@ -46,8 +46,16 @@ const DATA = {
 };
 
 const app = document.querySelector('#app');
+const root = document.documentElement;
+const storedTheme = root.classList.contains('dark')
+  ? 'dark'
+  : root.classList.contains('light')
+    ? 'light'
+    : matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
 const state = {
-  view: 'workflows', workflowId: null, runId: null, theme: localStorage.getItem('bb-converged-theme') || 'light',
+  view: 'workflows', workflowId: null, runId: null, theme: storedTheme,
   navOpen: false, createStep: 0, createMode: 'new', enhanced: false, goalChoice: 'original', selectedAgents: new Set(['cerberus', 'verifier']),
   newAgent: false, newAgentName: 'Review Coordinator', newAgentResponsibility: 'Coordinate the review and commission bounded specialists when the change earns them.', trigger: 'github', goalOriginal: 'Review every ready pull-request head thoroughly and post one formal review.', idempotency: 'pr:{number}:{head_sha}',
   authority: { read: true, review: true, push: false, issues: false }, broker: 'Mint · github.review-bot',
@@ -58,19 +66,26 @@ const state = {
 
 const esc = (v) => String(v ?? '').replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[c]);
 const ICONS = {
-  flower: '<circle cx="12" cy="12" r="3"/><path d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"/><path d="M12 7.5V9M7.5 12H9M16.5 12H15M12 16.5V15M8 8l1.88 1.88M16 8l-1.88 1.88M8 16l1.88-1.88M16 16l-1.88-1.88"/>',
-  workflow: '<rect x="3" y="3" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/><path d="M9 6h4a5 5 0 0 1 5 5v4M15 18h-4a5 5 0 0 1-5-5V9"/>',
-  list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
-  bot: '<rect x="3" y="8" width="18" height="12" rx="0"/><path d="M12 3v5M8 13h.01M16 13h.01M8 17h8"/>',
-  chart: '<path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 5-8"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>', menu: '<path d="M4 7h16M4 12h16M4 17h16"/>', close: '<path d="m6 6 12 12M18 6 6 18"/>',
-  arrow: '<path d="m9 18 6-6-6-6"/>', back: '<path d="m15 18-6-6 6-6"/>', check: '<path d="m5 12 4 4L19 6"/>',
-  'radio-tower': '<path d="M4.9 19.1a10 10 0 0 1 0-14.2M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M19.1 4.9a10 10 0 0 1 0 14.2"/><circle cx="12" cy="12" r="2"/>',
-  'shield-check': '<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3Z"/><path d="m9 12 2 2 4-4"/>',
-  flag: '<path d="M5 22V4M5 4h12l-2 4 2 4H5"/>', chevron: '<path d="m9 18 6-6-6-6"/>',
-  spark: '<path d="m12 3-1.4 4.2L6 9l4.6 1.8L12 15l1.4-4.2L18 9l-4.6-1.8Z"/><path d="m5 15-.8 2.2L2 18l2.2.8L5 21l.8-2.2L8 18l-2.2-.8Z"/>',
+  flower: 'flower-2',
+  workflow: 'workflow',
+  list: 'list',
+  bot: 'bot',
+  chart: 'chart-no-axes-column-increasing',
+  plus: 'plus',
+  menu: 'menu',
+  close: 'x',
+  arrow: 'chevron-right',
+  back: 'chevron-left',
+  check: 'check',
+  'radio-tower': 'radio-tower',
+  'shield-check': 'shield-check',
+  flag: 'flag',
+  chevron: 'chevron-right',
+  spark: 'sparkles',
+  sun: 'sun',
+  moon: 'moon',
 };
-const icon = (name, cls = '') => `<svg class="ae-icon ${cls}" data-lucide="${name}" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ICONS.workflow}</svg>`;
+const icon = (name, cls = '') => `<i class="ae-icon ${cls}" data-lucide="${ICONS[name] || ICONS.workflow}" aria-hidden="true"></i>`;
 const status = (label, kind = '') => `<span class="status">${icon(kind === 'ok' ? 'check' : kind === 'active' ? 'radio-tower' : 'workflow', kind ? `ae-${kind === 'active' ? 'progress' : kind}` : '')}<span>${esc(label)}</span></span>`;
 const compact = () => window.matchMedia('(max-width: 720px)').matches;
 const revisionFingerprint = () => JSON.stringify({ goal: state.goalChoice === 'enhanced' ? 'enhanced-v1' : state.goalOriginal, trigger: state.trigger, idempotency: state.idempotency, agents: [...state.selectedAgents], authority: state.authority, broker: state.broker, limits: state.limits });
@@ -81,7 +96,7 @@ function resetAuthoring(mode) { state.createMode=mode;state.createStep=0;state.e
 function navigate(view, opts = {}) { state.view = view; state.workflowId = opts.workflowId ?? null; state.runId = opts.runId ?? null; state.navOpen = false; render(); }
 function navItem(id, label, glyph) { const current = state.view === id || (id === 'workflows' && state.view === 'workflow') || (id === 'runs' && state.view === 'run'); return `<button type="button" data-nav="${id}" ${current ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span></button>`; }
 function sidebar() { return `<aside class="sidebar ${state.navOpen ? 'is-open' : ''}" ${compact()&&!state.navOpen?'inert aria-hidden="true"':''}><header><button class="ae-logo" type="button" data-nav="workflows"><span class="ae-app-mark">${icon('flower')}</span><span class="ae-name">Bitterblossom</span></button><button class="mobile-close" type="button" data-menu aria-label="Close navigation">${icon('close')}</button></header><nav aria-label="Primary">${navItem('workflows','Workflows','workflow')}${navItem('runs','Runs','list')}${navItem('agents','Agents','bot')}${navItem('spend','Spend','chart')}</nav><button class="create-nav" type="button" data-create>${icon('plus')}<span>Create workflow</span></button><footer><span>production plane</span><small>review fixture</small></footer></aside>`; }
-function topbar() { return `<header class="topbar"><button class="mobile-menu" type="button" data-menu aria-label="Open navigation">${icon('menu')}</button><span class="mobile-brand">${icon('flower')}</span><div class="top-context"><span>${state.view === 'workflow' ? 'Workflow detail' : state.view === 'run' ? 'Run detail' : state.view === 'create' ? 'Workflow authoring' : 'Operator control plane'}</span><small>fixture-backed interaction contract</small></div><button class="ae-button ae-button-quiet" type="button" data-theme>${state.theme}</button></header>`; }
+function topbar() { const next = state.theme === 'light' ? 'dark' : 'light'; return `<header class="topbar"><button class="mobile-menu" type="button" data-menu aria-label="Open navigation">${icon('menu')}</button><span class="mobile-brand">${icon('flower')}</span><div class="top-context"><span>${state.view === 'workflow' ? 'Workflow detail' : state.view === 'run' ? 'Run detail' : state.view === 'create' ? 'Workflow authoring' : 'Operator control plane'}</span><small>fixture-backed interaction contract</small></div><button class="ae-mode" type="button" data-theme aria-label="Switch to ${next} mode" title="Switch to ${next} mode">${icon('sun','ae-sun')}${icon('moon','ae-moon')}</button></header>`; }
 function heading(kicker, title, copy = '', actions = '') { return `<header class="page-heading"><div><span class="eyebrow">${esc(kicker)}</span><h1>${esc(title)}</h1>${copy ? `<p>${esc(copy)}</p>` : ''}</div>${actions ? `<div class="heading-actions">${actions}</div>` : ''}</header>`; }
 
 function workflowsView() { return `${heading('Configured work','Workflows','Select a workflow to inspect its stable definition, execution path, and runs.','<button class="ae-button" type="button" data-create>'+icon('plus')+' Create workflow</button>')}<section class="workflow-list"><header><span>Workflow</span><span>Trigger / agents</span><span>Latest result</span><span>Allowance</span></header>${DATA.workflows.map(w=>`<button class="workflow-row" type="button" data-workflow="${w.id}"><span class="workflow-identity"><strong>${esc(w.name)}</strong><small>${esc(w.description)}</small></span><span><strong>${esc(w.trigger)}</strong><small>${esc(w.agents.join(' → '))}</small></span><span>${w.lifecycle==='Active'?status(w.lifecycle,'ok'):status(w.lifecycle)}<small>${esc(w.latest)}</small></span><span><strong>${esc(w.budget)}</strong><small>admission ceiling</small></span>${icon('chevron')}</button>`).join('')}</section>`; }
@@ -105,13 +120,65 @@ function activateStep(){const passed=testIsCurrent();const authority=Object.entr
 function createView(){const bodies=[goalStep,triggerStep,agentsStep,authorityStep,limitsStep,testStep,activateStep];return `${heading(state.createMode==='edit'?'Edit workflow':'New workflow',state.createMode==='edit'?'Revise PR Review':'Create workflow',state.createMode==='edit'?'Activation creates a new immutable revision.':'Define the durable goal first; trigger, agents, authority, limits, proof, and activation follow.')}<div class="authoring">${stepper()}<section class="step-panel"><header><span class="eyebrow">Step ${state.createStep+1} of 7</span><h2>${STEPS[state.createStep]}</h2></header>${bodies[state.createStep]() }<footer><button class="ae-button ae-button-quiet" type="button" data-step-back ${state.createStep===0?'disabled':''}>Back</button><span>Draft revision · not active</span>${state.createStep<6?`<button class="ae-button" type="button" data-step-next ${state.createStep===5&&!testIsCurrent()?'disabled':''}>Continue ${icon('arrow')}</button>`:''}</footer></section></div>`;}
 
 function content(){if(state.view==='workflows')return workflowsView();if(state.view==='workflow')return workflowDetail();if(state.view==='runs')return runsView();if(state.view==='run')return runDetail();if(state.view==='agents')return agentsView();if(state.view==='spend')return spendView();if(state.view==='create')return createView();return workflowsView();}
-function render(){document.documentElement.classList.toggle('dark',state.theme==='dark');document.documentElement.classList.toggle('light',state.theme==='light');app.innerHTML=`<div class="app-shell">${sidebar()}${state.navOpen?'<button class="scrim" type="button" data-menu aria-label="Close navigation"></button>':''}<div class="app-main">${topbar()}<main class="workspace">${content()}</main></div></div>`;}
+function applyTheme(theme) {
+  state.theme = theme;
+  root.classList.toggle('dark', theme === 'dark');
+  root.classList.toggle('light', theme === 'light');
+  root.style.colorScheme = theme;
+  try { localStorage.setItem('ae-mode', theme); } catch (e) {}
+  const toggle = app.querySelector('[data-theme]');
+  if (toggle) {
+    const next = theme === 'light' ? 'dark' : 'light';
+    toggle.setAttribute('aria-label', `Switch to ${next} mode`);
+    toggle.setAttribute('title', `Switch to ${next} mode`);
+  }
+}
+
+let modeTransition = null;
+let modeTimer = 0;
+let modeRun = 0;
+let modeTarget = null;
+function toggleTheme() {
+  const theme = (modeTarget ?? state.theme) === 'light' ? 'dark' : 'light';
+  const id = ++modeRun;
+  modeTarget = theme;
+  if (modeTransition?.skipTransition) modeTransition.skipTransition();
+  if (modeTimer) clearTimeout(modeTimer);
+  modeTransition = null;
+  modeTimer = 0;
+  root.classList.remove('ae-vt-mode', 'ae-mode-easing');
+  const flip = () => { if (id === modeRun) applyTheme(theme); };
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return flip();
+  if (document.startViewTransition) {
+    root.classList.add('ae-vt-mode');
+    modeTransition = document.startViewTransition(flip);
+    modeTransition.ready.catch(() => {});
+    modeTransition.updateCallbackDone.catch(() => {});
+    modeTransition.finished.catch(() => {}).finally(() => {
+      if (id !== modeRun) return;
+      root.classList.remove('ae-vt-mode');
+      modeTransition = null;
+      if (modeTimer) clearTimeout(modeTimer);
+      modeTimer = 0;
+    });
+  } else {
+    root.classList.add('ae-mode-easing');
+    flip();
+  }
+  modeTimer = setTimeout(() => {
+    if (id !== modeRun) return;
+    root.classList.remove('ae-vt-mode', 'ae-mode-easing');
+    modeTimer = 0;
+  }, 180);
+}
+
+function render(){app.innerHTML=`<div class="app-shell">${sidebar()}${state.navOpen?'<button class="scrim" type="button" data-menu aria-label="Close navigation"></button>':''}<div class="app-main">${topbar()}<main class="workspace">${content()}</main></div></div>`;window.lucide.createIcons({attrs:{'stroke-width':1.7}});}
 
 app.addEventListener('click',(e)=>{
   const b=e.target.closest('button');if(!b)return;
   if(b.matches('[data-nav]'))navigate(b.dataset.nav);
   else if(b.matches('[data-menu]')){state.navOpen=!state.navOpen;render();}
-  else if(b.matches('[data-theme]')){state.theme=state.theme==='light'?'dark':'light';localStorage.setItem('bb-converged-theme',state.theme);render();}
+  else if(b.matches('[data-theme]'))toggleTheme();
   else if(b.matches('[data-workflow]'))navigate('workflow',{workflowId:b.dataset.workflow});
   else if(b.matches('[data-workflow-runs]')){state.view='runs';state.workflowId=b.dataset.workflowRuns;state.runId=null;state.navOpen=false;render();}
   else if(b.matches('[data-run]'))navigate('run',{runId:b.dataset.run});
