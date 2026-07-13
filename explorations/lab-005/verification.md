@@ -59,3 +59,15 @@ LAB-005 consumes `https://cdn.jsdelivr.net/gh/misty-step/aesthetic@2bf1d8a/aesth
 ## Verdict
 
 Fresh-context critic: **PASS**. The critic confirmed truthful state separation, selected-workflow evidence scope, declaration/behavior alignment, twelve distinct structures across six layout families, correct individual dark-phone captures, light/dark parity, strict Misty Step usage, and a reviewable published artifact. No remaining defect warrants killing or refilling a candidate before operator review.
+
+## Catalog discoverability correction
+
+Operator review found that the twelve designs existed but the catalog exposed only one discoverably: candidate navigation was hidden behind an unexplained `LAB` button. The correction replaces it with a visible `Design N / 12` switcher, immediate previous/next controls, and a named twelve-option selector. It also restores Bitterblossom's canonical Lucide `flower` inside Aesthetic's `.ae-logo` / `.ae-app-mark` contract; phone chrome keeps the flower and elides only the wordmark text.
+
+The full rendered journey was repeated after this correction.
+
+Result: `PASS 48/48 rendered interaction cases with discoverable catalog and flower mark`.
+
+The twenty-four per-candidate light-desktop/dark-phone captures were refreshed, and dedicated desktop/phone selector captures were added. Targeted assertions prove the flower mark, visible count, previous/next URL transition, twelve named selector options, candidate selection, asset health, and zero visible-control or body overflow at 1440 x 900 and 390 x 844.
+
+Fresh criticism initially blocked the open phone selector because its short drawer exposed underlying workflow fragments. The phone selector now owns the complete workspace between the 52px product chrome and 50px bottom navigation, scrolls independently, and exposes no candidate content until closed. Geometry, hit-testing, and clipping assertions pass; the critic's final verdict is **PASS**.

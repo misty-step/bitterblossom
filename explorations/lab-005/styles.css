@@ -119,9 +119,11 @@ button {
 }
 
 .wordmark {
+  gap: 8px;
   font-size: 13px;
   font-weight: var(--ae-w-bold);
-  letter-spacing: 0.18em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .chrome-actions,
@@ -132,6 +134,36 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.design-switcher {
+  display: inline-flex;
+  height: 28px;
+  align-items: stretch;
+  border: 1px solid var(--ae-line-strong);
+  background: var(--ae-surface);
+}
+
+.design-switcher > button {
+  display: inline-flex;
+  min-width: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border: 0;
+  border-right: 1px solid var(--ae-line);
+  background: transparent;
+  color: var(--ae-ink-muted);
+  cursor: pointer;
+}
+
+.design-switcher > button:last-child {
+  border-right: 0;
+}
+
+.design-switcher > button:hover,
+.design-switcher > button:focus-visible {
+  color: var(--ae-ink);
 }
 
 .plane-label {
@@ -746,17 +778,15 @@ button {
 }
 
 .lab-trigger {
-  width: 42px;
-  height: 28px;
-  border: 1px solid var(--ae-line-strong);
-  background: var(--ae-surface);
-  color: var(--ae-ink-muted);
+  width: auto;
+  height: auto;
   font-family: var(--ae-font-mono);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
 }
 
 .lab-panel {
+  box-sizing: border-box;
   position: fixed;
   z-index: 19;
   top: 56px;
@@ -767,6 +797,10 @@ button {
   padding: 18px;
   border: 1px solid var(--ae-line-strong);
   background: var(--ae-surface);
+}
+
+.lab-panel * {
+  box-sizing: border-box;
 }
 
 .lab-panel > header,
@@ -818,7 +852,19 @@ button {
   }
 
   .product-chrome {
-    padding: 0 19px;
+    padding: 0 12px;
+  }
+
+  .wordmark .ae-name {
+    display: none;
+  }
+
+  .chrome-actions {
+    gap: 6px;
+  }
+
+  .design-switcher > button {
+    padding-inline: 5px;
   }
 
   .product-chrome > .primary-nav,
@@ -989,8 +1035,12 @@ button {
 
   .lab-panel {
     top: 52px;
-    right: 8px;
-    width: calc(100vw - 16px);
+    right: 0;
+    bottom: 50px;
+    left: 0;
+    width: 100%;
+    max-height: none;
+    padding-inline: 26px;
   }
 
   .plane-label {
