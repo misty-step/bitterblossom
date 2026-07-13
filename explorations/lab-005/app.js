@@ -41,8 +41,9 @@ const icon = (name, tone = '') => {
     arrow: '<path d="m9 18 6-6-6-6"/>',
     back: '<path d="m15 18-6-6 6-6"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    flower: '<circle cx="12" cy="12" r="3"/><path d="M12 16.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5"/><path d="M12 7.5V9M7.5 12H9M16.5 12H15M12 16.5V15M8 8l1.88 1.88M16 8l-1.88 1.88M8 16l1.88-1.88M16 16l-1.88-1.88"/>',
   };
-  return `<svg class="ae-icon ${tone}" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">${paths[name]}</svg>`;
+  return `<svg class="ae-icon ${tone}" data-lucide="${esc(name)}" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">${paths[name]}</svg>`;
 };
 
 const status = (glyph, label, tone = '') =>
@@ -84,10 +85,14 @@ function contextNav() {
 
 function chrome(spec) {
   return `<header class="product-chrome">
-    <button class="wordmark" type="button" data-view="workflows">BITTERBLOSSOM</button>
+    <button class="wordmark ae-logo" type="button" data-view="workflows" aria-label="Bitterblossom home"><span class="ae-app-mark">${icon('flower')}</span><span class="ae-name">Bitterblossom</span></button>
     ${spec.navigation === 'top' ? nav(spec) : ''}
     <div class="chrome-actions">
-      <button class="lab-trigger" type="button" data-lab aria-expanded="${state.labOpen}">LAB</button>
+      <div class="design-switcher" aria-label="Design candidates">
+        <button type="button" data-prev aria-label="Previous design">${icon('back')}</button>
+        <button class="lab-trigger" type="button" data-lab aria-expanded="${state.labOpen}">Design ${state.option + 1} / ${SPECS.length}</button>
+        <button type="button" data-next aria-label="Next design">${icon('arrow')}</button>
+      </div>
       <span class="plane-label">production</span>
       <button class="ae-button ae-button-quiet" type="button" data-theme>${state.theme}</button>
     </div>
@@ -242,7 +247,7 @@ function content(spec) {
 }
 
 function labControls(spec) {
-  return state.labOpen ? `<aside class="lab-panel"><header><strong>LAB-005</strong><button type="button" data-lab>Close</button></header><label>System<select data-option>${SPECS.map((item, index) => `<option value="${index}" ${index === state.option ? 'selected' : ''}>${esc(item.id)} · ${esc(item.label)}</option>`).join('')}</select></label><dl><div><dt>philosophy</dt><dd>${esc(spec.philosophy)}</dd></div><div><dt>move</dt><dd>${esc(spec.move)}</dd></div><div><dt>phone</dt><dd>${esc(spec.mobile)}</dd></div></dl><footer><button type="button" data-prev>Previous</button><span>${state.option + 1} / ${SPECS.length}</span><button type="button" data-next>Next</button></footer></aside>` : '';
+  return state.labOpen ? `<aside class="lab-panel"><header><strong>Candidate ${state.option + 1} of ${SPECS.length}</strong><button type="button" data-lab>Close</button></header><label>All candidates<select data-option>${SPECS.map((item, index) => `<option value="${index}" ${index === state.option ? 'selected' : ''}>${index + 1}. ${esc(item.id)} · ${esc(item.label)}</option>`).join('')}</select></label><dl><div><dt>philosophy</dt><dd>${esc(spec.philosophy)}</dd></div><div><dt>move</dt><dd>${esc(spec.move)}</dd></div><div><dt>phone</dt><dd>${esc(spec.mobile)}</dd></div></dl><footer><button type="button" data-prev>Previous</button><span>${state.option + 1} / ${SPECS.length}</span><button type="button" data-next>Next</button></footer></aside>` : '';
 }
 
 function render() {
@@ -274,10 +279,8 @@ app.addEventListener('click', (event) => {
     state.labOpen = !state.labOpen;
   } else if (target.matches('[data-prev]')) {
     state.option = (state.option - 1 + SPECS.length) % SPECS.length;
-    state.labOpen = true;
   } else if (target.matches('[data-next]')) {
     state.option = (state.option + 1) % SPECS.length;
-    state.labOpen = true;
   }
   render();
 });
