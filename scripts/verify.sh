@@ -308,7 +308,23 @@ rm -rf "$self_drill_tmp"
 # maps that rejection onto the existing executed-attempt failure path (~20
 # lines). No workload identity or judgment enters the spine: this is generic
 # persistence and operator read-path mechanism for every task.
-SPINE_LOC_CAP=15500
+# bitterblossom-workflow-store: 15500 -> 17100 for the revisioned workflow
+# configuration store -- the ratified 2026-07-11 product contract's
+# foundation ("the database is authoritative for active configuration;
+# every edit is an immutable revision"). src/workflow.rs (~890 lines) is
+# config/ledger mechanism only: four tables (workflows, workflow_revisions,
+# workflow_events audit, workflow_runs pinning), lifecycle arithmetic
+# (draft/active/paused/archived, rollback = old snapshot as a NEW
+# revision), canonical-JSON revision storage with TOML import/export
+# interchange (identical import is a no-op, so files never become a second
+# authority), acceptance-time revision pinning, and a line diff. serve.rs
+# (+~125) exposes the same store functions over /api/workflows*; main.rs
+# (+~375) exposes them as `bb workflow ...` -- one store, two projections,
+# per the card's "CLI and HTTP create/read/diff/activate the same immutable
+# revisions" oracle. No workload judgment entered the spine: the store
+# validates document *structure* (names, route targets, trigger shapes) and
+# never interprets goals, outcomes, or agent behavior.
+SPINE_LOC_CAP=17100
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

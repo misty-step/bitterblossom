@@ -217,6 +217,56 @@ CREATE TABLE IF NOT EXISTS plane_pause (
   at TEXT NOT NULL
 );
 
+-- bitterblossom-workflow-store: revisioned workflow configuration. The
+-- database is authoritative for active workflow config; every edit is an
+-- immutable revision row (never updated, never deleted), activation selects
+-- one revision, and rollback re-activates an old snapshot as a NEW revision.
+-- Declarative files are import/export interchange, not a second authority.
+CREATE TABLE IF NOT EXISTS workflows (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL,             -- draft | active | paused | archived
+  active_revision INTEGER,         -- NULL until first activation
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_revisions (
+  workflow_id TEXT NOT NULL REFERENCES workflows(id),
+  revision INTEGER NOT NULL,       -- dense, monotonic per workflow
+  document TEXT NOT NULL,          -- canonical JSON; immutable
+  source TEXT NOT NULL,            -- cli | http | import | import-task | rollback
+  note TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (workflow_id, revision)
+);
+
+-- Audit trail: every lifecycle act (created/revised/activated/paused/
+-- resumed/archived/rolled_back) plus run acceptance and paused-workflow
+-- event suppression dispositions.
+CREATE TABLE IF NOT EXISTS workflow_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id TEXT NOT NULL REFERENCES workflows(id),
+  kind TEXT NOT NULL,
+  data TEXT,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workflow_events_workflow
+  ON workflow_events(workflow_id);
+
+-- One accepted workflow run pins the revision active at acceptance. New
+-- activations affect new events only; this row never changes revision.
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL REFERENCES workflows(id),
+  revision INTEGER NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  payload TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workflow_runs_workflow
+  ON workflow_runs(workflow_id);
+
 -- bitterblossom-930: HITL asks (question|decision|approval) a dispatched
 -- attempt raises via the `bb ask` CLI. `state`: open -> answered (fast path,
 -- the still-running attempt polls and sees it) or open -> parked (window

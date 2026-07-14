@@ -844,6 +844,40 @@ Host mutual exclusion is a durable lease keyed by substrate resource
 identity (the sprite/host), not by task: two tasks sharing a host never
 overlap. Per-task FIFO ordering is layered above that lease.
 
+## The workflow store (database-authoritative configuration)
+
+The first slice of the workflow-first direction (`VISION.md`,
+`docs/workflow-control-plane.md`): active workflow configuration lives as
+**immutable revisions in the plane SQLite database**, not files. The store
+(`src/workflow.rs`) is one API with two projections — `bb workflow ...` and
+`/api/workflows*` call the same functions, so CLI and dashboard cannot
+drift.
+
+- **Lifecycle**: `draft -> active <-> paused -> archived`. Activation
+  selects one revision; pause suppresses new acceptance and records the
+  disposition in the audit trail (`workflow_events`); resume never replays
+  suppressed events; archive freezes without deleting, so historical runs
+  keep their referents.
+- **Revisions** are dense, monotonic, and never rewritten. Rollback
+  re-activates an earlier snapshot as a *new* revision. `bb workflow diff`
+  and `GET /api/workflows/<name>/diff?from=&to=` compare the canonical
+  stored JSON.
+- **Runs pin their revision at acceptance** (`bb workflow accept`,
+  `POST /api/workflows/<name>/runs`): a later activation affects new events
+  only, and `bb workflow run-show <id>` reads back the exact pinned
+  document forever.
+- **Declarative documents are interchange, not authority**: `export` emits
+  the revision as TOML, `import` creates/revises/no-ops (identical
+  documents mint nothing), and `import-task` converts a currently-loaded
+  file-defined task (task.toml + card + bound agent snapshot) into a
+  workflow document — the migration path off file-first authority. Nothing
+  writes back to task/agent files.
+- HTTP routes (plane `BB_API_TOKEN`, same as the rest of `/api/*`):
+  `GET/POST /api/workflows`, `GET /api/workflows/<name>`,
+  `POST .../revisions|activate|pause|resume|archive|rollback|runs`,
+  `GET .../revisions/<n>|diff|export|runs|events`,
+  `GET /api/workflow-runs/<id>`, `POST /api/workflows/import`.
+
 ## Operator CLI
 
 All read commands take `--json` and emit stable shapes (agents are users).
@@ -885,6 +919,18 @@ scripts/bb-submit-storm --config <plane> --payload-file storm.json [--bb "target
 bb submit reject --change K --fingerprint FP --reason TEXT
 bb submit abandon --change K
 bb gate --change K | --submission ID [--json]     # also GET /api/gate?change=K
+bb workflow create <doc.toml> [--note TEXT] [--json]   # draft revision 1 from a declarative doc
+bb workflow list | show <name> | events <name> [--json]
+bb workflow revise <name> <doc.toml> [--note TEXT] [--json]  # append an immutable revision
+bb workflow diff <name> --from N --to M [--json]
+bb workflow activate <name> [--revision N] [--json]
+bb workflow pause <name> [--reason TEXT] | resume <name> | archive <name> [--json]
+bb workflow rollback <name> --to N [--json]       # old snapshot becomes a NEW active revision
+bb workflow import <doc.toml> [--json]            # created | revised | unchanged (identical = no-op)
+bb workflow export <name> [--revision N]          # declarative TOML on stdout
+bb workflow import-task <task> [--activate] [--json]  # migrate a file-defined workload
+bb workflow accept <name> [--trigger K] [--payload JSON] [--json]  # pin active revision; exit 3 when paused
+bb workflow runs <name> [--json] | run-show <run-id> [--json]      # pinned-config readback
 bb serve                                          # webhook + cron + queue
 bb mcp serve                                      # MCP stdio server: 10 always-on read-only tools (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate) plus opt-in mutating bb_dispatch (BB_MCP_ENABLE_DISPATCH=1); JSON-RPC over stdin/stdout; see docs/mcp-dispatch-authority.md
 ```
