@@ -1,0 +1,19 @@
+agent = "hephaestus"
+substrate = "local"
+required_artifacts = ["ESTATE_EXECUTION_EVIDENCE.json"]
+
+[[workspace.repos]]
+url = "https://github.com/misty-step/estate.git"
+ref = "master"
+commit = "225272aa827b3616a45daa9273b8aceaa7a13b96"
+
+[[workspace.repos.locks]]
+path = "Cargo.lock"
+git_blob = "57198968cb956be86a9aa91eadc54a9df5264574"
+
+[budget]
+timeout_minutes = 10
+max_runs_per_day = 3
+
+[[trigger]]
+kind = "manual"

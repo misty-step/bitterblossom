@@ -595,6 +595,12 @@ fn attempt_on_host(
     // last-write-wins by design (only the current attempt's token is valid).
     let ask_token = uuid::Uuid::new_v4().simple().to_string();
     ledger.set_run_ask_token(run_id, &ask_token)?;
+    let mut artifacts = task.spec.required_artifacts.clone();
+    for built_in in [substrate::REPORT_FILENAME, substrate::ASK_PACKET_FILENAME] {
+        if !artifacts.iter().any(|path| path == built_in) {
+            artifacts.push(built_in.to_string());
+        }
+    }
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
@@ -621,6 +627,7 @@ fn attempt_on_host(
         checkpoint: task.spec.workspace.checkpoint.clone(),
         secrets,
         hermetic: matches!(task.agent.auth_class(), Ok(crate::spec::AuthClass::Api)),
+        artifacts,
     };
     if let Err(e) = session.prepare(&plan) {
         let _ = session.release();

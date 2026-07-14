@@ -222,7 +222,7 @@ fn snapshots_preserve_live_file_then_newest_attempt_precedence() {
 }
 
 #[test]
-fn durable_snapshot_bounds_bodies_and_excludes_non_public_paths() {
+fn durable_snapshot_bounds_bodies_and_includes_nested_receipts() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("plane.db");
     let mut ledger = Ledger::open(&db).unwrap();
@@ -237,7 +237,7 @@ fn durable_snapshot_bounds_bodies_and_excludes_non_public_paths() {
     )
     .unwrap();
     fs::write(a1.join("harness.pid"), "123").unwrap();
-    fs::write(a1.join("nested/ignored.txt"), "nested").unwrap();
+    fs::write(a1.join("nested/receipt.txt"), "nested").unwrap();
     fs::write(dir.path().join("outside"), "outside").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(dir.path().join("outside"), a1.join("escape")).unwrap();
@@ -246,7 +246,10 @@ fn durable_snapshot_bounds_bodies_and_excludes_non_public_paths() {
 
     let entries = artifacts::list(&ledger, &run).unwrap();
     let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
-    assert_eq!(paths, vec!["REPORT.json", "blob.bin", "huge.log"]);
+    assert_eq!(
+        paths,
+        vec!["REPORT.json", "blob.bin", "huge.log", "nested/receipt.txt"]
+    );
 
     assert!(matches!(
         artifacts::read(&ledger, &run, "blob.bin").unwrap(),
@@ -262,6 +265,10 @@ fn durable_snapshot_bounds_bodies_and_excludes_non_public_paths() {
     assert!(matches!(
         artifacts::read(&ledger, &run, "harness.pid").unwrap(),
         ReadOutcome::Missing { .. }
+    ));
+    assert!(matches!(
+        artifacts::read(&ledger, &run, "nested/receipt.txt").unwrap(),
+        ReadOutcome::Text { ref content, .. } if content == "nested"
     ));
     #[cfg(unix)]
     assert!(matches!(

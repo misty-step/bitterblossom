@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 use super::local::{git_auth_setup_script, run_with_timeout, shell_quote, RunControl};
 use super::{
@@ -98,6 +98,7 @@ impl Substrate for TailnetSubstrate {
             marker: String::new(),
             secrets: Vec::new(),
             hermetic: false,
+            release_artifacts: Vec::new(),
         }))
     }
 
@@ -143,6 +144,7 @@ struct TailnetSession {
     marker: String,
     secrets: Vec<(String, String)>,
     hermetic: bool,
+    release_artifacts: Vec<String>,
 }
 
 impl TailnetSession {
@@ -176,15 +178,18 @@ impl Session for TailnetSession {
             );
         }
         self.remote_home = home.stdout.trim().to_string();
-        self.workspace = format!("{}/.bb-tailnet/{}", self.remote_home, plan.workspace_name);
+        self.workspace = format!(
+            "{}/.bb-tailnet/{}-{}",
+            self.remote_home, plan.workspace_name, plan.marker
+        );
         self.marker = plan.marker.clone();
         self.secrets = plan.secrets.clone();
         self.hermetic = plan.hermetic;
+        self.release_artifacts = plan.artifacts.clone();
 
-        let ws = shell_quote(&self.workspace);
         let out = remote_shell(
             &self.host,
-            &format!("mkdir -p {ws} && rm -f {ws}/RUN.json {ws}/EVENT.json {ws}/REPORT.json"),
+            &super::remote_create_workspace_script(&self.workspace),
             Duration::from_secs(60),
         )?;
         if out.exit_code != 0 {
@@ -193,25 +198,24 @@ impl Session for TailnetSession {
 
         for repo in &plan.repos {
             let dir = repo_dir_name(&repo.url);
-            let dest = shell_quote(&format!("{}/{dir}", self.workspace));
-            let url = shell_quote(&repo.url);
-            let ref_ = shell_quote(&repo.r#ref);
+            let dest = format!("{}/{dir}", self.workspace);
+            let transport: String = plan
+                .secrets
+                .iter()
+                .filter(|(name, _)| name == "GH_TOKEN")
+                .map(|(name, value)| format!("export {name}={}\n", shell_quote(value)))
+                .collect();
             let script = format!(
-                "{git_auth}\n\
-                 if [ -d {dest}/.git ]; then \
-                   git -C {dest} fetch origin {ref_} --depth 1 && \
-                   git -C {dest} checkout -q FETCH_HEAD && \
-                   git -C {dest} reset --hard && git -C {dest} clean -fd; \
-                 else \
-                   git clone --depth 1 --branch {ref_} {url} {dest}; \
-                 fi",
+                "{transport}{git_auth}\n{materialize}",
                 git_auth = git_auth_setup_script(),
+                materialize = super::repo_materialize_script(repo, &dest),
             );
             let out = remote_shell(&self.host, &script, Duration::from_secs(600))?;
             if out.exit_code != 0 {
                 bail!("repo sync {} failed: {}", repo.url, out.stderr.trim());
             }
         }
+        self.secrets.retain(|(name, _)| name != "GH_TOKEN");
 
         self.upload(CARD_FILENAME, &plan.card)?;
         for (name, content) in [
@@ -275,7 +279,7 @@ impl Session for TailnetSession {
             ""
         };
         let script = format!(
-            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho $$ > ~/.bb-tailnet/{marker}.pid\n{scrub}{exports}{body}",
+            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho $$ > ~/.bb-tailnet/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
             ws = shell_quote(&self.workspace),
             marker = self.marker,
         );
@@ -297,43 +301,26 @@ impl Session for TailnetSession {
     }
 
     fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        let path = self.artifacts.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).context("artifact dir")?;
-        }
-        std::fs::write(path, data)?;
-        Ok(())
+        super::write_relative_nofollow(&self.artifacts, name, data)
     }
 
     fn release(&mut self) -> Result<()> {
-        let path = shell_quote(&format!("{}/{}", self.workspace, super::REPORT_FILENAME));
-        let out = remote_shell(
-            &self.host,
-            &format!("if [ -f {path} ]; then cat {path}; else exit 42; fi"),
-            Duration::from_secs(120),
-        )?;
-        match out.exit_code {
-            0 => self.write_artifact(super::REPORT_FILENAME, out.stdout.as_bytes())?,
-            42 => {}
-            _ => bail!("read artifact REPORT.json failed: {}", out.stderr.trim()),
-        }
-        let packet_path = shell_quote(&format!(
-            "{}/{}",
-            self.workspace,
-            super::ASK_PACKET_FILENAME
-        ));
-        let out = remote_shell(
-            &self.host,
-            &format!("if [ -f {packet_path} ]; then cat {packet_path}; else exit 42; fi"),
-            Duration::from_secs(120),
-        )?;
-        match out.exit_code {
-            0 => self.write_artifact(super::ASK_PACKET_FILENAME, out.stdout.as_bytes())?,
-            42 => {}
-            _ => bail!(
-                "read artifact ASK_PACKET.json failed: {}",
-                out.stderr.trim()
-            ),
+        for name in self.release_artifacts.clone() {
+            let script = super::remote_collect_script(&self.workspace, &name);
+            let out = remote_shell(&self.host, &script, Duration::from_secs(120))?;
+            match out.exit_code {
+                0 => {
+                    let bytes = super::decode_hex_artifact(&name, &out.stdout)?;
+                    self.write_artifact(&name, &bytes)?;
+                }
+                42 => {}
+                43 => bail!("released artifact {name} crossed a symlink or non-file"),
+                44 => bail!(
+                    "released artifact {name} exceeds {} bytes",
+                    super::RELEASE_ARTIFACT_LIMIT
+                ),
+                _ => bail!("read artifact {name} failed: {}", out.stderr.trim()),
+            }
         }
         if !self.marker.is_empty() {
             let _ = remote_shell(

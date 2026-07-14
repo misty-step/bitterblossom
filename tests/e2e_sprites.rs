@@ -6,6 +6,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 
 use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
@@ -18,7 +19,7 @@ const SPRITE_STUB: &str = r#"#!/bin/bash
 #   sprite exec -s <host> [--file src:dest] [--dir d] <cmd...>
 #   sprite restore -s <host> <checkpoint-id>
 log="$SPRITE_STUB_LOG"
-home="$SPRITE_FAKE_HOME"
+home="$(cd "$SPRITE_FAKE_HOME" && pwd -P)"
 cmd="$1"; shift
 echo "$cmd $*" >> "$log"
 case "$cmd" in
@@ -63,6 +64,7 @@ const CLAUDE_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 # Per-exec secret must arrive via the environment (stdin script exports).
 [ "$BB_TEST_SECRET" = "s3cret" ] || { echo "secret missing" >&2; exit 5; }
+[ -z "${GH_TOKEN:-}" ] || { echo "GH_TOKEN leaked into sprite workload" >&2; exit 7; }
 [ ! -e REPORT.json ] || { echo "stale report leaked into run" >&2; exit 6; }
 printf '{"status":"ok","artifact_paths":["REPORT.json"]}\n' > REPORT.json
 echo '{"type":"result","subtype":"success","result":"sprite says hi","total_cost_usd":0.005,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
@@ -80,9 +82,68 @@ fn write_executable(path: &Path, content: &str) {
 fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
+    let root_buf = dir.path().canonicalize().unwrap();
+    let root = root_buf.as_path();
     let fake_home = root.join("fake-sprite-home");
     fs::create_dir_all(&fake_home).unwrap();
+    let source = root.join("source");
+    let real_git = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    Command::new(&real_git)
+        .args(["init", "-q", source.to_str().unwrap()])
+        .status()
+        .unwrap();
+    Command::new(&real_git)
+        .args([
+            "-C",
+            source.to_str().unwrap(),
+            "config",
+            "user.email",
+            "fixture@example.invalid",
+        ])
+        .status()
+        .unwrap();
+    Command::new(&real_git)
+        .args([
+            "-C",
+            source.to_str().unwrap(),
+            "config",
+            "user.name",
+            "Fixture",
+        ])
+        .status()
+        .unwrap();
+    fs::write(source.join("README.md"), "fixture\n").unwrap();
+    Command::new(&real_git)
+        .args(["-C", source.to_str().unwrap(), "add", "README.md"])
+        .status()
+        .unwrap();
+    Command::new(&real_git)
+        .args([
+            "-C",
+            source.to_str().unwrap(),
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ])
+        .status()
+        .unwrap();
+    let fake_bin = root.join("bin");
+    fs::create_dir(&fake_bin).unwrap();
+    let transport_log = root.join("git-transport.log");
+    write_executable(
+        &fake_bin.join("git"),
+        &format!("#!/bin/sh\nprintf '%s|%s\\n' \"${{GH_TOKEN:-}}\" \"$*\" >> \"$BB_GIT_TRANSPORT_LOG\"\nexec {real_git:?} \"$@\"\n"),
+    );
 
     let sprite_stub = root.join("sprite-stub.sh");
     write_executable(&sprite_stub, SPRITE_STUB);
@@ -94,7 +155,7 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     fs::write(
         root.join("agents/remote.toml"),
         format!(
-            "version = 1\nharness = \"claude\"\nmodel = \"claude-fable-5\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\"]\n",
+            "version = 1\nharness = \"claude\"\nmodel = \"claude-fable-5\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\", \"GH_TOKEN\", \"BB_GIT_TRANSPORT_LOG\"]\n",
             claude_stub.display()
         ),
     )
@@ -102,7 +163,7 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     fs::write(root.join("tasks/demo/card.md"), "# Sprite demo card\n").unwrap();
     fs::write(
         root.join("tasks/demo/task.toml"),
-        "agent = \"remote\"\nsubstrate = \"sprites\"\n\n[workspace]\nhost = \"test-sprite\"\ncheckpoint = \"v999\"\n\n[[trigger]]\nkind = \"manual\"\n",
+        format!("agent = \"remote\"\nsubstrate = \"sprites\"\n\n[workspace]\nhost = \"test-sprite\"\ncheckpoint = \"v999\"\nrepos = [{{ url = {:?}, ref = \"master\" }}]\n\n[[trigger]]\nkind = \"manual\"\n", source.to_string_lossy()),
     )
     .unwrap();
     let plane = Plane::load(root).unwrap();
@@ -115,6 +176,10 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     std::env::set_var("SPRITE_STUB_LOG", &log);
     std::env::set_var("SPRITE_FAKE_HOME", &fake_home);
     std::env::set_var("BB_TEST_SECRET", "s3cret");
+    let old_path = std::env::var("PATH").unwrap();
+    std::env::set_var("PATH", format!("{}:{old_path}", fake_bin.display()));
+    std::env::set_var("GH_TOKEN", "transport-token");
+    std::env::set_var("BB_GIT_TRANSPORT_LOG", &transport_log);
 
     let run_id = ledger
         .ingest(IngressRequest {
@@ -150,8 +215,18 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     assert_eq!(run_context["agent"]["harness"], "claude");
 
     // The card and run metadata were materialized into the (fake) remote workspace.
-    assert!(fake_home.join("bb/demo/LANE_CARD.md").exists());
-    assert!(fake_home.join("bb/demo/RUN.json").exists());
+    let prepared_workspace = fs::read_dir(fake_home.join("bb"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("demo-bb-attempt-"))
+        })
+        .expect("attempt-scoped sprite workspace");
+    assert!(prepared_workspace.join("LANE_CARD.md").exists());
+    assert!(prepared_workspace.join("RUN.json").exists());
     // Checkpoint restore was requested before preparing.
     let log_text = fs::read_to_string(&log).unwrap();
     assert!(
@@ -180,9 +255,18 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
         .run_id;
     let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
     assert_eq!(run.state, "success", "reason: {:?}", run.state_reason);
+    assert!(
+        fs::read_to_string(&transport_log)
+            .unwrap()
+            .contains("transport-token|"),
+        "clone transport did not receive GH_TOKEN"
+    );
 
     std::env::remove_var("BB_SPRITE_BIN");
     std::env::remove_var("BB_TEST_SECRET");
+    std::env::remove_var("GH_TOKEN");
+    std::env::remove_var("BB_GIT_TRANSPORT_LOG");
+    std::env::set_var("PATH", old_path);
 }
 
 const HERMETIC_PI_STUB: &str = r#"#!/bin/sh

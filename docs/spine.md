@@ -293,13 +293,11 @@ happened on a specific attempt.
 
 `required_artifacts` is a completion contract, not a prompt hint. Entries are
 non-empty paths relative to the attempt artifact directory; absolute paths,
-`.` and `..` are rejected at config load. Current substrates release
-`REPORT.json`, so other required paths are rejected until artifact transport is
-generalized. After a zero-exit harness run and substrate release, every listed
-path must exist in the attempt artifact directory or dispatch records the
-attempt as `failure` while preserving stdout/stderr/result artifacts for
-inspection. Use it for report-producing workloads such as builders,
-diagnosers, gardeners, and model evaluators.
+`.` and `..` are rejected at config load. After a zero-exit harness run and
+substrate release, every listed regular-file path must exist in the attempt
+artifact directory or dispatch records the attempt as `failure` while
+preserving stdout/stderr/result artifacts for inspection. Symlinks are refused.
+Use it for report-producing workloads and opaque external receipts.
 
 ### Manual builder dispatch
 
@@ -324,8 +322,23 @@ adapter owns every environment-specific choice behind that plan:
   snapshots; adapters without snapshots ignore it.
 - Materialize repos at declared refs plus `LANE_CARD.md`, `EVENT.json`,
   and `REPORT.json`; run `pre_command` without starting the agent.
+- A repo may additionally declare a full Git `commit` and exact `locks`
+  (`path` plus Git blob id). Every substrate detaches at that commit and
+  verifies both the tree object and the no-filter hash of the materialized
+  regular-file bytes before execution; a mutable ref is then discovery context
+  only, never execution identity.
 - Execute the harness in the prepared workspace with a wall-clock kill
   and probe marker, write artifacts, then release adapter resources.
+
+`required_artifacts` accepts any safe workspace-relative regular-file path.
+The substrate copies those declared bytes into the attempt evidence tree on
+release without parsing or normalization. Collection is bounded to one MiB,
+walks every component without following symlinks, and hex-encodes remote bytes
+so binary evidence is exact. Nested receipts are snapshotted durably. Reserved
+Bitterblossom evidence names cannot be redeclared. This is the generic receipt
+seam for external authorities such as Estate; declaring a receipt makes
+Bitterblossom responsible for retaining it, not for interpreting or granting
+the authority it records. Remote adapters require `python3` for this collector.
 
 `local` keeps a workspace under the attempt directory for dev/test planes.
 `sprites` maps the workspace name onto its remote overlay and handles the

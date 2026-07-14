@@ -6,11 +6,12 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Mutex;
 
-use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
+use bitterblossom::{artifacts, dispatch};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -40,6 +41,13 @@ echo '{"type":"result","subtype":"success","result":"parked, awaiting answer","t
 const NOREPORT_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 echo '{"type":"result","subtype":"success","result":"commission complete","total_cost_usd":0.0123,"num_turns":3,"usage":{"input_tokens":120,"output_tokens":45}}'
+"#;
+
+const ESTATE_RECEIPT_STUB: &str = r#"#!/bin/sh
+cat > /dev/null
+mkdir -p receipts
+cp EVENT.json receipts/estate-action.json
+printf '{"schema_version":"bb.command_result.v1","result":"estate receipt relayed"}\n'
 "#;
 
 fn write_executable(path: &Path, content: &str) {
@@ -158,6 +166,168 @@ fn trigger_payload_materializes_as_event_json_in_workspace() {
     assert_eq!(run_context["trigger"]["idempotency_key"], "manual:demo:7");
     assert_eq!(run_context["agent"]["name"], "stub");
     assert_eq!(run_context["agent"]["harness"], "claude");
+}
+
+#[test]
+fn declared_estate_receipt_round_trips_without_reinterpretation() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(
+        dir.path(),
+        ESTATE_RECEIPT_STUB,
+        "required_artifacts = [\"receipts/estate-action.json\"]",
+    );
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let exact = r#"{ "schema":"estate.receipt.v1", "artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "phase":"applied" }"#;
+    let run_id = ledger
+        .ingest(IngressRequest {
+            task: "demo",
+            trigger_kind: "manual",
+            idempotency_key: Some("estate:receipt:1"),
+            source_event_id: None,
+            payload: Some(exact),
+            parent_run_id: None,
+        })
+        .unwrap()
+        .run_id;
+
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success", "{:?}", run.state_reason);
+    assert_eq!(run.agent_name.as_deref(), Some("stub"));
+
+    let attempts = ledger.attempts(&run_id).unwrap();
+    let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    assert_eq!(
+        fs::read_to_string(artifact_dir.join("receipts/estate-action.json")).unwrap(),
+        exact
+    );
+    let run_context: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(artifact_dir.join("workspace/RUN.json")).unwrap())
+            .unwrap();
+    assert_eq!(run_context["agent"]["name"], "stub");
+    fs::remove_dir_all(artifact_dir).unwrap();
+    assert!(matches!(
+        artifacts::read(&ledger, &run_id, "receipts/estate-action.json").unwrap(),
+        artifacts::ReadOutcome::Text { content, .. } if content == exact
+    ));
+}
+
+#[test]
+fn isolated_worker_checks_out_exact_commit_and_lock_blob() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("estate-source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("Cargo.lock"), "version = 4\n").unwrap();
+    fs::write(source.join("estate.txt"), "pinned\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Bitterblossom Test"],
+        vec!["config", "user.email", "bb-test@example.invalid"],
+        vec!["add", "Cargo.lock", "estate.txt"],
+        vec!["commit", "-q", "-m", "fixture"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&source)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let git = |spec: &str| {
+        String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", spec])
+                .current_dir(&source)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    };
+    let commit = git("HEAD");
+    let lock_blob = git("HEAD:Cargo.lock");
+
+    let root = dir.path().join("plane");
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/estate")).unwrap();
+    fs::write(root.join("plane.toml"), "dev = true\n").unwrap();
+    let stub = root.join("estate-stub.sh");
+    write_executable(
+        &stub,
+        &format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\ntest \"$(git -C estate-source rev-parse HEAD)\" = {commit:?}\ntest \"$(git -C estate-source rev-parse HEAD:Cargo.lock)\" = {lock_blob:?}\nprintf '{{\"schema\":\"estate.receipt.v1\",\"phase\":\"applied\"}}\\n' > ESTATE_RECEIPT.json\nprintf '{{\"schema_version\":\"bb.command_result.v1\",\"result\":\"pinned estate execution\"}}\\n'\n"
+        ),
+    );
+    fs::write(
+        root.join("agents/estate.toml"),
+        format!(
+            "harness = \"command\"\nmodel = \"\"\nbin = \"{}\"\nrole = \"estate-executor\"\n",
+            stub.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/estate/card.md"),
+        "deterministic Estate adapter\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/estate/task.toml"),
+        format!(
+            "agent = \"estate\"\nsubstrate = \"local\"\nrequired_artifacts = [\"ESTATE_RECEIPT.json\"]\n[workspace]\nrepos = [{{ url = {:?}, ref = \"master\", commit = {:?}, locks = [{{ path = \"Cargo.lock\", git_blob = {:?} }}] }}]\n[[trigger]]\nkind = \"manual\"\n",
+            source.to_string_lossy(), commit, lock_blob
+        ),
+    )
+    .unwrap();
+
+    let plane = Plane::load(&root).unwrap();
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let run_id = manual_run(&mut ledger, "estate", None);
+    let run = dispatch::dispatch_run(&plane, &mut ledger, &run_id).unwrap();
+    assert_eq!(run.state, "success", "{:?}", run.state_reason);
+    assert_eq!(run.agent_name.as_deref(), Some("estate"));
+    let attempts = ledger.attempts(&run_id).unwrap();
+    let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
+    assert!(artifact_dir.join("ESTATE_RECEIPT.json").exists());
+
+    // A tree object alone is insufficient: checkout filters can materialize
+    // different bytes. Pin a second commit whose attributes force CRLF and
+    // prove the working-byte hash rejects it before the harness executes.
+    fs::write(source.join(".gitattributes"), "Cargo.lock text eol=crlf\n").unwrap();
+    for args in [
+        vec!["add", ".gitattributes"],
+        vec!["commit", "-q", "-m", "hostile checkout filter"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&source)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let hostile_commit = git("HEAD");
+    fs::write(
+        root.join("tasks/estate/task.toml"),
+        format!(
+            "agent = \"estate\"\nsubstrate = \"local\"\nrequired_artifacts = [\"ESTATE_RECEIPT.json\"]\n[workspace]\nrepos = [{{ url = {:?}, ref = \"master\", commit = {:?}, locks = [{{ path = \"Cargo.lock\", git_blob = {:?} }}] }}]\n[[trigger]]\nkind = \"manual\"\n",
+            source.to_string_lossy(), hostile_commit, lock_blob
+        ),
+    )
+    .unwrap();
+    let hostile_plane = Plane::load(&root).unwrap();
+    let hostile_run_id = manual_run(&mut ledger, "estate", Some("hostile-filter"));
+    let hostile_run = dispatch::dispatch_run(&hostile_plane, &mut ledger, &hostile_run_id).unwrap();
+    assert_eq!(hostile_run.state, "failure");
+    assert!(
+        hostile_run
+            .state_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("dead_letter:")),
+        "{:?}",
+        hostile_run.state_reason
+    );
 }
 
 #[test]
@@ -429,6 +599,7 @@ fn workspace_clone_can_use_declared_gh_token_without_url_credentials() {
     let _guard = ENV_LOCK.lock().unwrap();
     const COMMAND_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
+[ -z "${GH_TOKEN:-}" ] || { echo "GH_TOKEN leaked into workload" >&2; exit 8; }
 printf '{"artifact_paths":["REPORT.json"]}\n' > REPORT.json
 printf '{"schema_version":"bb.command_result.v1","result":"ok"}\n'
 "#;
@@ -442,15 +613,19 @@ printf '{"schema_version":"bb.command_result.v1","result":"ok"}\n'
         r#"#!/bin/sh
 set -eu
 case "$1" in
-  clone)
+  init)
     dest=""
     for arg in "$@"; do dest="$arg"; done
-    user="$("$GIT_ASKPASS" "Username for https://github.com")"
-    pass="$("$GIT_ASKPASS" "Password for https://github.com")"
-    printf '%s|%s|%s\n' "$user" "$pass" "${GIT_TERMINAL_PROMPT:-}" >> "$BB_GIT_AUTH_LOG"
     mkdir -p "$dest/.git"
     ;;
   -C)
+    case "$3" in
+      fetch)
+        user="$("$GIT_ASKPASS" "Username for https://github.com")"
+        pass="$("$GIT_ASKPASS" "Password for https://github.com")"
+        printf '%s|%s|%s|%s\n' "$user" "$pass" "${GIT_TERMINAL_PROMPT:-}" "${GIT_CONFIG_KEY_0:-}" >> "$BB_GIT_AUTH_LOG"
+        ;;
+    esac
     ;;
   *)
     printf 'unexpected git invocation: %s\n' "$*" >&2
@@ -502,7 +677,10 @@ esac
 
     assert_eq!(run.state, "success", "{:?}", run.state_reason);
     let log = fs::read_to_string(git_log).unwrap();
-    assert_eq!(log.trim(), "x-access-token|test-gh-token|0");
+    assert_eq!(
+        log.trim(),
+        "x-access-token|test-gh-token|0|credential.helper"
+    );
 }
 
 #[test]

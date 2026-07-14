@@ -26,13 +26,14 @@ pub const READ_LIMIT: u64 = 1 << 20; // 1 MiB
 /// bookkeeping. They are not agent artifacts and are hidden from `list`.
 const INTERNAL_ARTIFACTS: &[&str] = &["harness.pid"];
 
-/// Persist the public top-level artifacts for one completed attempt. Text
+/// Persist public artifacts for one completed attempt, including nested
+/// declared receipts. Text
 /// bodies use the same per-file bound as `read`; binary and oversized files
 /// retain metadata only. Directories, internal harness markers, and symlinks
 /// are deliberately absent from the durable snapshot.
 pub(crate) fn snapshot_attempt(ledger: &Ledger, attempt_id: i64, dir: &Path) -> Result<()> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
+    match fs::read_dir(dir) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             bail!("artifact snapshot dir {} not found", dir.display())
         }
@@ -41,26 +42,26 @@ pub(crate) fn snapshot_attempt(ledger: &Ledger, attempt_id: i64, dir: &Path) -> 
                 .with_context(|| format!("read artifact snapshot dir {}", dir.display()))
         }
     };
-    let mut entries = entries
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("read artifact snapshot entries at {}", dir.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
+    let mut candidates = Vec::new();
+    collect_snapshot_candidates(dir, dir, &mut candidates)?;
+    candidates.sort();
 
     let mut snapshots = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        let meta = path
-            .symlink_metadata()
-            .with_context(|| format!("stat artifact snapshot candidate {}", path.display()))?;
+    for relative in candidates {
+        if bundle_skip_path(&relative) {
+            continue;
+        }
+        let name = manifest_path(&relative);
+        let Some(mut file) = crate::substrate::open_relative_nofollow(dir, &name)? else {
+            continue;
+        };
+        let meta = file.metadata()?;
         if !meta.is_file() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if INTERNAL_ARTIFACTS.contains(&name.as_str()) {
-            continue;
-        }
-        let profile = bundle_file_profile(&path, Path::new(&name))
-            .with_context(|| format!("classify artifact snapshot candidate {}", path.display()))?;
+        let profile =
+            bundle_file_profile_from_reader(&mut file, meta.len(), content_type(&relative))
+                .with_context(|| format!("classify artifact snapshot candidate {name}"))?;
         let content = if profile.size <= READ_LIMIT && !profile.binary {
             profile.bytes
         } else {
@@ -75,6 +76,30 @@ pub(crate) fn snapshot_attempt(ledger: &Ledger, attempt_id: i64, dir: &Path) -> 
         });
     }
     ledger.replace_artifact_snapshots(attempt_id, &snapshots)
+}
+
+fn collect_snapshot_candidates(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("read artifact snapshot dir {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = path.symlink_metadata()?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        let relative = path.strip_prefix(root)?.to_path_buf();
+        if bundle_skip_path(&relative) {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_snapshot_candidates(root, &path, out)?;
+        } else if metadata.is_file() {
+            out.push(relative);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
