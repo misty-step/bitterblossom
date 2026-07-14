@@ -1,0 +1,118 @@
+# Repo-owned secret-scanning rules (bitterblossom-974).
+#
+# History: this repo HAD a TruffleHog workflow (2026-02-06, leak #1 response)
+# that only triggered on PRs + master pushes, so a rescue-branch leak sailed
+# past it — and then the workflow itself was silently deleted by an unrelated
+# commit (3c439328, 2026-04-10) and nobody noticed for three months. The fix
+# is layered: this config + .github/workflows/secret-scan.yml on EVERY branch
+# push, the same scan in scripts/verify.sh and .githooks/pre-commit, and
+# branch protection on master requiring the check so the gate cannot vanish
+# silently again.
+#
+# Custom rules exist because stock provider patterns empirically MISS the
+# shapes this shop actually leaks: shell-export syntax with bare-UUID values
+# (`export EXA_API_KEY=<uuid>`), Powder API keys, mint broker capability
+# secrets. Rule ids are prefixed bb- to never collide with upstream defaults.
+#
+# Rule-firing proof: scripts/secret-scan-selftest.sh plants clearly-synthetic
+# fixtures (never committed) in a throwaway repo and asserts every bb- rule
+# fires. Run it after editing this file.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Custom rules (beyond stock providers)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "bb-powder-api-key"
+description = "Powder API key (sk_powder_ + 32-char nanoid; powder-store identity.rs)"
+regex = '''\bsk_powder_[A-Za-z0-9_-]{32}\b'''
+keywords = ["sk_powder_"]
+
+[[rules]]
+id = "bb-openrouter-api-key"
+description = "OpenRouter API/provisioning key (sk-or-...)"
+regex = '''\bsk-or-[A-Za-z0-9][A-Za-z0-9_-]{18,}\b'''
+keywords = ["sk-or-"]
+
+[[rules]]
+id = "bb-1password-service-account-token"
+description = "1Password service-account token (ops_...)"
+regex = '''\bops_[A-Za-z0-9+/=_.-]{40,}'''
+keywords = ["ops_"]
+
+[[rules]]
+id = "bb-fly-token"
+description = "Fly.io token (fo1_ deploy / fm1a_ fm1r_ fm2_ macaroon)"
+regex = '''\b(?:fo1_[A-Za-z0-9_-]{20,}|fm1[ar]_[A-Za-z0-9+/=,_-]{40,}|fm2_[A-Za-z0-9+/=,_-]{40,})'''
+keywords = ["fo1_", "fm1a_", "fm1r_", "fm2_"]
+
+[[rules]]
+id = "bb-digitalocean-token"
+description = "DigitalOcean API token (dop_v1_ / doo_v1_ / dor_v1_ + 64 hex)"
+regex = '''\bdo[por]_v1_[a-f0-9]{64}\b'''
+keywords = ["dop_v1_", "doo_v1_", "dor_v1_"]
+
+[[rules]]
+id = "bb-do-spaces-key"
+description = "DigitalOcean Spaces access key id (DO00 + uppercase base32)"
+regex = '''\bDO00[A-Z0-9]{16,}\b'''
+keywords = ["do00"]
+
+[[rules]]
+id = "bb-tailscale-key"
+description = "Tailscale key (tskey-auth/api/client/scan)"
+regex = '''\btskey-(?:auth|api|client|scan)-[A-Za-z0-9]{4,}(?:-[A-Za-z0-9]{4,})*\b'''
+keywords = ["tskey-"]
+
+[[rules]]
+id = "bb-mint-broker-secret"
+description = "Mint broker secret assignment (capability tokens are free-form, so anchor on the env names)"
+regex = '''\b(?:MINT_SECRET_[A-Z0-9_]+|MINT_ADMIN[A-Z0-9_]*|BB_MINT_TAILNET_AUTHKEY)\s*[=:]\s*['"]?([^\s'"$]{12,})'''
+secretGroup = 1
+keywords = ["mint_secret_", "mint_admin", "bb_mint_tailnet_authkey"]
+
+[[rules]]
+id = "bb-env-secret-uuid"
+description = "Bare UUID assigned to a credential-shaped env name (stock rules miss `export EXA_API_KEY=<uuid>`)"
+regex = '''(?:export\s+)?\b[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD)\s*=\s*['"]?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b'''
+secretGroup = 1
+keywords = ["_key", "_token", "_secret", "_password"]
+
+[[rules]]
+id = "bb-env-secret-assignment"
+description = "High-entropy value assigned to a credential-shaped env name (incl. shell-export syntax)"
+regex = '''(?:export\s+)?\b[A-Z][A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD)\s*=\s*['"]?([A-Za-z0-9+/=_.-]{20,})['"]?'''
+secretGroup = 1
+# 3.7 keeps real random tokens (>=4.2) and drops prose-shaped identifiers
+# (~3.6, e.g. JS consts named *_KEY). Bare UUIDs hover around this line, which
+# is exactly why bb-env-secret-uuid exists with no entropy gate.
+entropy = 3.7
+keywords = ["_key", "_token", "_secret", "_password"]
+
+# ---------------------------------------------------------------------------
+# Allowlist
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Known non-secrets"
+regexes = [
+    # Mint route-through capability sentinels: `__mint.<consumer>.<repo>__` is a
+    # public placeholder the broker rewrites in transit, never a credential
+    # (scripts/bb-mint-tailnet-entrypoint.sh).
+    '''__mint\.[A-Za-z0-9.-]+__''',
+    # Shell parameter expansion / command substitution is a reference, not a value.
+    '''\$\{?[A-Z][A-Z0-9_]*''',
+    # Code that READS an env var is a reference, not a value
+    # (`const API_KEY = process.env.OPENROUTER_API_KEY`).
+    '''(?i)\b(?:process\.env|import\.meta\.env|os\.environ|std::env|env::var)[A-Za-z0-9_.()\['"-]*''',
+    # This repo's smoke tests deliberately name their fake credentials
+    # `...sentinel...` (scripts/mint-tailnet-container-smoke.sh,
+    # tests/mint_tailnet_runtime.rs) and assert the sentinel never leaks.
+    '''(?i)[a-z0-9._-]*sentinel[a-z0-9._-]*''',
+    # tests/provider_keys.rs uses an explicitly-synthetic OpenRouter key.
+    # Real sk-or-v1- keys are hex after the version tag, never "-test-".
+    '''sk-or-v1-test-[A-Za-z0-9_-]*''',
+]

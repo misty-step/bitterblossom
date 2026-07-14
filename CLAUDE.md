@@ -72,8 +72,27 @@ The repo gate is one entrypoint, identical locally and in CI
 (`.github/workflows/ci.yml`):
 
 ```bash
-./scripts/verify.sh    # fmt, clippy, tests, bb check on both planes, LOC budget
+./scripts/verify.sh    # secret scan, fmt, clippy, tests, bb check on both planes, LOC budget
 ```
+
+**Secret scanning** (bitterblossom-974, born of the 2026-07-09 leak): gitleaks
+with repo-owned rules in `.gitleaks.toml` (custom `bb-` rules for Powder,
+OpenRouter, 1Password, mint, Fly, DO, Tailscale, and high-entropy/UUID env
+assignments — stock rules miss `export EXA_API_KEY=<uuid>`). Enforced three
+ways: `.github/workflows/secret-scan.yml` on EVERY branch push + PR (a
+required check on master, so deleting it blocks merges instead of unguarding
+them), the same scan inside `verify.sh`, and a local pre-commit hook.
+**Install the hook once per clone** (agents included):
+
+```bash
+git config core.hooksPath .githooks   # + `brew install gitleaks` if missing
+```
+
+Never commit real secret bytes as fixtures — synthetic test credentials use
+the `...sentinel...` / `sk-or-v1-test-...` conventions allowlisted in
+`.gitleaks.toml`; historical acknowledged findings live in `.gitleaksignore`
+(fingerprints only, never real, rotate instead). After editing rules, run
+`scripts/secret-scan-selftest.sh` — it proves every custom rule still fires.
 
 A green gate is necessary, never sufficient. Changes to dispatch,
 substrate, harness, or workload config also need **live evidence** —
