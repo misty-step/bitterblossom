@@ -26,6 +26,12 @@ useDefault = true
 # ---------------------------------------------------------------------------
 
 [[rules]]
+id = "bb-anthropic-oauth-token"
+description = "Claude subscription OAuth token (sk-ant-oat01- access / sk-ant-ort01- refresh; stock anthropic rules only match sk-ant-api03-, and subscription OAuth is this org's primary dispatch auth)"
+regex = '''\bsk-ant-o[ar]t01-[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-ant-oat01-", "sk-ant-ort01-"]
+
+[[rules]]
 id = "bb-powder-api-key"
 description = "Powder API key (sk_powder_ + 32-char nanoid; powder-store identity.rs)"
 regex = '''\bsk_powder_[A-Za-z0-9_-]{32}\b'''
@@ -111,7 +117,10 @@ regexes = [
     # This repo's smoke tests deliberately name their fake credentials
     # `...sentinel...` (scripts/mint-tailnet-container-smoke.sh,
     # tests/mint_tailnet_runtime.rs) and assert the sentinel never leaks.
-    '''(?i)[a-z0-9._-]*sentinel[a-z0-9._-]*''',
+    # Anchored ^...$: the ENTIRE matched secret must be a sentinel-style
+    # word, so a real credential that merely CONTAINS "sentinel" somewhere
+    # is not excused.
+    '''(?i)^[a-z0-9._-]*sentinel[a-z0-9._-]*$''',
     # tests/provider_keys.rs uses an explicitly-synthetic OpenRouter key.
     # Real sk-or-v1- keys are hex after the version tag, never "-test-".
     '''sk-or-v1-test-[A-Za-z0-9_-]*''',

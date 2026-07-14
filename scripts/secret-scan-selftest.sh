@@ -25,6 +25,8 @@ hex64="0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"
 
 # Positive fixtures: one clearly-synthetic value per custom rule.
 {
+  printf '%s%s\n' "sk-ant-oat01-" "SyNtHeTiC0AaBb1CcDd2EeFf3GgHh4Ii"
+  printf '"refreshToken": "%s%s"\n' "sk-ant-ort01-" "SyNtHeTiC0AaBb1CcDd2EeFf3GgHh4Ii"
   printf '%s%s\n' "sk_powder_" "AaBb0CcDd1EeFf2GgHh3IiJj4KkLl5Mm"
   printf '%s%s\n' "sk-or-v1-" "$hex64"
   printf '%s%s\n' "ops_" "eyJTeU50aEV0SWMwRmlYdFVyRTBubHkwMDAwMDAwMDAwMDA"
@@ -41,7 +43,7 @@ report="$tmp/report.json"
 gitleaks dir "$fixture" --config .gitleaks.toml --no-banner --redact \
   --report-format json --report-path "$report" --exit-code 0 >/dev/null 2>&1
 
-expected="bb-powder-api-key bb-openrouter-api-key bb-1password-service-account-token \
+expected="bb-anthropic-oauth-token bb-powder-api-key bb-openrouter-api-key bb-1password-service-account-token \
 bb-fly-token bb-digitalocean-token bb-do-spaces-key bb-tailscale-key \
 bb-mint-broker-secret bb-env-secret-uuid bb-env-secret-assignment"
 

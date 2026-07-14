@@ -76,9 +76,11 @@ The repo gate is one entrypoint, identical locally and in CI
 ```
 
 **Secret scanning** (bitterblossom-974, born of the 2026-07-09 leak): gitleaks
-with repo-owned rules in `.gitleaks.toml` (custom `bb-` rules for Powder,
+with repo-owned rules in `.gitleaks.toml` (custom `bb-` rules for Claude
+subscription OAuth tokens (`sk-ant-oat01-`/`sk-ant-ort01-`), Powder,
 OpenRouter, 1Password, mint, Fly, DO, Tailscale, and high-entropy/UUID env
-assignments — stock rules miss `export EXA_API_KEY=<uuid>`). Enforced three
+assignments — stock rules miss both `export EXA_API_KEY=<uuid>` and OAuth
+`sk-ant-oat01-` tokens). Enforced three
 ways: `.github/workflows/secret-scan.yml` on EVERY branch push + PR (a
 required check on master, so deleting it blocks merges instead of unguarding
 them), the same scan inside `verify.sh`, and a local pre-commit hook.
