@@ -17,6 +17,21 @@ pub struct PartialProgress {
 }
 
 pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "omp", "command", "opencode"];
+
+/// Whether a successful run on this harness reports dollar cost into
+/// `cost_usd` (bitterblossom-969). Empirical, from the parser contracts in
+/// this file plus live ledger receipts: `claude` reports `total_cost_usd` on
+/// the final result JSON; `pi`/`omp` report `usage.cost.total` on assistant
+/// `message_end` events (OpenRouter per-response usage accounting);
+/// `opencode` reports `cost` on `step-finish`. `codex` JSONL carries token
+/// usage only — no dollar figure exists on its subscription surface, so
+/// `parse_codex` records `cost_usd = None` by construction. `command`
+/// wrappers MAY self-report via `bb.command_result.v1`, but nothing
+/// guarantees it, so the plane must treat the harness as cost-blind.
+pub fn reports_cost(harness: &str) -> bool {
+    matches!(harness, "claude" | "pi" | "omp" | "opencode")
+}
+
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
     if effective_tool_action_cap(agent, budget).is_some()
         && !supports_tool_action_cap(&agent.harness)
