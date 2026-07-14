@@ -1097,7 +1097,9 @@ fn workflow_get(ledger: &Ledger, path: &str, url: &str) -> Result<Option<(u16, S
         }))
     };
     if path == "/api/workflows" {
-        return respond(Ok(serde_json::to_value(ledger.list_workflows()?)?));
+        // Route through respond() so a store error maps to a client status
+        // instead of propagating as a 500 + runtime-error report.
+        return respond((|| Ok(serde_json::to_value(ledger.list_workflows()?)?))());
     }
     if let Some(id) = path.strip_prefix("/api/workflow-runs/") {
         return respond(workflow::workflow_run_view(ledger, id));
@@ -1133,11 +1135,22 @@ fn workflow_get(ledger: &Ledger, path: &str, url: &str) -> Result<Option<(u16, S
             respond(workflow::diff_view(ledger, name, from, to))
         }
         "export" => {
-            let revision = query_param(url, "revision").and_then(|s| s.parse::<i64>().ok());
+            // A malformed revision= is a 400, like the diff arm — never a
+            // silent fall-through to the default revision.
+            let revision = match query_param(url, "revision") {
+                None => None,
+                Some(raw) => match raw.parse::<i64>() {
+                    Ok(revision) => Some(revision),
+                    Err(_) => return Ok(Some((400, json_error("bad revision number".into())))),
+                },
+            };
             respond(export_workflow_toml(ledger, name, revision))
         }
-        "runs" => respond(Ok(serde_json::to_value(ledger.workflow_runs(name)?)?)),
-        "events" => respond(Ok(serde_json::to_value(ledger.workflow_events(name)?)?)),
+        // Unknown names are 404s via respond(), not propagated 500s.
+        "runs" => respond((|| Ok(serde_json::to_value(ledger.workflow_runs(name)?)?))()),
+        "events" => respond((|| {
+            Ok(serde_json::to_value(ledger.workflow_events(name)?)?)
+        })()),
         _ => Ok(Some((404, "{\"error\":\"not found\"}".into()))),
     }
 }

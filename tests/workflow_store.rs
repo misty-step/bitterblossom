@@ -223,6 +223,47 @@ fn lifecycle_revise_rollback_and_audit_in_one_store() {
     }
 }
 
+// Review fix 1 (PR #1001): a `/` in a workflow name would make every
+// name-scoped HTTP route unaddressable (tiny_http does no percent-decoding
+// and the routes parse the name as one path segment), so names must reject
+// `/` at create/import — on every surface, because CLI and HTTP share one
+// store.
+#[test]
+fn slash_names_are_rejected_at_create_and_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let doc = write_doc(
+        root,
+        "slashed.toml",
+        &DOC.replace("name = \"pr-review\"", "name = \"team/pr-review\""),
+    );
+    let doc = doc.to_str().unwrap();
+
+    let created = bb(root, &["workflow", "create", doc]);
+    assert!(!created.status.success(), "create accepted a '/' name");
+    assert!(String::from_utf8_lossy(&created.stderr).contains("team/pr-review"));
+    let imported = bb(root, &["workflow", "import", doc]);
+    assert!(!imported.status.success(), "import accepted a '/' name");
+    assert!(
+        bb_json(root, &["workflow", "list", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "a rejected name must not leave a workflow row behind"
+    );
+
+    // and over HTTP, where the name would be unaddressable
+    let token = "wf-slash-token";
+    let (serve, port) = spawn_serve(root, token);
+    let mut doc = WorkflowDoc::from_toml(DOC).unwrap();
+    doc.name = "team/pr-review".into();
+    let body = serde_json::json!({ "document": doc }).to_string();
+    let (status, response) = http(port, "POST", "/api/workflows", Some(token), Some(&body));
+    assert_eq!(status, 400, "{response}");
+    serve.stop();
+}
+
 // --- criterion 2: CLI and HTTP share the same immutable revisions -----------
 
 struct ServeGuard {
@@ -257,12 +298,15 @@ impl Drop for ServeGuard {
 fn spawn_serve(root: &Path, token: &str) -> (ServeGuard, u16) {
     let port_file = root.join("bb-serve-port");
     let _ = fs::remove_file(&port_file);
+    // stderr goes to a log file so tests can assert what the server did NOT
+    // do (e.g. fire a runtime-error report for a plain 404).
+    let stderr_log = fs::File::create(root.join("serve-stderr.log")).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_bb"))
         .args(["--config", root.to_str().unwrap(), "serve"])
         .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
         .env("BB_API_TOKEN", token)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr_log)
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -472,6 +516,73 @@ fn cli_and_http_create_read_diff_activate_the_same_revisions() {
         .starts_with("Re-review"));
 
     serve.stop();
+}
+
+// Review fixes 2 + 4 (PR #1001): unknown names on the runs/events routes
+// must be plain 404 client errors — not 500s that fire runtime-error
+// telemetry — and a malformed export revision must be a 400, not a silent
+// fallback to the default revision.
+#[test]
+fn unknown_and_malformed_workflow_requests_are_client_errors_not_500s() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let token = "wf-404-token";
+    let (serve, port) = spawn_serve(root, token);
+
+    for path in [
+        "/api/workflows/nope/runs",
+        "/api/workflows/nope/events",
+        "/api/workflows/nope",
+    ] {
+        let (status, body) = http(port, "GET", path, Some(token), None);
+        assert_eq!(status, 404, "{path}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("not found"),
+            "{path}: {body}"
+        );
+    }
+
+    let doc = WorkflowDoc::from_toml(DOC).unwrap();
+    let body = serde_json::json!({ "document": doc }).to_string();
+    assert_eq!(
+        http(port, "POST", "/api/workflows", Some(token), Some(&body)).0,
+        201
+    );
+    let (status, body) = http(
+        port,
+        "GET",
+        "/api/workflows/pr-review/export?revision=garbage",
+        Some(token),
+        None,
+    );
+    assert_eq!(
+        status, 400,
+        "malformed revision must not silently export: {body}"
+    );
+    let (status, _) = http(
+        port,
+        "GET",
+        "/api/workflows/pr-review/export?revision=99",
+        Some(token),
+        None,
+    );
+    assert_eq!(status, 404, "missing revision is a 404");
+    let (status, _) = http(
+        port,
+        "GET",
+        "/api/workflows/pr-review/export?revision=1",
+        Some(token),
+        None,
+    );
+    assert_eq!(status, 200);
+
+    serve.stop();
+    let stderr = fs::read_to_string(root.join("serve-stderr.log")).unwrap();
+    assert!(
+        !stderr.contains("http request"),
+        "client errors fired runtime-error telemetry:\n{stderr}"
+    );
 }
 
 // --- criterion 3 + restart/readback -----------------------------------------

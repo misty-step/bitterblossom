@@ -121,14 +121,17 @@ impl WorkflowDoc {
     /// names, empty goals, unknown trigger kinds, unparseable cron schedules,
     /// duplicate step names, and routes to unknown steps.
     pub fn validate(&self) -> Result<()> {
+        // No '/': every name-scoped HTTP route addresses the workflow as one
+        // URL path segment (tiny_http does no percent-decoding), so a name
+        // containing '/' would be stored but unaddressable over HTTP.
         let name_ok = !self.name.is_empty()
             && self
                 .name
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'));
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
         if !name_ok {
             bail!(
-                "workflow name {:?} must be non-empty [A-Za-z0-9._/-]",
+                "workflow name {:?} must be non-empty [A-Za-z0-9._-] (one URL path segment)",
                 self.name
             );
         }
