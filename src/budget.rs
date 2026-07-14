@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::ledger::Ledger;
-use crate::spec::{Plane, Task};
+use crate::spec::{AuthClass, Plane, Task};
 #[derive(Clone, Debug)]
 pub struct Violation {
     pub kind: &'static str,
@@ -69,6 +69,42 @@ pub fn pre_dispatch_check(
 /// Spend/quota limits that survive an unpark — a released run would still
 /// re-block on these. The task park is handled by `pre_dispatch_check`.
 pub fn budget_limits(plane: &Plane, ledger: &Ledger, task: &Task) -> Result<Option<Violation>> {
+    // bitterblossom-969: every cost control on this plane — the per-run cap,
+    // the global and per-repo daily ceilings, the in-flight overrun monitor —
+    // reads parsed attempt cost_usd. An API-auth agent holding the metered
+    // OPENROUTER_API_KEY on a harness that cannot report cost is invisible to
+    // all of them; the only control that can survive is a provider-side
+    // child-key spend cap. So admission refuses that shape unless the agent
+    // declares one (policy.provider_key_name + policy.provider_spend_cap_usd
+    // — prepare swaps in the capped child key and refuses to run if it was
+    // never minted). Subscription-auth agents are exempt: there is no metered
+    // dollar spend for these controls to govern.
+    if task.agent.auth_class()? == AuthClass::Api
+        && task.agent.provider() == "openrouter"
+        && !crate::harness::reports_cost(&task.agent.harness)
+        && task
+            .agent
+            .secrets
+            .iter()
+            .chain(task.agent.optional_secrets.iter())
+            .any(|s| s == crate::provider_keys::OPENROUTER_SECRET_ENV)
+        && (task.agent.policy.provider_key_name.is_none()
+            || task.agent.policy.provider_spend_cap_usd.is_none())
+    {
+        return Ok(Some(Violation {
+            kind: "cost_blind_harness",
+            detail: format!(
+                "agent '{agent}' (auth=api) holds {secret} on harness '{harness}', which \
+                 cannot report cost_usd — every plane spend control is blind to this run; \
+                 declare policy.provider_key_name + policy.provider_spend_cap_usd and mint \
+                 the capped child key (`bb keys mint {agent}`), or move the workload to a \
+                 cost-reporting harness",
+                agent = task.agent_name,
+                harness = task.agent.harness,
+                secret = crate::provider_keys::OPENROUTER_SECRET_ENV,
+            ),
+        }));
+    }
     if let Some(max) = task.spec.budget.max_runs_per_day {
         let today = ledger.runs_today(&task.name)?;
         if today >= max as i64 {

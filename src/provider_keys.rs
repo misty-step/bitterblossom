@@ -14,7 +14,7 @@ use crate::spec::{AuthClass, Plane, Task};
 pub const MANAGEMENT_KEY_ENV: &str = "OPENROUTER_MANAGEMENT_KEY";
 const BASE_URL_ENV: &str = "BB_OPENROUTER_KEYS_BASE_URL";
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const OPENROUTER_SECRET_ENV: &str = "OPENROUTER_API_KEY";
+pub const OPENROUTER_SECRET_ENV: &str = "OPENROUTER_API_KEY";
 const PROVIDER: &str = "openrouter";
 const SCHEMA_VERSION: u32 = 1;
 

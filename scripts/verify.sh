@@ -352,7 +352,15 @@ rm -rf "$self_drill_tmp"
 # checkout plus working-byte lock verification, and reserved evidence paths.
 # All three adapters call that mechanism; no infrastructure authority or
 # product judgment enters the spine.
-SPINE_LOC_CAP=17594
+# bitterblossom-969: 17594 -> 17643 (exact actual, zero banked slack) for
+# cost-visibility mechanism: harness.rs +14 (reports_cost — which harness
+# parsers actually populate cost_usd, the datum every spend control reads),
+# budget.rs +35 (cost_blind_harness admission refusal: an api-auth agent
+# holding OPENROUTER_API_KEY on a harness that cannot report cost is
+# invisible to the per-run cap, both daily ceilings, and the in-flight
+# monitor — refused pre-dispatch unless a provider-side child-key cap is
+# declared). Pure spend-containment mechanism; no workload judgment.
+SPINE_LOC_CAP=17643
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

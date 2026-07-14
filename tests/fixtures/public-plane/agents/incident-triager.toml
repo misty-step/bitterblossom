@@ -15,6 +15,12 @@ skills = [
 
 [policy]
 authority = "merge"
+# bitterblossom-969: the command harness is cost-blind (cost_usd is whatever
+# the wrapper self-reports, if anything), so an api-auth agent holding
+# OPENROUTER_API_KEY is refused admission unless a provider-side child-key
+# cap is declared here and minted (`bb keys mint incident-triager`).
+provider_key_name = "incident-triager"
+provider_spend_cap_usd = 15.0
 model_allowlist = ["z-ai/glm-5.2"]
 trigger_bindings = ["manual", "webhook"]
 output_bytes_cap = 120000

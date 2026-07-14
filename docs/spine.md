@@ -630,6 +630,38 @@ sidecar for now; `bb runs export` is the versioned telemetry seam for
 Daedalus handoff and future `gen_ai.*` adapters. The v1 schema and
 compatibility rules live in `docs/run-telemetry-export-v1.md`.
 
+### Per-harness cost reporting (bitterblossom-969)
+
+`cost_usd` feeds every plane spend control: the per-run cap, the global and
+per-repo daily ceilings, and the in-flight overrun monitor. Which harnesses
+actually populate it (empirical — the parser contracts in `src/harness.rs`
+plus live plane ledger receipts, 2026-07-14):
+
+| Harness    | `cost_usd` on success | Source |
+|------------|-----------------------|--------|
+| `claude`   | yes                   | `total_cost_usd` on the final result JSON (subscription auth; the figure is the CLI's own accounting, informational for these controls) |
+| `codex`    | **never**              | JSONL carries token usage only; no dollar figure exists on the subscription surface — `parse_codex` records NULL by construction |
+| `pi`       | yes                   | sum of assistant `message_end` `usage.cost.total` (OpenRouter per-response usage accounting) |
+| `omp`      | yes                   | same JSONL contract as `pi` |
+| `opencode` | yes                   | sum of `step-finish` `cost` |
+| `command`  | self-reported only    | passthrough of `cost_usd` from `bb.command_result.v1`; **blind unless the wrapper emits it** |
+
+Caveats: "yes" is a contract on parsed usage events from a completed run —
+`tests/cost_visibility.rs` asserts a non-null `cost_usd` lands in the ledger
+after a stubbed dispatch for every harness above that claims support. A
+failed attempt killed before any usage event records NULL cost with the raw
+output preserved on the attempt row (fail-visible, never a silent zero-cost
+success).
+
+Because the spend controls read `cost_usd`, admission refuses the blind
+metered path: an API-auth agent holding `OPENROUTER_API_KEY` on a harness
+that cannot report cost (`codex`, `command`) is blocked pre-dispatch with a
+named `cost_blind_harness` budget violation unless the agent declares a
+provider-side child-key cap (`policy.provider_key_name` +
+`policy.provider_spend_cap_usd`; `bb keys mint <agent>` creates the capped
+key and prepare refuses to run without it). Subscription-auth agents are
+exempt — there is no metered dollar spend for these controls to govern.
+
 The review workload also supports explicit manual tokenomics probes:
 `CERBERUS_REVIEW_GH_TOKEN="$CERBERUS_REVIEW_GH_TOKEN" bb --config <runtime-plane> run review --payload '{"repo":"o/r","pr":N,"measurement":true}'`.
 Measurement mode runs the same real PR review path but suppresses the
