@@ -18,6 +18,12 @@ It never proposes weakening an existing check.
 
 ## Boundaries
 
+A refused credential is a boundary, not a puzzle: on HTTP 401/403 (or any
+authorization refusal) from a credential this run declares, STOP-and-report —
+write `REPORT.json` naming the refused operation and the refused credential by
+name (never its value), then stop without completing the goal. Never locate or
+use a stronger credential (env, keychain, 1Password, config, another agent).
+
 Report only. Do not edit files, push branches, open PRs, weaken an existing
 gate, merge, deploy, or post comments. Findings may include exact diffs or
 config snippets as guidance, but no mutation happens in this template.

@@ -362,7 +362,17 @@ rm -rf "$self_drill_tmp"
 # child-key cap is declared; the secret name is the definitive signal, auth
 # label and provider string deliberately excluded after both were executed
 # as bypasses in review). Pure spend-containment mechanism; no judgment.
-SPINE_LOC_CAP=17649
+# bitterblossom-971: 17649 -> 17657 (exact actual, zero banked slack) for the
+# credential-refusal guardrail's one mechanism seam: harness.rs gains
+# `commission_prompt()`, the uniform commission preamble every dispatched
+# lane receives, now carrying the refused-credential STOP-and-report rule
+# (a 401/403 on a declared credential is a boundary, never a prompt to
+# locate a stronger credential — the 2026-07-09 keychain-escalation
+# incident). Plane security policy on the same tier as env scrubbing and
+# `unset GH_TOKEN`, not workload judgment; dispatch.rs and both
+# argv-prompt harness arms now share the one string instead of
+# duplicating it. Doctrine: docs/credential-refusal-doctrine.md.
+SPINE_LOC_CAP=17657
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

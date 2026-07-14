@@ -14,6 +14,12 @@ Required output fields include `"event"`, `"task"`, `"repo"`, `"rev"`,
 
 ## Boundaries
 
+A refused credential is a boundary, not a puzzle: on HTTP 401/403 (or any
+authorization refusal) from a credential this run declares, STOP-and-report —
+write `REPORT.json` naming the refused operation and the refused credential by
+name (never its value), then stop without completing the goal. Never locate or
+use a stronger credential (env, keychain, 1Password, config, another agent).
+
 The task writes `REPORT.json` only. It does not edit code, comment, merge,
 deploy, park tasks, resolve runs, replay dead letters, or run a builder.
 

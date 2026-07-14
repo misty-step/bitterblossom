@@ -333,6 +333,14 @@ adapter owns every environment-specific choice behind that plan:
 - Execute the harness in the prepared workspace with a wall-clock kill
   and probe marker, write artifacts, then release adapter resources.
 
+Every lane's commission preamble (`harness::commission_prompt`) carries the
+credential-refusal rule: a 401/403 on a declared credential is a
+STOP-and-report boundary — blocked `REPORT.json` naming the refused
+operation, never a hunt for a stronger credential. This is plane security
+policy on the same tier as env scrubbing and attempt-scoped git auth; the
+full doctrine, substrate isolation review, and repeatable drill live in
+`docs/credential-refusal-doctrine.md`.
+
 `required_artifacts` accepts any safe workspace-relative regular-file path.
 The substrate copies those declared bytes into the attempt evidence tree on
 release without parsing or normalization. Collection is bounded to one MiB,
