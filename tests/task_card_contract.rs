@@ -70,6 +70,15 @@ fn assert_contract_cards(root: &Path) -> usize {
             assert!(card.contains(heading), "{name} missing {heading}");
         }
         assert!(card.contains("REPORT.json"), "{name} must name REPORT.json");
+        // bitterblossom-971: every lane card states the refused-credential
+        // boundary (docs/credential-refusal-doctrine.md) so a 401/403 on a
+        // scoped credential blocks-and-reports instead of prompting the lane
+        // to locate a stronger credential.
+        assert!(
+            card.contains("STOP-and-report"),
+            "{name} missing refused-credential STOP-and-report doctrine \
+             (docs/credential-refusal-doctrine.md, bitterblossom-971)"
+        );
         assert!(!card.contains("TODO"), "{name} contains TODO");
         checked += 1;
     }

@@ -8,7 +8,7 @@ use crate::harness;
 use crate::ledger::{AttemptStats, Ledger, RunRow};
 use crate::spec::{Plane, Task, TaskBudget, TriggerSpec};
 use crate::submit;
-use crate::substrate::{self, ExecSnapshot, WorkspacePlan, CARD_FILENAME};
+use crate::substrate::{self, ExecSnapshot, WorkspacePlan};
 const MAX_RETRIES: i64 = 2;
 /// bitterblossom-930: re-exported for callers that only need dispatch's
 /// vocabulary; the substrate module owns the canonical definition since it
@@ -675,10 +675,7 @@ fn attempt_on_host(
             .timeout_minutes
             .unwrap_or(DEFAULT_TIMEOUT_MINUTES),
     );
-    let card_prompt = format!(
-        "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it.\n\n{}",
-        task.card
-    );
+    let card_prompt = format!("{}\n\n{}", harness::commission_prompt(), task.card);
     let mut budget_monitor =
         InFlightBudgetMonitor::new(ledger, run_id, attempt_id, task, &effective_budget);
     let exec = {

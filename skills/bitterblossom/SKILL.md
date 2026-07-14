@@ -142,6 +142,19 @@ rules and per-task scorecards: [`docs/rollout-scorecards.md`](../../docs/rollout
   `quarantine`, or `log`; `kill` and `quarantine` must emit notification
   outbox rows such as `run_in_flight_cap_killed`.
 
+## Credential Refusal Is A Boundary
+
+A `401`/`403` (or any authorization refusal) on a credential a run declares
+is a STOP-and-report condition, never a prompt to locate a stronger
+credential. The lane writes a blocked `REPORT.json` naming the refused
+operation and the refused credential by name (never value bytes), then ends
+the run without completing the task. Never search the environment, keychain,
+1Password/`op`, config files, or another agent for a credential with more
+authority than the run declares; if the operation truly needs more authority,
+that is an operator decision surfaced through the blocked report. Full
+doctrine, substrate isolation review, and the repeatable drill:
+[`docs/credential-refusal-doctrine.md`](../../docs/credential-refusal-doctrine.md).
+
 ## Submission Storm
 
 Verdict tasks (`correctness`, `security`, `product`, `simplification`,

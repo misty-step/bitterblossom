@@ -32,6 +32,21 @@ pub fn reports_cost(harness: &str) -> bool {
     matches!(harness, "claude" | "pi" | "omp" | "opencode")
 }
 
+/// The uniform commission preamble every dispatched lane receives, on every
+/// harness and substrate. bitterblossom-971: the refused-credential rule is
+/// plane security policy (like env scrubbing and `unset GH_TOKEN`), not
+/// workload judgment — a 401/403 on a declared credential bounds the lane's
+/// blast radius by design, and the 2026-07-09 incident showed lanes will
+/// otherwise treat it as a puzzle and locate operator admin credentials.
+/// Doctrine: docs/credential-refusal-doctrine.md.
+pub fn commission_prompt() -> String {
+    format!(
+        "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it. \
+         If a credential this run declares is refused (HTTP 401/403 or equivalent), that is a \
+         STOP-and-report boundary: write REPORT.json naming the refused operation and stop; \
+         never locate or use a stronger credential."
+    )
+}
 pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<String>> {
     if effective_tool_action_cap(agent, budget).is_some()
         && !supports_tool_action_cap(&agent.harness)
@@ -118,18 +133,14 @@ pub fn build_command(agent: &AgentSpec, budget: &TaskBudget) -> Result<Vec<Strin
             ];
             inner.extend(agent.args.iter().cloned());
             inner.push("-p".into());
-            inner.push(format!(
-                "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it."
-            ));
+            inner.push(commission_prompt());
             return Ok(filtered_jsonl_command(inner));
         }
         "opencode" => {
             let mut inner = vec![
                 bin,
                 "run".into(),
-                format!(
-                    "Read {CARD_FILENAME} in this directory — it is your entire commission. Execute it."
-                ),
+                commission_prompt(),
                 "--format".into(),
                 "json".into(),
                 "--model".into(),

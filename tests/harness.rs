@@ -340,3 +340,23 @@ fn parse_claude_rejects_empty_and_error() {
     .is_err());
     assert!(parse_output("claude", "not json at all").is_err());
 }
+
+/// bitterblossom-971: every dispatched lane's commission preamble must carry
+/// the refused-credential STOP-and-report rule, so even a card that forgets
+/// to state it is covered on every harness (argv-prompt harnesses included).
+/// See docs/credential-refusal-doctrine.md.
+#[test]
+fn commission_prompt_carries_credential_refusal_doctrine() {
+    let prompt = bitterblossom::harness::commission_prompt();
+    assert!(prompt.contains("LANE_CARD.md"), "{prompt}");
+    assert!(prompt.contains("STOP-and-report"), "{prompt}");
+    assert!(
+        prompt.contains("never locate or use a stronger credential"),
+        "{prompt}"
+    );
+
+    let agent: bitterblossom::spec::AgentSpec =
+        toml::from_str("harness = \"omp\"\nmodel = \"z-ai/glm-5.2\"\n").unwrap();
+    let cmd = build_command(&agent, &TaskBudget::default()).unwrap();
+    assert!(cmd.join(" ").contains("STOP-and-report"), "{cmd:?}");
+}
