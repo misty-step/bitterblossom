@@ -372,7 +372,38 @@ rm -rf "$self_drill_tmp"
 # `unset GH_TOKEN`, not workload judgment; dispatch.rs and both
 # argv-prompt harness arms now share the one string instead of
 # duplicating it. Doctrine: docs/credential-refusal-doctrine.md.
-SPINE_LOC_CAP=17657
+#
+
+# bitterblossom-workflow-runtime-v1: 17657 -> 19692 (exact actual, zero
+# banked slack) for the workflow runtime the ratified 2026-07-11 contract
+# centers on: trigger -> step(agent + goal) -> result -> route. Non-blank
+# deltas vs master: src/workflow_runtime.rs +1457 (new), src/workflow.rs
+# +227, src/serve.rs +165, src/main.rs +61, src/ingress.rs +55,
+# src/substrate/local.rs +60, src/ledger.rs +9, src/lib.rs +1. All of it is
+# deterministic-waist mechanism per VISION.md: one normalized
+# trigger-acceptance contract with dedupe (every source builds the same
+# envelope), run-group state + sequential step execution over the SAME
+# substrate/harness seams dispatch already uses, the completion-outcome file
+# contract (branching steps route only on a declared outcome; nothing is
+# inferred from prose — the outcome vocabulary itself lives in workflow
+# config, not here), child-agent evidence rows with monotonic
+# authority-subset enforcement (child-declared costs summed into the
+# enforced run-group spend), four cycle guards (stop signal, rounds,
+# elapsed, spend) as pure arithmetic — a spend-only cycle requires
+# cost-reporting harnesses at validation and stops guard-indeterminate at
+# runtime when a cycle-step attempt reports no cost (unknown is never
+# zero; the rule is cycle-scoped so admitted blind off-cycle steps are not
+# DOA), plus an
+# absolute attempt ceiling and pinned-revision revalidation at the
+# execution and rollback doors (a snapshot failing CURRENT validation
+# never executes; enumeration paths skip-and-canary a poisoned doc so one
+# workflow never blocks siblings' ingress) — boot classification of inherited runs
+# (needs_attention, never blind re-execution), SIGPIPE-safe workload stdin
+# (a stub exiting before the prompt write must not kill the plane), and
+# CLI/HTTP projections of one view. No workload-specific semantic branch:
+# no outcome keyword, workload name, or domain rule appears in src/ (the
+# arbitrary-vocabulary drill in tests/workflow_runtime.rs pins that).
+SPINE_LOC_CAP=19692
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

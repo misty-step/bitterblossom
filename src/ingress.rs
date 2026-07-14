@@ -150,6 +150,62 @@ pub fn handle_webhook(
     })
 }
 
+/// Webhook delivery for a database-defined workflow trigger
+/// (bitterblossom-workflow-runtime-v1). Same HMAC and dedupe-derivation
+/// mechanics as task webhooks, converging on the workflow runtime's single
+/// normalized acceptance contract.
+pub fn handle_workflow_webhook(
+    ledger: &Ledger,
+    workflow: &str,
+    trigger: &crate::workflow::WorkflowTrigger,
+    headers: &[(String, String)],
+    body: &str,
+) -> Result<WebhookResponse> {
+    let secret_env = trigger.secret_env.as_deref().unwrap_or_default();
+    let Ok(secret) = std::env::var(secret_env) else {
+        return Ok(WebhookResponse {
+            status: 503,
+            body: format!("{{\"error\":\"secret env '{secret_env}' not set on the plane\"}}"),
+        });
+    };
+    if !verify_delivery_hmac(&secret, headers, body) {
+        return Ok(WebhookResponse {
+            status: 401,
+            body: "{\"error\":\"invalid signature\"}".to_string(),
+        });
+    }
+    let derived = match &trigger.dedupe_key {
+        Some(expr) => derive_dedupe_key(expr, headers, body)?,
+        None => format!("body:{}", body_hash(body)),
+    };
+    let route = trigger.route.as_deref().unwrap_or_default();
+    let outcome = crate::workflow_runtime::accept(
+        ledger,
+        &crate::workflow_runtime::TriggerEnvelope {
+            workflow: workflow.to_string(),
+            source: crate::workflow_runtime::TriggerSource::External,
+            payload: Some(body.to_string()),
+            dedupe_key: Some(format!("wh:{route}:{derived}")),
+        },
+    )?;
+    use crate::workflow::AcceptOutcome;
+    let body = match &outcome {
+        AcceptOutcome::Accepted { run } => {
+            serde_json::json!({"workflow_run_id": run.id, "duplicate": false})
+        }
+        AcceptOutcome::Duplicate { run } => {
+            serde_json::json!({"workflow_run_id": run.id, "duplicate": true})
+        }
+        AcceptOutcome::Suppressed { workflow, reason } => {
+            serde_json::json!({"suppressed": reason, "workflow": workflow})
+        }
+    };
+    Ok(WebhookResponse {
+        status: 202,
+        body: body.to_string(),
+    })
+}
+
 fn start_submission_storm(
     plane: &Plane,
     ledger: &mut Ledger,

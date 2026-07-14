@@ -227,6 +227,56 @@ impl Session for LocalSession {
     }
 }
 
+/// Write to a child's stdin without letting a closed pipe raise a fatal
+/// SIGPIPE (the process runs with SIG_DFL; see the call site). On macOS the
+/// fd is marked F_SETNOSIGPIPE so the write returns EPIPE instead of
+/// signaling; elsewhere SIGPIPE is blocked for this thread around the write
+/// and a pending instance is consumed before the mask is restored.
+fn write_stdin_sigpipe_safe(
+    pipe: &mut std::process::ChildStdin,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // Darwin's F_SETNOSIGPIPE (ABI-stable value 73); the libc crate
+        // exposes only the socket variant SO_NOSIGPIPE. Darwin has no
+        // sigtimedwait, so there is no portable fallback: if the fcntl is
+        // refused, fail loudly rather than risk a fatal SIGPIPE.
+        const F_SETNOSIGPIPE: libc::c_int = 73;
+        if unsafe { libc::fcntl(pipe.as_raw_fd(), F_SETNOSIGPIPE, 1) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        pipe.write_all(bytes)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        unsafe {
+            let mut block: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut block);
+            libc::sigaddset(&mut block, libc::SIGPIPE);
+            let mut prev: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &block, &mut prev);
+            let result = pipe.write_all(bytes);
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+            {
+                // The blocked SIGPIPE is pending on this thread; consume it
+                // so restoring the mask cannot deliver it.
+                let ts = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                libc::sigtimedwait(&block, std::ptr::null_mut(), &ts);
+            }
+            libc::pthread_sigmask(libc::SIG_SETMASK, &prev, std::ptr::null_mut());
+            result
+        }
+    }
+}
+
 fn repo_dir_name(url: &str) -> String {
     url.trim_end_matches('/')
         .trim_end_matches(".git")
@@ -317,7 +367,18 @@ pub(crate) fn run_with_timeout(
 
     if let Some(input) = stdin {
         let mut pipe = child.stdin.take().context("stdin pipe")?;
-        pipe.write_all(input.as_bytes())?;
+        // A workload that exits without reading stdin must not kill bb:
+        // main() restores SIGPIPE=SIG_DFL for CLI pipe hygiene, so a plain
+        // write to a closed pipe would deliver a fatal SIGPIPE to this whole
+        // process (observed: `bb serve`/`bb workflow execute` dying mid-run
+        // with exit 141 when a fast stub exited before the prompt write).
+        // The child owns its stdin; a broken pipe here is its choice.
+        match write_stdin_sigpipe_safe(&mut pipe, input.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => return Err(e).context("write workload stdin"),
+        }
+        drop(pipe);
     }
 
     let started = Instant::now();

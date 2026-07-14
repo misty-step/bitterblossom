@@ -880,10 +880,11 @@ fn concurrent_revisions_activations_and_accepts_never_lose_or_fork_history() {
                 let mut accepted = Vec::new();
                 for _ in 0..5 {
                     match ledger
-                        .accept_workflow_run("pr-review", "test", None)
+                        .accept_workflow_run("pr-review", "test", None, None)
                         .unwrap()
                     {
                         AcceptOutcome::Accepted { run } => accepted.push((run.id, run.revision)),
+                        AcceptOutcome::Duplicate { .. } => unreachable!("no dedupe key supplied"),
                         AcceptOutcome::Suppressed { .. } => unreachable!("never paused"),
                     }
                 }
