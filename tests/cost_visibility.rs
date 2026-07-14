@@ -195,6 +195,67 @@ fn metered_agent_on_cost_blind_harness_is_refused_without_child_key_cap() {
     assert!(ledger.attempts(&run.id).unwrap().is_empty());
 }
 
+/// Bypass 1 (PR #1005 review, executed): the refusal must key on the metered
+/// secret, not the auth label. A command agent labelled `auth =
+/// "subscription"` still loads (spec only forbids subscription auth on
+/// pi/omp/opencode) and still receives the parent OPENROUTER_API_KEY — the
+/// label changes nothing about the spend, so it must not change admission.
+#[test]
+fn subscription_label_does_not_bypass_cost_blind_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        COMMAND_SILENT_STUB,
+        "harness = \"command\"\nauth = \"subscription\"\nsecrets = [\"OPENROUTER_API_KEY\"]\n",
+    );
+    let (run, ledger) = dispatch_demo(&plane);
+    assert_eq!(run.state, "blocked_budget", "{:?}", run.state_reason);
+    assert_eq!(
+        ledger
+            .budget_events_today_count("demo", "cost_blind_harness")
+            .unwrap(),
+        1
+    );
+}
+
+/// Bypass 2 (PR #1005 review, executed): `provider` is a free-form string,
+/// so any non-exact value (here a trailing space) must not disable the
+/// refusal — the parent OPENROUTER_API_KEY still resolves from env while
+/// the child-key swap can never happen for a provider bb cannot mint for.
+#[test]
+fn malformed_provider_does_not_bypass_cost_blind_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        COMMAND_SILENT_STUB,
+        "harness = \"command\"\nauth = \"api\"\nprovider = \"openrouter \"\nsecrets = [\"OPENROUTER_API_KEY\"]\n",
+    );
+    let (run, ledger) = dispatch_demo(&plane);
+    assert_eq!(run.state, "blocked_budget", "{:?}", run.state_reason);
+    assert_eq!(
+        ledger
+            .budget_events_today_count("demo", "cost_blind_harness")
+            .unwrap(),
+        1
+    );
+}
+
+/// A declared cap only exempts when it can actually take effect: child keys
+/// are minted for provider "openrouter" exactly, so a declared cap on any
+/// other provider string is a dead letter and must not admit the run.
+#[test]
+fn declared_cap_on_unmintable_provider_does_not_admit() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = setup(
+        dir.path(),
+        COMMAND_SILENT_STUB,
+        "harness = \"command\"\nauth = \"api\"\nprovider = \"openrouter \"\nsecrets = [\"OPENROUTER_API_KEY\"]\n\
+         [policy]\nprovider_key_name = \"demo-key\"\nprovider_spend_cap_usd = 1.0\n",
+    );
+    let (run, _ledger) = dispatch_demo(&plane);
+    assert_eq!(run.state, "blocked_budget", "{:?}", run.state_reason);
+}
+
 /// Same shape with a declared child-key cap and a minted (stored) key: the
 /// run is admitted and the capped child key — not the parent env key — is
 /// what reaches the wrapper.
