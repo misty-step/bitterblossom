@@ -22,3 +22,4 @@ pub mod spec;
 pub mod submit;
 pub mod substrate;
 pub mod telemetry;
+pub mod workflow;

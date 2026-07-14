@@ -206,6 +206,158 @@ enum Command {
         #[command(subcommand)]
         command: JanitorCommand,
     },
+    /// Revisioned workflow configuration store: the plane database is
+    /// authoritative for active workflow config. Draft, revise, diff,
+    /// activate, pause, archive, and roll back immutable revisions; import/
+    /// export declarative TOML documents; accepted runs pin the revision
+    /// active at acceptance. Same store the `/api/workflows` routes use.
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommand {
+    /// Create a draft workflow from a declarative TOML document (revision 1).
+    Create {
+        /// Path to the workflow TOML document.
+        file: PathBuf,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List workflows with lifecycle state and active revision.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one workflow: state, revision history, and the active document.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Append a new immutable revision from a TOML document. Refuses a
+    /// document identical to the latest revision.
+    Revise {
+        name: String,
+        file: PathBuf,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Line diff between two stored revisions (canonical JSON).
+    Diff {
+        name: String,
+        #[arg(long)]
+        from: i64,
+        #[arg(long)]
+        to: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Activate one revision (default: latest). New acceptances pin the
+    /// newly active revision; existing runs keep the one they pinned.
+    Activate {
+        name: String,
+        #[arg(long)]
+        revision: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pause an active workflow: new events are suppressed (disposition
+    /// recorded in the audit trail), nothing is replayed on resume.
+    Pause {
+        name: String,
+        #[arg(long, default_value = "paused by operator")]
+        reason: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Resume a paused workflow on its already-active revision.
+    Resume {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Archive a workflow: frozen, never deleted — historical runs keep
+    /// their revision referents readable.
+    Archive {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-activate an earlier snapshot as a NEW revision (history is never
+    /// rewritten).
+    Rollback {
+        name: String,
+        #[arg(long)]
+        to: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import a declarative TOML document: creates a new workflow, revises a
+    /// changed one, or no-ops when identical to the latest revision (files
+    /// stay interchange, never a second live authority).
+    Import {
+        file: PathBuf,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export one revision (default: active, else latest) as declarative
+    /// TOML on stdout.
+    Export {
+        name: String,
+        #[arg(long)]
+        revision: Option<i64>,
+    },
+    /// Migration: convert one currently-loaded file-defined task (task.toml
+    /// plus card plus bound agent) into a workflow document and import it.
+    /// Files are the migration source; nothing is written back to them.
+    ImportTask {
+        task: String,
+        /// Also activate the imported revision.
+        #[arg(long)]
+        activate: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Accept one triggering event for an active workflow: creates a
+    /// workflow run pinned to the revision active right now. Paused
+    /// workflows suppress with a recorded disposition (exit 3).
+    Accept {
+        name: String,
+        #[arg(long, default_value = "manual")]
+        trigger: String,
+        /// Inline JSON payload, validated before acceptance.
+        #[arg(long)]
+        payload: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List accepted runs with their pinned revisions.
+    Runs {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one accepted run with the exact document it pinned.
+    RunShow {
+        run_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Audit trail: every lifecycle act, acceptance, and suppression.
+    Events {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1522,7 +1674,270 @@ fn run() -> Result<()> {
                 }
             }
         },
+        Command::Workflow { command } => workflow_command(&plane, &ledger, command)?,
         Command::Doctor { .. } => unreachable!("Command::Doctor returns early above"),
+    }
+    Ok(())
+}
+
+/// `bb workflow ...`: thin projections over src/workflow.rs store functions —
+/// the same functions the `/api/workflows` HTTP routes call, so the two
+/// surfaces create/read/diff/activate the same immutable revisions.
+fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) -> Result<()> {
+    use bitterblossom::workflow::{self, AcceptOutcome, WorkflowDoc};
+
+    fn read_doc(file: &Path) -> Result<WorkflowDoc> {
+        let text = std::fs::read_to_string(file)
+            .with_context(|| format!("read workflow document {}", file.display()))?;
+        WorkflowDoc::from_toml(&text)
+    }
+    fn print_workflow(wf: &workflow::WorkflowRow, json: bool) -> Result<()> {
+        if json {
+            println!("{}", serde_json::to_string_pretty(wf)?);
+        } else {
+            println!(
+                "{} {} active_revision={}",
+                wf.name,
+                wf.state,
+                wf.active_revision
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "-".into())
+            );
+        }
+        Ok(())
+    }
+    fn print_revision(
+        wf: &workflow::WorkflowRow,
+        revision: i64,
+        verb: &str,
+        json: bool,
+    ) -> Result<()> {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({ "workflow": wf, "revision": revision })
+                )?
+            );
+        } else {
+            println!("{verb} '{}' revision {revision} ({})", wf.name, wf.state);
+        }
+        Ok(())
+    }
+
+    match command {
+        WorkflowCommand::Create { file, note, json } => {
+            let doc = read_doc(&file)?;
+            let (wf, revision) = ledger.create_workflow(&doc, "cli", note.as_deref())?;
+            print_revision(&wf, revision, "created", json)?;
+        }
+        WorkflowCommand::List { json } => {
+            let workflows = ledger.list_workflows()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&workflows)?);
+            } else {
+                for wf in workflows {
+                    print_workflow(&wf, false)?;
+                }
+            }
+        }
+        WorkflowCommand::Show { name, json } => {
+            let view = workflow::workflow_view(ledger, &name)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                let wf = ledger.workflow_by_name(&name)?;
+                print_workflow(&wf, false)?;
+                for r in ledger.workflow_revisions(&name)? {
+                    println!(
+                        "  revision {} [{}] {} {}",
+                        r.revision,
+                        r.source,
+                        r.created_at,
+                        r.note.as_deref().unwrap_or("")
+                    );
+                }
+            }
+        }
+        WorkflowCommand::Revise {
+            name,
+            file,
+            note,
+            json,
+        } => {
+            let doc = read_doc(&file)?;
+            let (wf, revision) = ledger.revise_workflow(&name, &doc, "cli", note.as_deref())?;
+            print_revision(&wf, revision, "revised", json)?;
+        }
+        WorkflowCommand::Diff {
+            name,
+            from,
+            to,
+            json,
+        } => {
+            let view = workflow::diff_view(ledger, &name, from, to)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else if view["identical"].as_bool() == Some(true) {
+                println!("revisions {from} and {to} are identical");
+            } else {
+                for change in view["changes"].as_array().into_iter().flatten() {
+                    println!(
+                        "{}{}",
+                        change["op"].as_str().unwrap_or("?"),
+                        change["line"].as_str().unwrap_or("")
+                    );
+                }
+            }
+        }
+        WorkflowCommand::Activate {
+            name,
+            revision,
+            json,
+        } => {
+            let wf = ledger.activate_workflow(&name, revision)?;
+            print_workflow(&wf, json)?;
+        }
+        WorkflowCommand::Pause { name, reason, json } => {
+            let wf = ledger.pause_workflow(&name, &reason)?;
+            print_workflow(&wf, json)?;
+        }
+        WorkflowCommand::Resume { name, json } => {
+            let wf = ledger.resume_workflow(&name)?;
+            print_workflow(&wf, json)?;
+        }
+        WorkflowCommand::Archive { name, json } => {
+            let wf = ledger.archive_workflow(&name)?;
+            print_workflow(&wf, json)?;
+        }
+        WorkflowCommand::Rollback { name, to, json } => {
+            let (wf, revision) = ledger.rollback_workflow(&name, to)?;
+            print_revision(&wf, revision, "rolled back to snapshot as", json)?;
+        }
+        WorkflowCommand::Import { file, note, json } => {
+            let doc = read_doc(&file)?;
+            let (wf, revision, outcome) =
+                ledger.import_workflow(&doc, "import", note.as_deref())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "workflow": wf,
+                        "revision": revision,
+                        "outcome": outcome,
+                    }))?
+                );
+            } else {
+                println!("import {:?}: '{}' revision {revision}", outcome, wf.name);
+            }
+        }
+        WorkflowCommand::Export { name, revision } => {
+            let (revision, toml) = workflow::export_toml(ledger, &name, revision)?;
+            eprintln!("exporting '{name}' revision {revision}");
+            print!("{toml}");
+        }
+        WorkflowCommand::ImportTask {
+            task,
+            activate,
+            json,
+        } => {
+            let task = plane.task(&task)?;
+            let doc = WorkflowDoc::from_task(task)?;
+            let (wf, revision, outcome) = ledger.import_workflow(
+                &doc,
+                "import-task",
+                Some(&format!("from task '{}'", task.name)),
+            )?;
+            let wf = if activate {
+                ledger.activate_workflow(&wf.name, Some(revision))?
+            } else {
+                wf
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "workflow": wf,
+                        "revision": revision,
+                        "outcome": outcome,
+                    }))?
+                );
+            } else {
+                println!(
+                    "import-task {:?}: '{}' revision {revision} ({})",
+                    outcome, wf.name, wf.state
+                );
+            }
+        }
+        WorkflowCommand::Accept {
+            name,
+            trigger,
+            payload,
+            json,
+        } => {
+            let outcome = ledger.accept_workflow_run(&name, &trigger, payload.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                match &outcome {
+                    AcceptOutcome::Accepted { run } => println!(
+                        "accepted run {} pinned to '{}' revision {}",
+                        run.id, run.workflow, run.revision
+                    ),
+                    AcceptOutcome::Suppressed { workflow, reason } => {
+                        println!("suppressed on '{workflow}': {reason}")
+                    }
+                }
+            }
+            if matches!(outcome, AcceptOutcome::Suppressed { .. }) {
+                std::process::exit(3);
+            }
+        }
+        WorkflowCommand::Runs { name, json } => {
+            let runs = ledger.workflow_runs(&name)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&runs)?);
+            } else {
+                for run in runs {
+                    println!(
+                        "{}  {:<10} revision {:<4} {}",
+                        run.created_at, run.trigger_kind, run.revision, run.id
+                    );
+                }
+            }
+        }
+        WorkflowCommand::RunShow { run_id, json } => {
+            let view = workflow::workflow_run_view(ledger, &run_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                let run = &view["run"];
+                println!(
+                    "run {} workflow={} revision={} trigger={} created_at={}",
+                    run["id"].as_str().unwrap_or("-"),
+                    run["workflow"].as_str().unwrap_or("-"),
+                    run["revision"],
+                    run["trigger_kind"].as_str().unwrap_or("-"),
+                    run["created_at"].as_str().unwrap_or("-"),
+                );
+                println!("{}", serde_json::to_string_pretty(&view["document"])?);
+            }
+        }
+        WorkflowCommand::Events { name, json } => {
+            let events = ledger.workflow_events(&name)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&events)?);
+            } else {
+                for event in events {
+                    println!(
+                        "{}  {:<16} {}",
+                        event.at,
+                        event.kind,
+                        event.data.as_deref().unwrap_or("")
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }

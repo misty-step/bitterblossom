@@ -14,7 +14,7 @@ use crate::ingress;
 use crate::ledger::{ExternalRunCreate, IngressRequest, Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
 use crate::spec::{AuthClass, Plane, TriggerSpec};
-use crate::{canary, dispatch, notify, progress};
+use crate::{canary, dispatch, notify, progress, workflow};
 
 const DISPATCH_POLL: Duration = Duration::from_millis(500);
 const CRON_POLL: Duration = Duration::from_secs(10);
@@ -846,6 +846,9 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
+        if let Some(response) = workflow_get(&ledger, path, &url)? {
+            return Ok(response);
+        }
         return match path {
             "/api/runs" => {
                 let task = query_param(&url, "task");
@@ -1006,6 +1009,23 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         };
     }
 
+    // bitterblossom-workflow-store: the workflow configuration store's
+    // mutating surface. Same plane token as the rest of `/api/*`; bodies
+    // are capped like every other ingress read. All arithmetic lives in
+    // src/workflow.rs so CLI and HTTP mutate the same immutable revisions.
+    if method == "POST" && path_no_query.starts_with("/api/workflows") {
+        if !read_authorized(request) {
+            return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
+        }
+        let plane = Plane::load(root)?;
+        let ledger = Ledger::open(&plane.db_path())?;
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
+            Ok(body) => body,
+            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        };
+        return workflow_post(&ledger, &path_no_query, &body);
+    }
+
     if method == "GET" && url == "/health" {
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
@@ -1065,6 +1085,207 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     }
 
     Ok((404, "{\"error\":\"not found\"}".to_string()))
+}
+
+/// Read routes for the workflow store. Returns `None` when the path is not
+/// a workflow route so the generic `/api/*` match keeps handling it.
+fn workflow_get(ledger: &Ledger, path: &str, url: &str) -> Result<Option<(u16, String)>> {
+    let respond = |result: Result<serde_json::Value>| -> Result<Option<(u16, String)>> {
+        Ok(Some(match result {
+            Ok(value) => (200, value.to_string()),
+            Err(err) => (workflow_error_status(&err), json_error(format!("{err:#}"))),
+        }))
+    };
+    if path == "/api/workflows" {
+        // Route through respond() so a store error maps to a client status
+        // instead of propagating as a 500 + runtime-error report.
+        return respond((|| Ok(serde_json::to_value(ledger.list_workflows()?)?))());
+    }
+    if let Some(id) = path.strip_prefix("/api/workflow-runs/") {
+        return respond(workflow::workflow_run_view(ledger, id));
+    }
+    let Some(rest) = path.strip_prefix("/api/workflows/") else {
+        return Ok(None);
+    };
+    let (name, action) = match rest.split_once('/') {
+        Some((name, action)) => (name, action),
+        None => return respond(workflow::workflow_view(ledger, rest)),
+    };
+    if let Some(revision) = action.strip_prefix("revisions/") {
+        let revision: i64 = match revision.parse() {
+            Ok(revision) => revision,
+            Err(_) => return Ok(Some((400, json_error("bad revision number".into())))),
+        };
+        return respond(workflow::revision_view(ledger, name, revision));
+    }
+    match action {
+        "diff" => {
+            let (from, to) = match (
+                query_param(url, "from").and_then(|s| s.parse::<i64>().ok()),
+                query_param(url, "to").and_then(|s| s.parse::<i64>().ok()),
+            ) {
+                (Some(from), Some(to)) => (from, to),
+                _ => {
+                    return Ok(Some((
+                        400,
+                        json_error("pass from= and to= revision numbers".into()),
+                    )))
+                }
+            };
+            respond(workflow::diff_view(ledger, name, from, to))
+        }
+        "export" => {
+            // A malformed revision= is a 400, like the diff arm — never a
+            // silent fall-through to the default revision.
+            let revision = match query_param(url, "revision") {
+                None => None,
+                Some(raw) => match raw.parse::<i64>() {
+                    Ok(revision) => Some(revision),
+                    Err(_) => return Ok(Some((400, json_error("bad revision number".into())))),
+                },
+            };
+            respond(export_workflow_toml(ledger, name, revision))
+        }
+        // Unknown names are 404s via respond(), not propagated 500s.
+        "runs" => respond((|| Ok(serde_json::to_value(ledger.workflow_runs(name)?)?))()),
+        "events" => respond((|| {
+            Ok(serde_json::to_value(ledger.workflow_events(name)?)?)
+        })()),
+        _ => Ok(Some((404, "{\"error\":\"not found\"}".into()))),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct WorkflowDocRequest {
+    document: workflow::WorkflowDoc,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+fn workflow_post(ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String)> {
+    let respond = |result: Result<(u16, serde_json::Value)>| -> Result<(u16, String)> {
+        Ok(match result {
+            Ok((status, value)) => (status, value.to_string()),
+            Err(err) => (workflow_error_status(&err), json_error(format!("{err:#}"))),
+        })
+    };
+    let doc_request = |body: &str| -> Result<WorkflowDocRequest> {
+        serde_json::from_str(body).map_err(|err| anyhow::anyhow!("invalid json: {err}"))
+    };
+    if path == "/api/workflows" {
+        return respond((|| {
+            let req = doc_request(body)?;
+            let (wf, revision) =
+                ledger.create_workflow(&req.document, "http", req.note.as_deref())?;
+            Ok((
+                201,
+                serde_json::json!({ "workflow": wf, "revision": revision }),
+            ))
+        })());
+    }
+    if path == "/api/workflows/import" {
+        return respond((|| {
+            let req = doc_request(body)?;
+            let (wf, revision, outcome) =
+                ledger.import_workflow(&req.document, "http", req.note.as_deref())?;
+            Ok((
+                200,
+                serde_json::json!({ "workflow": wf, "revision": revision, "outcome": outcome }),
+            ))
+        })());
+    }
+    let Some((name, action)) = path
+        .strip_prefix("/api/workflows/")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return Ok((404, "{\"error\":\"not found\"}".into()));
+    };
+    let args: serde_json::Value = if body.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
+        }
+    };
+    respond((|| match action {
+        "revisions" => {
+            let req = doc_request(body)?;
+            let (wf, revision) =
+                ledger.revise_workflow(name, &req.document, "http", req.note.as_deref())?;
+            Ok((
+                201,
+                serde_json::json!({ "workflow": wf, "revision": revision }),
+            ))
+        }
+        "activate" => {
+            let revision = args.get("revision").and_then(|v| v.as_i64());
+            Ok((
+                200,
+                serde_json::to_value(ledger.activate_workflow(name, revision)?)?,
+            ))
+        }
+        "pause" => {
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("paused by operator");
+            Ok((
+                200,
+                serde_json::to_value(ledger.pause_workflow(name, reason)?)?,
+            ))
+        }
+        "resume" => Ok((200, serde_json::to_value(ledger.resume_workflow(name)?)?)),
+        "archive" => Ok((200, serde_json::to_value(ledger.archive_workflow(name)?)?)),
+        "rollback" => {
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_i64())
+                .context("pass {\"to\": <revision>}")?;
+            let (wf, revision) = ledger.rollback_workflow(name, to)?;
+            Ok((
+                200,
+                serde_json::json!({ "workflow": wf, "revision": revision }),
+            ))
+        }
+        "runs" => {
+            let trigger_kind = args
+                .get("trigger_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("manual")
+                .to_string();
+            let payload = match args.get("payload") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => Some(value.to_string()),
+            };
+            let outcome = ledger.accept_workflow_run(name, &trigger_kind, payload.as_deref())?;
+            let status = match &outcome {
+                workflow::AcceptOutcome::Accepted { .. } => 201,
+                workflow::AcceptOutcome::Suppressed { .. } => 202,
+            };
+            Ok((status, serde_json::to_value(outcome)?))
+        }
+        _ => bail!("unknown workflow action '{action}' not found"),
+    })())
+}
+
+/// TOML export wrapped in a JSON envelope so the HTTP surface stays one
+/// content type; the CLI prints the raw TOML.
+fn export_workflow_toml(
+    ledger: &Ledger,
+    name: &str,
+    revision: Option<i64>,
+) -> Result<serde_json::Value> {
+    let (revision, toml) = workflow::export_toml(ledger, name, revision)?;
+    Ok(serde_json::json!({ "workflow": name, "revision": revision, "toml": toml }))
+}
+
+fn workflow_error_status(err: &anyhow::Error) -> u16 {
+    if format!("{err:#}").contains("not found") {
+        404
+    } else {
+        400
+    }
 }
 
 pub fn runs_view(
