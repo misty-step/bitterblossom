@@ -23,3 +23,4 @@ pub mod submit;
 pub mod substrate;
 pub mod telemetry;
 pub mod workflow;
+pub mod workflow_runtime;

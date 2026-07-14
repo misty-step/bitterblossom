@@ -311,6 +311,15 @@ impl Ledger {
         // and its done/failed patch cohere into one glass session, exactly
         // like a dispatched run's lifecycle does.
         ensure_column(&conn, "external_runs", "glass_session_id", "TEXT")?;
+        // bitterblossom-workflow-runtime-v1: normalized-acceptance dedupe for
+        // workflow runs. Column via ensure_column so store-era ledgers
+        // migrate additively; the partial unique index must be created after
+        // the column exists, so it lives here rather than in schema.sql.
+        ensure_column(&conn, "workflow_runs", "dedupe_key", "TEXT")?;
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS workflow_runs_dedupe
+               ON workflow_runs(workflow_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+        )?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
              WHERE state = 'open' AND head_version IS NULL AND report_json IS NOT NULL",

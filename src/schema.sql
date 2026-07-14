@@ -257,16 +257,86 @@ CREATE INDEX IF NOT EXISTS workflow_events_workflow
 
 -- One accepted workflow run pins the revision active at acceptance. New
 -- activations affect new events only; this row never changes revision.
+-- `dedupe_key` (bitterblossom-workflow-runtime-v1) is the normalized
+-- acceptance contract's idempotency handle: every trigger source (external
+-- webhook, schedule, internal, synthetic test) derives one, and a repeat
+-- acceptance returns the original run as a duplicate instead of forking.
 CREATE TABLE IF NOT EXISTS workflow_runs (
   id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL REFERENCES workflows(id),
   revision INTEGER NOT NULL,
   trigger_kind TEXT NOT NULL,
   payload TEXT,
+  dedupe_key TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS workflow_runs_workflow
   ON workflow_runs(workflow_id);
+
+-- bitterblossom-workflow-runtime-v1: runtime state for accepted workflow
+-- runs. Kept in a sibling table so acceptance rows stay immutable (the
+-- store's audited invariant); this row is the mutable execution status of
+-- one run group. States: queued | running | succeeded | failed |
+-- incomplete | stopped | needs_attention.
+CREATE TABLE IF NOT EXISTS workflow_run_status (
+  run_id TEXT PRIMARY KEY REFERENCES workflow_runs(id),
+  state TEXT NOT NULL,
+  detail TEXT,                     -- guard name, error, or exact uncertainty
+  current_step TEXT,
+  stop_requested INTEGER NOT NULL DEFAULT 0,
+  stop_reason TEXT,
+  cost_usd REAL,                   -- sum of OBSERVED step costs; NULL = none reported
+  started_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+-- Every step attempt in a run group, in one dense sequence. `agent_json`
+-- is the pinned StepAgent snapshot that actually launched; `authority_json`
+-- is the effective grant labels the step ran under.
+CREATE TABLE IF NOT EXISTS workflow_step_runs (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+  step TEXT NOT NULL,
+  attempt INTEGER NOT NULL,        -- 1-based, dense per run group
+  agent_json TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  state TEXT NOT NULL,             -- running | succeeded | failed | incomplete
+  outcome TEXT,                    -- declared completion outcome (branching steps)
+  summary TEXT,
+  error TEXT,
+  exit_code INTEGER,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  turns INTEGER,
+  cost_usd REAL,
+  artifact_dir TEXT,
+  authority_json TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  UNIQUE (run_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS workflow_step_runs_run
+  ON workflow_step_runs(run_id);
+
+-- Dynamic child agents an executing step declared (CHILD_AGENTS.json).
+-- Evidence rows under the parent step run only — children never become
+-- workflow or agent catalog entries. `inherited` = 1 when the child took
+-- the parent grant verbatim; a declared grant must be a subset.
+CREATE TABLE IF NOT EXISTS workflow_child_agents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  step_run_id TEXT NOT NULL REFERENCES workflow_step_runs(id),
+  name TEXT NOT NULL,
+  harness TEXT,
+  model TEXT,
+  goal TEXT,
+  authority_json TEXT NOT NULL,
+  inherited INTEGER NOT NULL,
+  cost_usd REAL,
+  result TEXT,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workflow_child_agents_step
+  ON workflow_child_agents(step_run_id);
 
 -- bitterblossom-930: HITL asks (question|decision|approval) a dispatched
 -- attempt raises via the `bb ask` CLI. `state`: open -> answered (fast path,

@@ -329,7 +329,9 @@ enum WorkflowCommand {
     },
     /// Accept one triggering event for an active workflow: creates a
     /// workflow run pinned to the revision active right now. Paused
-    /// workflows suppress with a recorded disposition (exit 3).
+    /// workflows suppress with a recorded disposition (exit 3). All trigger
+    /// sources share one normalized acceptance contract; a repeated
+    /// --dedupe-key returns the original run as a duplicate.
     Accept {
         name: String,
         #[arg(long, default_value = "manual")]
@@ -337,6 +339,26 @@ enum WorkflowCommand {
         /// Inline JSON payload, validated before acceptance.
         #[arg(long)]
         payload: Option<String>,
+        /// Idempotency key: a repeat acceptance returns the original run.
+        #[arg(long)]
+        dedupe_key: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Execute one accepted (queued) workflow run to a terminal state:
+    /// steps commission their pinned agents, results route, guards bound
+    /// cycles. Same executor the `bb serve` workflow runner uses.
+    Execute {
+        run_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Request an external stop signal for a run group. Takes effect before
+    /// the next step attempt; the in-flight attempt is never killed blindly.
+    Stop {
+        run_id: String,
+        #[arg(long, default_value = "stopped by operator")]
+        reason: String,
         #[arg(long)]
         json: bool,
     },
@@ -1873,9 +1895,16 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             name,
             trigger,
             payload,
+            dedupe_key,
             json,
         } => {
-            let outcome = ledger.accept_workflow_run(&name, &trigger, payload.as_deref())?;
+            let envelope = bitterblossom::workflow_runtime::TriggerEnvelope {
+                workflow: name,
+                source: bitterblossom::workflow_runtime::TriggerSource::from_kind(&trigger)?,
+                payload,
+                dedupe_key,
+            };
+            let outcome = bitterblossom::workflow_runtime::accept(ledger, &envelope)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
@@ -1884,6 +1913,10 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                         "accepted run {} pinned to '{}' revision {}",
                         run.id, run.workflow, run.revision
                     ),
+                    AcceptOutcome::Duplicate { run } => println!(
+                        "duplicate: dedupe key already accepted run {} on '{}'",
+                        run.id, run.workflow
+                    ),
                     AcceptOutcome::Suppressed { workflow, reason } => {
                         println!("suppressed on '{workflow}': {reason}")
                     }
@@ -1891,6 +1924,33 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             }
             if matches!(outcome, AcceptOutcome::Suppressed { .. }) {
                 std::process::exit(3);
+            }
+        }
+        WorkflowCommand::Execute { run_id, json } => {
+            let view = bitterblossom::workflow_runtime::execute_run(plane, ledger, &run_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                let status = &view["status"];
+                println!(
+                    "run {} {} detail={} steps={}",
+                    run_id,
+                    status["state"].as_str().unwrap_or("-"),
+                    status["detail"].as_str().unwrap_or("-"),
+                    view["steps"].as_array().map(Vec::len).unwrap_or(0),
+                );
+            }
+        }
+        WorkflowCommand::Stop {
+            run_id,
+            reason,
+            json,
+        } => {
+            let status = ledger.request_workflow_run_stop(&run_id, &reason)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("stop requested for run {run_id}: {reason}");
             }
         }
         WorkflowCommand::Runs { name, json } => {
@@ -1907,17 +1967,18 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             }
         }
         WorkflowCommand::RunShow { run_id, json } => {
-            let view = workflow::workflow_run_view(ledger, &run_id)?;
+            let view = bitterblossom::workflow_runtime::run_detail_view(ledger, &run_id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&view)?);
             } else {
                 let run = &view["run"];
                 println!(
-                    "run {} workflow={} revision={} trigger={} created_at={}",
+                    "run {} workflow={} revision={} trigger={} state={} created_at={}",
                     run["id"].as_str().unwrap_or("-"),
                     run["workflow"].as_str().unwrap_or("-"),
                     run["revision"],
                     run["trigger_kind"].as_str().unwrap_or("-"),
+                    view["status"]["state"].as_str().unwrap_or("-"),
                     run["created_at"].as_str().unwrap_or("-"),
                 );
                 println!("{}", serde_json::to_string_pretty(&view["document"])?);

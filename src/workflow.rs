@@ -83,9 +83,17 @@ pub struct WorkflowStep {
     pub agent: StepAgent,
     pub goal: String,
     /// Outcome -> next step name, or "done". Empty means: successful
-    /// completion of this terminal step implies `completed`.
+    /// completion of this terminal step implies `completed`. Two or more
+    /// routes make the step *branching*: its agent must supply exactly one
+    /// of these declared outcomes through the completion tool
+    /// (`OUTCOME.json`); the plane never infers an outcome from prose.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub routes: BTreeMap<String, String>,
+    /// Opaque authority grant labels this step runs under. Mechanism only:
+    /// the plane records them and enforces that dynamic child agents
+    /// inherit or narrow (subset) — it never interprets what a label means.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authority: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +103,24 @@ pub struct StepAgent {
     pub version: u32,
     pub harness: String,
     pub model: String,
+    /// Optional launch-contract completion so a pinned snapshot stays
+    /// executable without any mutable agent file: harness binary override,
+    /// extra args, provider, and declared secret env names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
+    /// Optional path to an immutable Roster v0.2 resolved bundle directory
+    /// (`roster resolve` output: AGENTS.md + resolved skills + manifest).
+    /// The runtime includes the bundle's AGENTS.md in the step commission
+    /// and records its digest as provenance. A missing bundle at execution
+    /// fails the step honestly rather than launching a different agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -104,10 +130,21 @@ pub struct WorkflowPolicies {
     pub timeout_minutes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_runs_per_day: Option<u32>,
+    /// Run-group spend guard: one workflow run is one run group, so this
+    /// caps the summed observed cost of every step attempt in the group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_per_run_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<u32>,
+    /// Execution substrate for step attempts (default: local).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substrate: Option<String>,
+    /// Cycle guard: max attempts of any single step within one run group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    /// Cycle guard: wall-clock budget for the whole run group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_elapsed_seconds: Option<u64>,
 }
 
 impl WorkflowPolicies {
@@ -200,6 +237,19 @@ impl WorkflowDoc {
                     step.name
                 );
             }
+            if !crate::harness::HARNESSES.contains(&step.agent.harness.as_str()) {
+                bail!(
+                    "workflow '{}': step '{}' agent harness '{}' is unknown (known: {})",
+                    self.name,
+                    step.name,
+                    step.agent.harness,
+                    crate::harness::HARNESSES.join(", ")
+                );
+            }
+        }
+        if let Some(substrate) = self.policies.substrate.as_deref() {
+            crate::substrate::for_task(substrate)
+                .with_context(|| format!("workflow '{}': bad policies.substrate", self.name))?;
         }
         for step in &self.steps {
             for (outcome, target) in &step.routes {
@@ -219,7 +269,126 @@ impl WorkflowDoc {
                 }
             }
         }
+        if self.policies.max_rounds == Some(0) {
+            bail!("workflow '{}': policies.max_rounds must be >= 1", self.name);
+        }
+        if self.policies.max_elapsed_seconds == Some(0) {
+            bail!(
+                "workflow '{}': policies.max_elapsed_seconds must be >= 1",
+                self.name
+            );
+        }
+        // An unattended cycle must be bounded by at least one genuinely
+        // enforceable guard (the external stop signal alone needs an
+        // operator, so it does not count).
+        if self.has_route_cycle()
+            && self.policies.max_rounds.is_none()
+            && self.policies.max_elapsed_seconds.is_none()
+        {
+            if self.policies.max_cost_per_run_usd.is_none() {
+                bail!(
+                    "workflow '{}': routes form a cycle; declare at least one enforceable guard \
+                     (policies.max_rounds, policies.max_elapsed_seconds, or policies.max_cost_per_run_usd)",
+                    self.name
+                );
+            }
+            // Spend is the sole cycle guard. It reads OBSERVED attempt cost,
+            // so every step on a cycle must run a harness that actually
+            // reports cost_usd — on a cost-blind harness the cap would be a
+            // silent no-op (NULL cost is never laundered into zero spend).
+            for step in self.steps_on_cycles() {
+                if !crate::harness::reports_cost(&step.agent.harness) {
+                    bail!(
+                        "workflow '{}': max_cost_per_run_usd is the only cycle guard, but step \
+                         '{}' on a cycle runs cost-blind harness '{}' (no guaranteed cost_usd — \
+                         the cap could never fire); declare policies.max_rounds or \
+                         policies.max_elapsed_seconds, or use a cost-reporting harness",
+                        self.name,
+                        step.name,
+                        step.agent.harness
+                    );
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Steps that lie on any route cycle: a step is on a cycle iff it can
+    /// reach itself over route edges (`done` is terminal, never an edge).
+    pub(crate) fn steps_on_cycles(&self) -> Vec<&WorkflowStep> {
+        let index: BTreeMap<&str, usize> = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), i))
+            .collect();
+        let targets = |n: usize| {
+            self.steps[n]
+                .routes
+                .values()
+                .filter_map(|t| index.get(t.as_str()).copied())
+                .collect::<Vec<_>>()
+        };
+        self.steps
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                let mut seen = vec![false; self.steps.len()];
+                let mut stack = targets(*i);
+                while let Some(n) = stack.pop() {
+                    if n == *i {
+                        return true;
+                    }
+                    if std::mem::replace(&mut seen[n], true) {
+                        continue;
+                    }
+                    stack.extend(targets(n));
+                }
+                false
+            })
+            .map(|(_, s)| s)
+            .collect()
+    }
+
+    /// True when the route graph contains any cycle among declared steps
+    /// (`done` is terminal, never part of a cycle). Iterative DFS coloring.
+    pub(crate) fn has_route_cycle(&self) -> bool {
+        let index: BTreeMap<&str, usize> = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), i))
+            .collect();
+        // 0 = unvisited, 1 = on stack, 2 = done
+        let mut color = vec![0u8; self.steps.len()];
+        for start in 0..self.steps.len() {
+            if color[start] != 0 {
+                continue;
+            }
+            let mut stack = vec![(start, false)];
+            while let Some((node, exit)) = stack.pop() {
+                if exit {
+                    color[node] = 2;
+                    continue;
+                }
+                if color[node] == 2 {
+                    continue;
+                }
+                color[node] = 1;
+                stack.push((node, true));
+                for target in self.steps[node].routes.values() {
+                    let Some(&next) = index.get(target.as_str()) else {
+                        continue; // "done"
+                    };
+                    match color[next] {
+                        1 => return true,
+                        0 => stack.push((next, false)),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// The stored, diffed, and compared shape: pretty JSON with
@@ -293,15 +462,24 @@ impl WorkflowDoc {
                     version: task.agent.version,
                     harness: task.agent.harness.clone(),
                     model: task.agent.model.clone(),
+                    bin: task.agent.bin.clone(),
+                    args: task.agent.args.clone(),
+                    provider: task.agent.provider.clone(),
+                    secrets: task.agent.secrets.clone(),
+                    bundle: None,
                 },
                 goal: task.card.trim().to_string(),
                 routes: BTreeMap::new(),
+                authority: Vec::new(),
             }],
             policies: WorkflowPolicies {
                 timeout_minutes: task.spec.budget.timeout_minutes,
                 max_runs_per_day: task.spec.budget.max_runs_per_day,
                 max_cost_per_run_usd: task.spec.budget.max_cost_per_run_usd,
                 concurrency: None,
+                substrate: None,
+                max_rounds: None,
+                max_elapsed_seconds: None,
             },
         };
         doc.validate()?;
@@ -346,14 +524,25 @@ pub struct WorkflowRunRow {
     pub revision: i64,
     pub trigger_kind: String,
     pub payload: Option<String>,
+    pub dedupe_key: Option<String>,
     pub created_at: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub enum AcceptOutcome {
-    Accepted { run: WorkflowRunRow },
-    Suppressed { workflow: String, reason: String },
+    Accepted {
+        run: WorkflowRunRow,
+    },
+    /// The dedupe key already accepted a run: the original is returned and
+    /// no new run is created — redeliveries repair nothing and fork nothing.
+    Duplicate {
+        run: WorkflowRunRow,
+    },
+    Suppressed {
+        workflow: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -369,7 +558,7 @@ const WORKFLOW_SELECT: &str =
 const REVISION_SELECT: &str =
     "SELECT workflow_id, revision, document, source, note, created_at FROM workflow_revisions";
 const WORKFLOW_RUN_SELECT: &str = "SELECT r.id, r.workflow_id, w.name, r.revision, \
-     r.trigger_kind, r.payload, r.created_at \
+     r.trigger_kind, r.payload, r.dedupe_key, r.created_at \
      FROM workflow_runs r JOIN workflows w ON w.id = r.workflow_id";
 
 fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRow> {
@@ -402,7 +591,8 @@ fn row_to_workflow_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRunRow
         revision: r.get(3)?,
         trigger_kind: r.get(4)?,
         payload: r.get(5)?,
-        created_at: r.get(6)?,
+        dedupe_key: r.get(6)?,
+        created_at: r.get(7)?,
     })
 }
 
@@ -631,6 +821,18 @@ impl Ledger {
                 );
             }
             let snapshot = self.workflow_revision_row(&wf.id, to_revision)?;
+            // The rollback door mirrors the execution door: a snapshot that
+            // fails CURRENT validation (possibly stored by an older binary
+            // with weaker rules) must not be re-activated. History stays
+            // readable; only re-activation is refused.
+            WorkflowDoc::from_canonical_json(&snapshot.document)
+                .and_then(|doc| doc.validate())
+                .with_context(|| {
+                    format!(
+                        "revision {to_revision} fails current validation; \
+                         it cannot be re-activated by rollback"
+                    )
+                })?;
             let revision = self.insert_revision(
                 &wf.id,
                 &snapshot.document,
@@ -660,6 +862,7 @@ impl Ledger {
         name: &str,
         trigger_kind: &str,
         payload: Option<&str>,
+        dedupe_key: Option<&str>,
     ) -> Result<AcceptOutcome> {
         if !TRIGGER_KINDS.contains(&trigger_kind) {
             bail!(
@@ -684,14 +887,40 @@ impl Ledger {
                 }
                 other => bail!("workflow '{name}' is {other}; only active workflows accept runs"),
             }
+            if let Some(key) = dedupe_key {
+                let existing: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT id FROM workflow_runs WHERE workflow_id = ?1 AND dedupe_key = ?2",
+                        params![wf.id, key],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(id) = existing {
+                    self.workflow_audit(
+                        &wf.id,
+                        "run_deduplicated",
+                        Some(&format!("dedupe_key {key:?} matched run {id}")),
+                    )?;
+                    return Ok(AcceptOutcome::Duplicate {
+                        run: self.workflow_run(&id)?,
+                    });
+                }
+            }
             let revision = wf
                 .active_revision
                 .context("active workflow has no active revision (corrupt state)")?;
             let id = format!("wfr-{}", new_id());
+            let ts = now();
             self.conn.execute(
-                "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, wf.id, revision, trigger_kind, payload, now()],
+                "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, wf.id, revision, trigger_kind, payload, dedupe_key, ts],
+            )?;
+            self.conn.execute(
+                "INSERT INTO workflow_run_status (run_id, state, updated_at)
+                 VALUES (?1, 'queued', ?2)",
+                params![id, ts],
             )?;
             self.workflow_audit(
                 &wf.id,

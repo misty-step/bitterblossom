@@ -57,6 +57,28 @@ pub fn serve(root: &Path) -> Result<()> {
             }),
         );
     }
+    // Workflow runs inherited mid-execution are classified, never blindly
+    // re-executed: a step attempt may already have external side effects.
+    for r in &crate::workflow_runtime::recover_inherited_workflow_runs(&ledger)? {
+        eprintln!(
+            "recovered workflow run {} workflow={} step={} -> {}",
+            r.run_id,
+            r.workflow,
+            r.step.as_deref().unwrap_or("-"),
+            r.disposition,
+        );
+        notify::notify(
+            &plane,
+            &ledger,
+            "workflow_run_recovered_at_boot",
+            &serde_json::json!({
+                "workflow_run_id": r.run_id,
+                "workflow": r.workflow,
+                "step": r.step,
+                "disposition": r.disposition,
+            }),
+        );
+    }
     drop(ledger);
 
     let root_buf = root.to_path_buf();
@@ -81,6 +103,12 @@ pub fn serve(root: &Path) -> Result<()> {
     {
         let root = root_buf.clone();
         std::thread::Builder::new()
+            .name("bb-workflow".into())
+            .spawn(move || workflow_runner_loop(&root))?;
+    }
+    {
+        let root = root_buf.clone();
+        std::thread::Builder::new()
             .name("bb-watchdog".into())
             .spawn(move || watchdog_loop(&root))?;
     }
@@ -94,6 +122,8 @@ pub fn serve(root: &Path) -> Result<()> {
 fn cron_loop(root: &Path) {
     let mut default_last = Utc::now();
     let mut last_by_task = HashMap::new();
+    let mut wf_default_last = Utc::now();
+    let mut wf_last_by = HashMap::new();
     loop {
         std::thread::sleep(CRON_POLL);
         let plane = match Plane::load(root) {
@@ -110,6 +140,30 @@ fn cron_loop(root: &Path) {
                 continue;
             }
         };
+        {
+            let now = Utc::now();
+            match crate::workflow_runtime::workflow_cron_tick(
+                &ledger,
+                &mut wf_last_by,
+                wf_default_last,
+                now,
+                plane.spec.ingress.max_cron_catchup_fires,
+            ) {
+                Ok(accepted) => {
+                    for a in accepted.iter().filter(|a| !a.duplicate) {
+                        eprintln!(
+                            "cron: workflow {} accepted schedule fire {}",
+                            a.workflow, a.scheduled
+                        );
+                    }
+                    wf_default_last = now;
+                }
+                Err(e) => {
+                    eprintln!("cron: workflows: {e:#}");
+                    canary::report_error("bb.cron.workflows", &format!("{e:#}"));
+                }
+            }
+        }
         let mut schedules = Vec::new();
         for task in plane.tasks.values() {
             for trigger in &task.spec.triggers {
@@ -239,6 +293,67 @@ fn dispatch_loop(root: &Path) {
                 eprintln!("dispatch: spawn failed: {e}");
                 canary::report_error("bb.dispatch.spawn", &format!("{e:#}"));
                 in_flight.lock().expect("in_flight lock").remove(&run.task);
+            }
+        }
+    }
+}
+
+/// Drain queued workflow runs to terminal states. Sequential by design in
+/// v1: the queued->running claim is a CAS, so this loop and an operator's
+/// `bb workflow execute` can never both execute one run group. A paused
+/// plane halts this loop exactly like reflex dispatch.
+///
+/// The thread must outlive any panic: the executor already converts its own
+/// panics to `failed` runs, and this shield keeps anything else (plane load,
+/// ledger, notify) from silently killing the only workflow runner.
+fn workflow_runner_loop(root: &Path) {
+    loop {
+        std::thread::sleep(DISPATCH_POLL);
+        let tick =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| workflow_runner_tick(root)));
+        if tick.is_err() {
+            eprintln!("workflow runner: tick panicked; runner thread survives");
+            canary::report_error("bb.workflow.panic", "workflow runner tick panicked");
+        }
+    }
+}
+
+fn workflow_runner_tick(root: &Path) {
+    let plane = match Plane::load(root) {
+        Ok(plane) => plane,
+        Err(e) => {
+            report_runtime_error("workflow runner: plane load", "bb.plane.load", &e);
+            return;
+        }
+    };
+    let ledger = match Ledger::open(&plane.db_path()) {
+        Ok(ledger) => ledger,
+        Err(e) => {
+            report_runtime_error("workflow runner: ledger open", "bb.ledger.open", &e);
+            return;
+        }
+    };
+    if reflex_dispatch_paused(&ledger) {
+        return;
+    }
+    let ids = match ledger.queued_workflow_run_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("workflow runner: {e:#}");
+            canary::report_error("bb.workflow.queued", &format!("{e:#}"));
+            return;
+        }
+    };
+    for id in ids {
+        match crate::workflow_runtime::execute_if_queued(&plane, &ledger, &id) {
+            Ok(Some(view)) => eprintln!(
+                "workflow run {id} {}",
+                view["status"]["state"].as_str().unwrap_or("-")
+            ),
+            Ok(None) => {} // claimed elsewhere between listing and CAS
+            Err(e) => {
+                eprintln!("workflow run {id}: {e:#}");
+                canary::report_error("bb.workflow.execute", &format!("run {id}: {e:#}"));
             }
         }
     }
@@ -1013,7 +1128,11 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     // mutating surface. Same plane token as the rest of `/api/*`; bodies
     // are capped like every other ingress read. All arithmetic lives in
     // src/workflow.rs so CLI and HTTP mutate the same immutable revisions.
-    if method == "POST" && path_no_query.starts_with("/api/workflows") {
+    // `/api/workflow-runs/<id>/stop` (runtime-v1) rides the same branch.
+    if method == "POST"
+        && (path_no_query.starts_with("/api/workflows")
+            || path_no_query.starts_with("/api/workflow-runs/"))
+    {
         if !read_authorized(request) {
             return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
         }
@@ -1057,17 +1176,31 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 })
                 .collect();
             let plane = Plane::load(root)?;
-            if ingress::webhook_target(&plane, &route).is_none() {
+            let task_route = ingress::webhook_target(&plane, &route).is_some();
+            // Database-defined workflows own a route only when no
+            // file-defined task claims it (migration precedence: files are
+            // the source being migrated away from, but existing routes keep
+            // working unchanged until their tasks are removed).
+            let workflow_target = if task_route {
+                None
+            } else {
+                let ledger = Ledger::open(&plane.db_path())?;
+                crate::workflow_runtime::webhook_workflow_target(&ledger, &route)?
+            };
+            if !task_route && workflow_target.is_none() {
                 return Ok((404, format!("{{\"error\":\"no webhook route '{route}'\"}}")));
             }
             let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
                 Ok(body) => body,
                 Err(bytes) => {
                     let ledger = Ledger::open(&plane.db_path())?;
-                    if let Some((task, _)) = ingress::webhook_target(&plane, &route) {
+                    let owner = ingress::webhook_target(&plane, &route)
+                        .map(|(task, _)| task.name.clone())
+                        .or_else(|| workflow_target.as_ref().map(|(name, _)| name.clone()));
+                    if let Some(owner) = owner {
                         ledger.record_guard_event(
                             "ingress_oversized",
-                            Some(&task.name),
+                            Some(&owner),
                             &format!(
                                 "route={route} bytes={bytes} max={}",
                                 plane.spec.ingress.max_body_bytes
@@ -1079,7 +1212,11 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 }
             };
             let mut ledger = Ledger::open(&plane.db_path())?;
-            let resp = ingress::handle_webhook(&plane, &mut ledger, &route, &headers, &body)?;
+            let resp = if let Some((workflow, trigger)) = &workflow_target {
+                ingress::handle_workflow_webhook(&ledger, workflow, trigger, &headers, &body)?
+            } else {
+                ingress::handle_webhook(&plane, &mut ledger, &route, &headers, &body)?
+            };
             return Ok((resp.status, resp.body));
         }
     }
@@ -1102,7 +1239,7 @@ fn workflow_get(ledger: &Ledger, path: &str, url: &str) -> Result<Option<(u16, S
         return respond((|| Ok(serde_json::to_value(ledger.list_workflows()?)?))());
     }
     if let Some(id) = path.strip_prefix("/api/workflow-runs/") {
-        return respond(workflow::workflow_run_view(ledger, id));
+        return respond(crate::workflow_runtime::run_detail_view(ledger, id));
     }
     let Some(rest) = path.strip_prefix("/api/workflows/") else {
         return Ok(None);
@@ -1194,6 +1331,24 @@ fn workflow_post(ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String
             ))
         })());
     }
+    if let Some(rest) = path.strip_prefix("/api/workflow-runs/") {
+        let Some(id) = rest.strip_suffix("/stop").filter(|id| !id.is_empty()) else {
+            return Ok((404, "{\"error\":\"not found\"}".into()));
+        };
+        return respond((|| {
+            let args: serde_json::Value = if body.trim().is_empty() {
+                serde_json::json!({})
+            } else {
+                serde_json::from_str(body).map_err(|err| anyhow::anyhow!("invalid json: {err}"))?
+            };
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("stopped by operator");
+            let status = ledger.request_workflow_run_stop(id, reason)?;
+            Ok((200, serde_json::to_value(status)?))
+        })());
+    }
     let Some((name, action)) = path
         .strip_prefix("/api/workflows/")
         .and_then(|rest| rest.split_once('/'))
@@ -1252,15 +1407,27 @@ fn workflow_post(ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String
             let trigger_kind = args
                 .get("trigger_kind")
                 .and_then(|v| v.as_str())
-                .unwrap_or("manual")
-                .to_string();
+                .unwrap_or("manual");
             let payload = match args.get("payload") {
                 None | Some(serde_json::Value::Null) => None,
                 Some(value) => Some(value.to_string()),
             };
-            let outcome = ledger.accept_workflow_run(name, &trigger_kind, payload.as_deref())?;
+            let dedupe_key = args
+                .get("dedupe_key")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let outcome = crate::workflow_runtime::accept(
+                ledger,
+                &crate::workflow_runtime::TriggerEnvelope {
+                    workflow: name.to_string(),
+                    source: crate::workflow_runtime::TriggerSource::from_kind(trigger_kind)?,
+                    payload,
+                    dedupe_key,
+                },
+            )?;
             let status = match &outcome {
                 workflow::AcceptOutcome::Accepted { .. } => 201,
+                workflow::AcceptOutcome::Duplicate { .. } => 200,
                 workflow::AcceptOutcome::Suppressed { .. } => 202,
             };
             Ok((status, serde_json::to_value(outcome)?))

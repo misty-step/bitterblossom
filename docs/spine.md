@@ -940,7 +940,70 @@ drift.
   `GET/POST /api/workflows`, `GET /api/workflows/<name>`,
   `POST .../revisions|activate|pause|resume|archive|rollback|runs`,
   `GET .../revisions/<n>|diff|export|runs|events`,
-  `GET /api/workflow-runs/<id>`, `POST /api/workflows/import`.
+  `GET /api/workflow-runs/<id>`, `POST /api/workflow-runs/<id>/stop`,
+  `POST /api/workflows/import`.
+
+## The workflow runtime (trigger → agent goal → result → route)
+
+The second slice (bitterblossom-workflow-runtime-v1, `src/workflow_runtime.rs`)
+executes what the store configures. Mechanism only — the outcome vocabulary is
+workflow config; no route decision ever comes from matching prose.
+
+- **One normalized acceptance contract.** External webhook deliveries
+  (`POST /hooks/<route>` falls through to active workflows' webhook triggers
+  when no file-defined task claims the route; same HMAC and dedupe-derivation
+  mechanics), schedule fires (a workflow cron tick inside `bb serve`),
+  internal events (another workflow/agent via `bb workflow accept
+  --trigger internal` or `POST .../runs`), and synthetic test events all build
+  one `TriggerEnvelope` and pass through one acceptance function. Every source
+  gets the same dedupe rule: `workflow_runs.dedupe_key` is unique per
+  workflow, and a repeat acceptance returns the original run as `duplicate`.
+- **Run groups.** An accepted run is one run group. `bb serve`'s workflow
+  runner drains queued runs (a paused plane halts it); `bb workflow execute
+  <run-id>` drives one synchronously. The queued→running claim is a CAS, so
+  the two can never both execute one group. Steps run sequentially through
+  the same substrate/harness seams dispatch uses (`policies.substrate`,
+  default `local`, which requires a dev plane exactly like task-land).
+- **Completion tool.** A step with zero or one route completes on successful
+  harness completion — no result schema. A step with two or more routes must
+  write `OUTCOME.json` (`{"outcome", "summary", "artifacts"}`) naming exactly
+  one declared outcome; missing, malformed, or undeclared outcomes make the
+  run `incomplete`, never a guess. Routes go to another step or `done`.
+- **Dynamic child agents.** A step's agent may declare composed children in
+  `CHILD_AGENTS.json`; each is recorded under the parent step run with its
+  launch snapshot, cost, and result. Children inherit the step's authority
+  grant verbatim or declare a subset — declaring anything broader fails the
+  step. Children never become workflow or agent catalog entries.
+- **Cycle guards.** A route cycle must declare at least one enforceable guard
+  (`policies.max_rounds`, `policies.max_elapsed_seconds`, or the run-group
+  spend cap `policies.max_cost_per_run_usd`); `bb workflow stop <run-id>` is
+  the always-available external stop signal, effective before the next
+  attempt (an in-flight attempt is never killed blindly). The first fired
+  guard stops the run with its name in `detail`, a guard event, and one
+  notification. Every attempt stays recorded in the one run group.
+  Spend-guard honesty: when the spend cap is the only cycle guard, every
+  step on a cycle must run a cost-reporting harness (validation refuses
+  otherwise), and at runtime the cycle stops guard-indeterminate the moment
+  a finished attempt OF A STEP ON A CYCLE reports no cost — unknown spend
+  is never treated as zero. The indeterminate rule is deliberately
+  cycle-scoped: a cost-blind step off the cycle is admitted (it runs a
+  bounded number of times) and stays unmetered evidence rather than making
+  the run dead on arrival. Child-declared `cost_usd` in `CHILD_AGENTS.json`
+  is summed into the enforced run-group spend; a negative declaration fails
+  the step (declared spend only ever adds). Pinned revisions revalidate
+  against CURRENT rules at the execution and rollback doors (a pre-rule
+  snapshot never executes), while the enumeration paths (webhook target
+  scan, cron tick) skip-and-canary an unusable workflow so one poisoned doc
+  never blocks siblings' ingress. An absolute 256-attempt executor ceiling
+  backstops every declared guard.
+- **Recovery.** Runs inherited in `running` state at boot are classified
+  `needs_attention` naming the in-flight step — side effects are unknown, so
+  nothing is blindly re-executed; dedupe keys survive restarts so
+  redeliveries still return the original run.
+- **Roster v0.2 bundles.** A pinned step agent may name a resolved bundle
+  directory (`roster resolve` output); its `AGENTS.md` joins the commission
+  and its sha256 is recorded as provenance. A declared-but-missing bundle
+  fails the step honestly.
 
 ## Operator CLI
 
@@ -993,8 +1056,10 @@ bb workflow rollback <name> --to N [--json]       # old snapshot becomes a NEW a
 bb workflow import <doc.toml> [--json]            # created | revised | unchanged (identical = no-op)
 bb workflow export <name> [--revision N]          # declarative TOML on stdout
 bb workflow import-task <task> [--activate] [--json]  # migrate a file-defined workload
-bb workflow accept <name> [--trigger K] [--payload JSON] [--json]  # pin active revision; exit 3 when paused
-bb workflow runs <name> [--json] | run-show <run-id> [--json]      # pinned-config readback
+bb workflow accept <name> [--trigger K] [--payload JSON] [--dedupe-key K] [--json]  # pin active revision; exit 3 when paused; repeat key = duplicate
+bb workflow execute <run-id> [--json]             # run one accepted run group to a terminal state
+bb workflow stop <run-id> [--reason TEXT] [--json] # external stop signal; applies before the next step attempt
+bb workflow runs <name> [--json] | run-show <run-id> [--json]      # pinned config + status + step attempts + children
 bb serve                                          # webhook + cron + queue
 bb mcp serve                                      # MCP stdio server: 10 always-on read-only tools (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate) plus opt-in mutating bb_dispatch (BB_MCP_ENABLE_DISPATCH=1); JSON-RPC over stdin/stdout; see docs/mcp-dispatch-authority.md
 ```
