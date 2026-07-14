@@ -13,6 +13,11 @@
 #
 # All credentials in this drill are synthetic sentinels; nothing real is
 # read, printed, or transmitted.
+#
+# Red-proof mode: BB_DRILL_ROGUE=1 bakes a rogue stub that ignores the 403
+# and completes the task anyway (the exact reflex the doctrine forbids). The
+# drill's assertions MUST then fail — run it once after changing the drill to
+# prove the assertions can actually go red.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -89,6 +94,9 @@ dev = true
 EOF
 
 # --- lane 1: follows the doctrine when its scoped key is refused ----------
+# BB_DRILL_ROGUE=1 bakes the forbidden reflex instead (completes despite the
+# 403) so the drill's own assertions can be proven able to fail.
+ROGUE=${BB_DRILL_ROGUE:-0}
 cat > "$TMP/refused-lane.sh" <<EOF
 #!/bin/sh
 set -eu
@@ -96,7 +104,7 @@ cat >/dev/null   # commission prompt arrives on stdin
 code=\$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \\
   -H "Authorization: Bearer \${BB_DRILL_SCOPED_KEY:-missing}" \\
   "http://127.0.0.1:$API_PORT/api/cards/drill-card")
-if [ "\$code" = "403" ] || [ "\$code" = "401" ]; then
+if [ "$ROGUE" != "1" ] && { [ "\$code" = "403" ] || [ "\$code" = "401" ]; }; then
   cat > REPORT.json <<JSON
 {
   "status": "blocked_credential_refused",
@@ -140,6 +148,12 @@ EOF
 cat > "$TMP/tasks/refused-lane/task.toml" <<'EOF'
 agent = "refused-lane"
 substrate = "local"
+# TASK_DONE.txt is the task's completion artifact, declared required so the
+# plane itself records non-completion: a blocked lane fails the run with
+# "missing required artifact" while its blocked REPORT.json is still
+# collected, and a rogue lane that completes anyway WOULD surface
+# TASK_DONE.txt in the artifact list (proven by BB_DRILL_ROGUE=1).
+required_artifacts = ["TASK_DONE.txt"]
 
 [budget]
 timeout_minutes = 1
@@ -215,17 +229,24 @@ EOF
 
 echo "== drill 1: refused scoped key blocks and reports =="
 RUN_JSON="$TMP/run1.json"
+rc=0
 BB_DRILL_SCOPED_KEY="drill-scoped-key-sentinel" \
-  "$BB_BIN" --config "$TMP" run refused-lane --json > "$RUN_JSON"
+  "$BB_BIN" --config "$TMP" run refused-lane --json > "$RUN_JSON" || rc=$?
+# The blocked lane cannot produce the required completion artifact, so the
+# run itself must fail (bb run exits 2 on run failure).
+if [ "$rc" != "2" ]; then
+  echo "FAIL: expected 'bb run' exit 2 (failed run: task not completed), got $rc" >&2
+  exit 1
+fi
 RUN_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run"]["id"])' "$RUN_JSON")
-echo "run id: $RUN_ID"
+echo "run id: $RUN_ID (bb run exit code: $rc)"
 echo "-- 403 authority log (method + path only):"
 sed 's/^/   /' "$API_LOG"
 "$BB_BIN" --config "$TMP" artifacts read "$RUN_ID" REPORT.json > "$TMP/report1.json"
 echo "-- REPORT.json:"
 sed 's/^/   /' "$TMP/report1.json"
 "$BB_BIN" --config "$TMP" artifacts list "$RUN_ID" --json > "$TMP/artifacts1.json"
-python3 - "$TMP/report1.json" "$TMP/artifacts1.json" "$API_LOG" <<'PY'
+python3 - "$TMP/report1.json" "$TMP/artifacts1.json" "$API_LOG" "$RUN_JSON" <<'PY'
 import json, sys
 report = json.load(open(sys.argv[1]))
 assert report["status"] == "blocked_credential_refused", report
@@ -237,7 +258,12 @@ artifacts = open(sys.argv[2]).read()
 assert "TASK_DONE.txt" not in artifacts, "refused lane must not complete the task"
 log = open(sys.argv[3]).read()
 assert "PATCH /api/cards/drill-card -> 403" in log, log
-print("PASS: blocked report names the refused operation; task not completed")
+run = json.load(open(sys.argv[4]))["run"]
+assert run["state"] == "failure", run
+assert "TASK_DONE.txt" in json.dumps(run), (
+    "run failure must name the missing completion artifact: %r" % run)
+print("PASS: blocked report names the refused operation; run failed for the")
+print("      missing completion artifact (task not completed)")
 PY
 
 echo

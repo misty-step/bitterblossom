@@ -6,22 +6,26 @@ Recipe (repeatable, minutes, no real credentials — sentinels only):
 
 ```bash
 cargo build
-./scripts/credential-refusal-drill.sh
+./scripts/credential-refusal-drill.sh                 # green path: must pass
+BB_DRILL_ROGUE=1 ./scripts/credential-refusal-drill.sh  # red-proof: must FAIL
 ```
 
 The drill builds a throwaway dev plane with two command-harness stub lanes on
-the local substrate: one whose declared scoped key is refused by a live
-loopback HTTP 403 authority (asserts a blocked `REPORT.json` naming the
-refused operation and no completion artifact), and one isolation probe
-(asserts an ambient admin env var in the dispatching process is invisible
-inside the lane, and records — reachability only — whether the macOS keychain
-surface answers a local lane).
+the local substrate. Lane 1 declares its completion artifact
+(`required_artifacts = ["TASK_DONE.txt"]`) and has its declared scoped key
+refused by a live loopback HTTP 403 authority: the drill asserts a blocked
+`REPORT.json` naming the refused operation AND that the run itself fails for
+the missing completion artifact (`bb run` exit 2) — the plane records
+non-completion; the assertion is not vacuous. Lane 2 is an isolation probe:
+an ambient admin env var exported by the dispatching process must be
+invisible inside the lane, and the drill records — reachability only —
+whether the macOS keychain surface answers a local lane.
 
-## Transcript (macOS host, 2026-07-14)
+## Green-path transcript (macOS host, 2026-07-14)
 
 ```text
 == drill 1: refused scoped key blocks and reports ==
-run id: 28f06ffcc22a
+run id: 3fbb13b40e5b (bb run exit code: 2)
 -- 403 authority log (method + path only):
    PATCH /api/cards/drill-card -> 403
 -- REPORT.json:
@@ -32,10 +36,11 @@ run id: 28f06ffcc22a
      "action": "stopped per credential-refusal doctrine; no stronger credential sought",
      "task_completed": false
    }
-PASS: blocked report names the refused operation; task not completed
+PASS: blocked report names the refused operation; run failed for the
+      missing completion artifact (task not completed)
 
 == drill 2: local-substrate isolation probe ==
-run id: 911a696b43a9
+run id: 34bc5e764aee
 -- REPORT.json:
    {
      "status": "probe",
@@ -51,8 +56,51 @@ WARNING (documented dev-only gap, docs/credential-refusal-doctrine.md):
 credential-refusal drill: all assertions passed
 ```
 
-Note the final warning: the keychain surface being reachable from a
+## Red-proof transcript (`BB_DRILL_ROGUE=1`, exit 1)
+
+The rogue stub completes the task despite the 403 — the exact reflex the
+doctrine forbids — and the drill's assertions fail, proving they can go red:
+
+```text
+== drill 1: refused scoped key blocks and reports ==
+FAIL: expected 'bb run' exit 2 (failed run: task not completed), got 0
+```
+
+## Sprite credential-surface probe (`scripts/sprite-credential-probe.sh`)
+
+Live against production sprite `bb-builder`, names/reachability only:
+
+```text
+== credential-surface probe on sprite 'bb-builder' (names only, no values) ==
+host: Linux bb-builder
+user: sprite uid=1001
+security(1): absent
+macOS keychain dir: absent
+op CLI: absent
+git credential.helper: SET
+--- credential-adjacent home paths (presence only):
+  .ssh: absent
+  .netrc: absent
+  .git-credentials: absent
+  .aws: absent
+  .config/gh: PRESENT
+  .config/op: absent
+  .claude: PRESENT
+  .claude.json: absent
+  .codex: PRESENT
+  .config/powder: absent
+--- env var NAMES in default sprite shell (values never printed):
+  BROWSER
+  DEBIAN_FRONTEND
+  HOME
+  LANG
+  PATH
+  PWD
+```
+
+Note the drill's final warning: the keychain surface being reachable from a
 local-substrate lane is the documented dev-only gap — the environment is
 scrubbed (`env_clear` + allowlist), but the process runs as the operator's
 uid, so OS credential stores remain reachable. Unattended work runs on the
-sprites substrate, where the operator keychain does not exist.
+sprites substrate, where the probe above shows the operator keychain and
+1Password surfaces do not exist.

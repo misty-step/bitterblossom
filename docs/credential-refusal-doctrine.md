@@ -47,10 +47,15 @@ lane's blast radius is bounded by its credential; a lane that routes around a
 
 - **Dispatch prompt seam** (`src/harness.rs::commission_prompt`, used by
   `src/dispatch.rs`): every dispatched lane's commission preamble carries the
-  STOP-and-report rule, so even a card that forgets to state it is covered.
-- **Lane-card contract** (`tests/task_card_contract.rs`): every public-plane
-  and template task card must state the refused-credential boundary in its
-  `## Boundaries` section (`STOP-and-report` sentinel enforced by test).
+  STOP-and-report rule on every harness and substrate — this is the mechanical
+  layer, and it covers every lane regardless of what its card says.
+- **Lane-card contract** (`tests/task_card_contract.rs`): the curated contract
+  planes (public-plane fixtures plus the canary-responder, docs-sync,
+  ci-audit, and review-factory templates) keep the full five-heading contract
+  with the `STOP-and-report` sentinel required; additionally,
+  `every_plane_card_states_credential_refusal_boundary` walks **every**
+  `card.md` under `examples/*/tasks` and `tests/fixtures/*/tasks` — however
+  minimal — so no copy-paste source in this repo ships without the boundary.
 - **Agent-facing skill** (`skills/bitterblossom/SKILL.md`, the exported
   interface): states the rule under Dispatch Rules.
 - **Drill** (`scripts/credential-refusal-drill.sh`): repeatable dev-plane
@@ -81,7 +86,9 @@ What a lane can even *reach* when it is tempted:
 
 Verified by code review plus the unit/e2e suite (stubbed sprite transport),
 **and live-probed 2026-07-14 on production sprite `bb-builder`** (reachability
-and names only; no values read):
+and names only; no values read). The committed probe recipe is
+`scripts/sprite-credential-probe.sh [org/name]` — rerun it whenever a
+checkpoint is minted or a new sprite class enters service. Findings:
 
 - Linux host, user `sprite` (uid 1001); `security(1)`, macOS keychain dir,
   and the `op` CLI are all absent — the operator's keychain and 1Password
@@ -163,9 +170,16 @@ Asserts, on a throwaway dev plane with a stub command harness:
 
 1. a lane whose declared scoped key is refused (live HTTP 403) writes
    `REPORT.json` with `status=blocked_credential_refused` naming the refused
-   operation, and does **not** produce the task's completion artifact;
+   operation, and does **not** complete the task — the task declares its
+   completion artifact in `required_artifacts`, so the plane itself records
+   non-completion (`bb run` exits 2; run state `failure` naming the missing
+   `TASK_DONE.txt`) while the blocked report is still collected;
 2. an ambient admin credential exported in the dispatching process's
    environment is invisible inside the lane (local substrate env isolation);
 3. on macOS it prints — as a warning, values never read — that the keychain
    surface *is* reachable from a local lane, restating the dev-only ruling
    above.
+
+Red-proof: `BB_DRILL_ROGUE=1 ./scripts/credential-refusal-drill.sh` bakes a
+rogue stub that completes despite the 403 (the forbidden reflex); the drill
+then **fails**, proving the non-completion assertions can actually go red.
