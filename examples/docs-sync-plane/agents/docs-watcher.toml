@@ -4,6 +4,7 @@ model = "deepseek/deepseek-v4-flash"
 role = "docs-watcher"
 auth = "api"
 secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+checkout_secrets = ["GH_TOKEN"]
 skills = [
   "harness-kit/document#drift-scan",
   "harness-kit/ci#doc-contracts",

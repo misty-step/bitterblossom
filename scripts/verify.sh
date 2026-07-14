@@ -127,6 +127,7 @@ cargo run --quiet -- --config examples/hygiene-plane check
 cargo run --quiet -- --config examples/moments-plane check
 cargo run --quiet -- --config examples/powder-ready-plane check
 cargo run --quiet -- --config examples/powder-chew-dev-plane check
+cargo run --quiet -- --config examples/estate-execution-plane check
 cargo run --quiet -- --config tests/fixtures/public-plane check
 
 echo "==> local-plane zero-credential golden path (no secrets, no network)"
@@ -343,7 +344,15 @@ rm -rf "$self_drill_tmp"
 # the same immutable revisions" oracle. No workload judgment entered the
 # spine: the store validates document *structure* (names, route targets,
 # trigger shapes) and never interprets goals, outcomes, or agent behavior.
-SPINE_LOC_CAP=17021
+# bitterblossom-estate-execution-contract: 17021 -> 17530 (exact actual,
+# zero banked slack) for generic immutable checkout and artifact-retention
+# mechanism. spec.rs declares and validates full Git object and lock blobs;
+# substrate/mod.rs is the deep shared module: descriptor-relative no-follow
+# source/destination access, bounded binary-exact remote collection, immutable
+# checkout plus working-byte lock verification, and reserved evidence paths.
+# All three adapters call that mechanism; no infrastructure authority or
+# product judgment enters the spine.
+SPINE_LOC_CAP=17594
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

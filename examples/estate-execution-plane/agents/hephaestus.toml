@@ -1,0 +1,22 @@
+# The plane, not the event, binds this concrete worker identity. Estate's
+# signed fixture capability independently binds roster_role = "hephaestus" to
+# the runtime key that must sign the execution request.
+version = 1
+harness = "command"
+model = ""
+role = "estate-executor"
+bin = "sh"
+# Clone transport only. It grants no Estate authority and is not used by the
+# offline break-glass path.
+checkout_secrets = ["GH_TOKEN"]
+args = [
+  "-c",
+  '''set -eu
+cd estate
+CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 \
+cargo test --locked --test authorization_cli external_trust_fixture_drives_real_cli_without_presence_claim -- --exact
+cd ..
+printf '{"schema":"bb.estate-execution-proof.v1","estate_commit":"225272aa827b3616a45daa9273b8aceaa7a13b96","estate_lock_blob":"57198968cb956be86a9aa91eadc54a9df5264574","workload_identity":"hephaestus","proof":"real_estate_disposable_apply_and_signed_receipts"}\n' > ESTATE_EXECUTION_EVIDENCE.json
+printf '{"schema_version":"bb.command_result.v1","result":"Estate exact-plan execution proof passed"}\n'
+''',
+]

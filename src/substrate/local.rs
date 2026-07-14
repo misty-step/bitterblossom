@@ -22,6 +22,7 @@ impl Substrate for LocalSubstrate {
             artifacts: attempt_dir.to_path_buf(),
             secrets: Vec::new(),
             hermetic: true,
+            release_artifacts: Vec::new(),
         }))
     }
 
@@ -46,15 +47,26 @@ pub struct LocalSession {
     artifacts: PathBuf,
     secrets: Vec<(String, String)>,
     hermetic: bool,
+    release_artifacts: Vec<String>,
 }
 
 impl LocalSession {
-    fn run_workload_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+    fn run_checkout_shell(
+        &self,
+        script: &str,
+        checkout_secrets: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        let mut env = self.workload_env()?;
+        for (name, _) in &self.secrets {
+            env.retain(|(candidate, _)| candidate != name);
+        }
+        env.extend(checkout_secrets.iter().cloned());
         run_with_timeout(
             &["sh".into(), "-c".into(), script.into()],
             None,
             &self.workspace,
-            &self.workload_env()?,
+            &env,
             self.hermetic,
             timeout,
             RunControl::default(),
@@ -73,6 +85,14 @@ impl LocalSession {
             "LOGNAME",
             "SHELL",
             "TZ",
+            // PATH may resolve a rustup/cargo shim. These are non-secret tool
+            // roots required for the declared, lock-verified toolchain to run
+            // inside the relocated HOME; omitting them makes hermetic command
+            // workloads depend on whether cargo happens to be a standalone
+            // binary.
+            "RUSTUP_HOME",
+            "CARGO_HOME",
+            "RUSTUP_TOOLCHAIN",
             // bitterblossom-915: execute() always clear_env=true, so any
             // workload shelling out to `op` (bash/sh scripts, MCP-server
             // bootstraps spawned with a minimal env) had no service-account
@@ -87,14 +107,25 @@ impl LocalSession {
             .iter()
             .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
             .collect();
+        let parent_home = std::env::var("HOME").context("HOME not set")?;
         let home = if self.hermetic {
             let home = self.workspace.join(".home");
             std::fs::create_dir_all(&home)?;
             home.to_string_lossy().into_owned()
         } else {
-            std::env::var("HOME").context("HOME not set")?
+            parent_home.clone()
         };
         env.push(("HOME".to_string(), home));
+        if self.hermetic {
+            for (name, suffix) in [("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")] {
+                if !env.iter().any(|(key, _)| key == name) {
+                    let path = Path::new(&parent_home).join(suffix);
+                    if path.is_dir() {
+                        env.push((name.to_string(), path.to_string_lossy().into_owned()));
+                    }
+                }
+            }
+        }
         env.extend(self.secrets.iter().cloned());
         // bitterblossom-955: force OFF 1Password desktop-app settings loading
         // for every local workload, regardless of the parent env. On macOS
@@ -119,26 +150,23 @@ impl LocalSession {
 
 impl Session for LocalSession {
     fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
-        self.secrets = plan.secrets.clone();
         self.hermetic = plan.hermetic;
+        self.release_artifacts = plan.artifacts.clone();
         for repo in &plan.repos {
             let dest = self
                 .workspace
                 .join(repo_dir_name(&repo.url))
                 .to_string_lossy()
                 .into_owned();
-            let clone = format!(
-                "git clone --depth 1 --branch {ref_} {url} {dest} && git -C {dest} reset --hard",
-                ref_ = shell_quote(&repo.r#ref),
-                url = shell_quote(&repo.url),
-                dest = shell_quote(&dest),
-            );
+            let clone = super::repo_materialize_script(repo, &dest);
             let clone = format!("{}\n{clone}", git_auth_setup_script());
-            let out = self.run_workload_shell(&clone, Duration::from_secs(300))?;
+            let out =
+                self.run_checkout_shell(&clone, &plan.checkout_secrets, Duration::from_secs(300))?;
             if out.exit_code != 0 {
                 anyhow::bail!("clone {} failed: {}", repo.url, out.stderr.trim());
             }
         }
+        self.secrets = plan.secrets.clone();
         std::fs::write(self.workspace.join(CARD_FILENAME), &plan.card)?;
         std::fs::write(self.workspace.join("RUN.json"), &plan.run_context)?;
         if let Some(payload) = &plan.payload {
@@ -186,22 +214,14 @@ impl Session for LocalSession {
     }
 
     fn write_artifact(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        let path = self.artifacts.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, data)?;
-        Ok(())
+        super::write_relative_nofollow(&self.artifacts, name, data)
     }
 
     fn release(&mut self) -> Result<()> {
-        let report = self.workspace.join(super::REPORT_FILENAME);
-        if report.exists() {
-            std::fs::copy(report, self.artifacts.join(super::REPORT_FILENAME))?;
-        }
-        let packet = self.workspace.join(super::ASK_PACKET_FILENAME);
-        if packet.exists() {
-            std::fs::copy(packet, self.artifacts.join(super::ASK_PACKET_FILENAME))?;
+        for name in &self.release_artifacts {
+            if let Some(bytes) = super::read_relative_nofollow(&self.workspace, name)? {
+                super::write_relative_nofollow(&self.artifacts, name, &bytes)?;
+            }
         }
         Ok(())
     }
@@ -222,6 +242,12 @@ pub fn shell_quote(s: &str) -> String {
 
 pub(crate) fn git_auth_setup_script() -> &'static str {
     r#"export GIT_TERMINAL_PROMPT=0
+# A worker must never consult or mutate the operator host's credential helper
+# (for example macOS credential-osxkeychain). Authentication is attempt-scoped
+# through the declared GH_TOKEN askpass below.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=credential.helper
+export GIT_CONFIG_VALUE_0=
 if [ -n "${GH_TOKEN:-}" ]; then
   cat > .bb-git-askpass <<'BB_GIT_ASKPASS'
 #!/bin/sh

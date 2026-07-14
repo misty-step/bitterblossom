@@ -73,6 +73,32 @@ fn a_secret_cannot_be_declared_both_required_and_optional() {
 }
 
 #[test]
+fn checkout_secrets_are_explicit_and_use_the_supported_transport_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\ncheckout_secrets = [\"UNSCOPED_TOKEN\"]\n",
+        MANUAL,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("unsupported checkout secret"),
+        "{err}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\nsecrets = [\"GH_TOKEN\"]\ncheckout_secrets = [\"GH_TOKEN\"]\n",
+        MANUAL,
+    )
+    .unwrap();
+    let agent = plane.agents.get("a").unwrap();
+    assert_eq!(agent.secrets, ["GH_TOKEN"]);
+    assert_eq!(agent.checkout_secrets, ["GH_TOKEN"]);
+}
+
+#[test]
 fn reflex_triggers_require_api_auth_agents() {
     let dir = tempfile::tempdir().unwrap();
     // claude defaults to subscription; a cron (reflex) trigger must fail.
@@ -216,8 +242,12 @@ fn required_artifacts_must_stay_inside_attempt_artifacts() {
             "non-empty relative path",
         ),
         (
-            "required_artifacts = [\"ANALYSIS.md\"]\n",
-            "only REPORT.json is supported",
+            "required_artifacts = [\"stdout.txt\"]\n",
+            "collides with Bitterblossom-owned evidence",
+        ),
+        (
+            "required_artifacts = [\"workspace/receipt.json\"]\n",
+            "collides with Bitterblossom-owned evidence",
         ),
     ];
 
@@ -231,8 +261,63 @@ fn required_artifacts_must_stay_inside_attempt_artifacts() {
         .unwrap_err();
         assert!(err.to_string().contains(want), "{err}");
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\n",
+        "required_artifacts = [\"receipts/estate-action.json\"]\nagent = \"a\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        plane.tasks["t"].spec.required_artifacts,
+        vec!["receipts/estate-action.json"]
+    );
 }
 
+#[test]
+fn workspace_repo_pins_require_full_commit_and_git_object_lock() {
+    let invalid = [
+        (
+            "commit = \"225272a\"",
+            "commit must be a full 40-character Git object id",
+        ),
+        (
+            "commit = \"0123456789ABCDEF0123456789ABCDEF01234567\"",
+            "commit must be a full 40-character Git object id",
+        ),
+        (
+            "locks = [{ path = \"../Cargo.lock\", git_blob = \"0123456789abcdef0123456789abcdef01234567\" }]",
+            "lock path must be a non-empty relative path",
+        ),
+        (
+            "locks = [{ path = \"Cargo.lock\", git_blob = \"not-an-object\" }]",
+            "lock git_blob must be a full 40-character Git object id",
+        ),
+    ];
+    for (repo_field, want) in invalid {
+        let dir = tempfile::tempdir().unwrap();
+        let task = format!(
+            "agent = \"a\"\n[workspace]\nrepos = [{{ url = \"https://example.invalid/estate.git\", ref = \"master\", {repo_field} }}]\n[[trigger]]\nkind = \"manual\"\n"
+        );
+        let err = plane_with(dir.path(), "harness = \"pi\"\nmodel = \"m\"\n", &task).unwrap_err();
+        assert!(err.to_string().contains(want), "{err}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\n",
+        "agent = \"a\"\n[workspace]\nrepos = [{ url = \"https://example.invalid/estate.git\", ref = \"master\", commit = \"0123456789abcdef0123456789abcdef01234567\", locks = [{ path = \"Cargo.lock\", git_blob = \"89abcdef0123456789abcdef0123456789abcdef\" }] }]\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+    let repo = &plane.tasks["t"].spec.workspace.repos[0];
+    assert_eq!(
+        repo.commit.as_deref(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
+    assert_eq!(repo.locks[0].path, "Cargo.lock");
+}
 #[test]
 fn agent_role_and_skill_contract_are_loaded_and_exposed() {
     let dir = tempfile::tempdir().unwrap();

@@ -134,6 +134,10 @@ Copyable workload templates beyond the demo live under `examples/`:
   watcher with manual, cron, and GitHub push webhook triggers, containment
   filters, budgets, sample push payload, expected `REPORT.json`, and a local
   validation recipe.
+- `examples/estate-execution-plane/` is a no-provider-mutation integration
+  proof: the substrate pins Estate by full commit and `Cargo.lock` Git blob,
+  binds the worker identity in plane config, runs Estate's real disposable
+  authorization proof, and retains the declared evidence receipt.
 
 Use a template when the trigger shape, output contract, and side-effect policy
 already match the work: copy it into your runtime plane, change the org/repo/
@@ -148,6 +152,7 @@ payloads, not Rust changes.
 ./target/debug/bb --config examples/roster-cerberus-plane check --json
 ./target/debug/bb --config examples/canary-responder-plane check --json
 ./target/debug/bb --config examples/docs-sync-plane check --json
+./target/debug/bb --config examples/estate-execution-plane check --json
 ```
 
 ## Guarantees
@@ -165,7 +170,9 @@ payloads, not Rust changes.
   `max_cost_per_run_usd`, and a breach follows the agent side-effect policy
   (`kill` by default) through the notification outbox. Harnesses that only
   report final cost still park the task and notify after completion.
-- Secrets are resolved per-exec and travel on stdin, never argv. API-auth
+- Secrets are resolved per-exec and travel on stdin, never argv. Repository
+  checkout credentials are declared separately and expire before workload
+  execution; identically named workload credentials remain independent. API-auth
   agents with `policy.provider_key_name` use plane-side scoped OpenRouter child
   keys minted by `bb keys`; `bb keys sync --check` compares provider-side caps
   with agent policy. The management key is never injected into runs.

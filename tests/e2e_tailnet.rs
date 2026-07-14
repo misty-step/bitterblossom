@@ -7,6 +7,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 
 use bitterblossom::dispatch;
 use bitterblossom::ledger::{IngressRequest, Ledger};
@@ -17,6 +18,8 @@ use bitterblossom::substrate::{ProbeResult, Substrate};
 const SSH_STUB: &str = r#"#!/bin/bash
 log="$SSH_STUB_LOG"
 home="$SSH_FAKE_HOME"
+mkdir -p "$home"
+home="$(cd "$home" && pwd -P)"
 echo "$*" >> "$log"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -25,7 +28,6 @@ while [ $# -gt 0 ]; do
     *) shift;;
   esac
 done
-mkdir -p "$home"
 export HOME="$home"
 # OpenSSH does not preserve a remote argv. It joins the remaining local argv
 # into one command string and asks the remote login shell to parse it. Emulate
@@ -42,6 +44,7 @@ exec /bin/sh -c "$remote"
 
 const COMMAND_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
+[ -z "${GH_TOKEN:-}" ] || { echo "GH_TOKEN leaked into tailnet workload" >&2; exit 7; }
 printf '{"schema_version":"bb.command_result.v1","result":"tailnet says hi","turns":1,"cost_usd":0.01}\n' > REPORT.json
 cat REPORT.json
 "#;
@@ -58,8 +61,67 @@ fn write_executable(path: &Path, content: &str) {
 fn tailnet_task_runs_end_to_end() {
     let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
+    let root_buf = dir.path().canonicalize().unwrap();
+    let root = root_buf.as_path();
     let fake_home = root.join("fake-remote-home");
+    let source = root.join("source");
+    let real_git = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    Command::new(&real_git)
+        .args(["init", "-q", source.to_str().unwrap()])
+        .status()
+        .unwrap();
+    Command::new(&real_git)
+        .args([
+            "-C",
+            source.to_str().unwrap(),
+            "config",
+            "user.email",
+            "fixture@example.invalid",
+        ])
+        .status()
+        .unwrap();
+    Command::new(&real_git)
+        .args([
+            "-C",
+            source.to_str().unwrap(),
+            "config",
+            "user.name",
+            "Fixture",
+        ])
+        .status()
+        .unwrap();
+    fs::write(source.join("README.md"), "fixture\n").unwrap();
+    Command::new(&real_git)
+        .args(["-C", source.to_str().unwrap(), "add", "README.md"])
+        .status()
+        .unwrap();
+    Command::new(&real_git)
+        .args([
+            "-C",
+            source.to_str().unwrap(),
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ])
+        .status()
+        .unwrap();
+    let fake_bin = root.join("bin");
+    fs::create_dir(&fake_bin).unwrap();
+    let transport_log = root.join("git-transport.log");
+    write_executable(
+        &fake_bin.join("git"),
+        &format!("#!/bin/sh\nprintf '%s|%s\\n' \"${{GH_TOKEN:-}}\" \"$*\" >> {transport_log:?}\nexec {real_git:?} \"$@\"\n"),
+    );
 
     let ssh_stub = root.join("ssh-stub.sh");
     write_executable(&ssh_stub, SSH_STUB);
@@ -71,7 +133,7 @@ fn tailnet_task_runs_end_to_end() {
     fs::write(
         root.join("agents/remote.toml"),
         format!(
-            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"{}\"\n",
+            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"{}\"\ncheckout_secrets = [\"GH_TOKEN\"]\n",
             command_stub.display()
         ),
     )
@@ -79,7 +141,7 @@ fn tailnet_task_runs_end_to_end() {
     fs::write(root.join("tasks/demo/card.md"), "# Tailnet demo card\n").unwrap();
     fs::write(
         root.join("tasks/demo/task.toml"),
-        "agent = \"remote\"\nsubstrate = \"tailnet\"\n\n[workspace]\nhost = \"test-tailnet-host\"\n\n[[trigger]]\nkind = \"manual\"\n",
+        format!("agent = \"remote\"\nsubstrate = \"tailnet\"\n\n[workspace]\nhost = \"test-tailnet-host\"\nrepos = [{{ url = {:?}, ref = \"master\" }}]\n\n[[trigger]]\nkind = \"manual\"\n", source.to_string_lossy()),
     )
     .unwrap();
     let plane = Plane::load(root).unwrap();
@@ -89,6 +151,10 @@ fn tailnet_task_runs_end_to_end() {
     std::env::set_var("BB_SSH_BIN", &ssh_stub);
     std::env::set_var("SSH_STUB_LOG", &log);
     std::env::set_var("SSH_FAKE_HOME", &fake_home);
+    let old_path = std::env::var("PATH").unwrap();
+    std::env::set_var("PATH", format!("{}:{old_path}", fake_bin.display()));
+    std::env::set_var("GH_TOKEN", "transport-token");
+    std::env::set_var("BB_GIT_TRANSPORT_LOG", &transport_log);
 
     let run_id = ledger
         .ingest(IngressRequest {
@@ -106,6 +172,9 @@ fn tailnet_task_runs_end_to_end() {
     std::env::remove_var("BB_SSH_BIN");
     std::env::remove_var("SSH_STUB_LOG");
     std::env::remove_var("SSH_FAKE_HOME");
+    std::env::remove_var("GH_TOKEN");
+    std::env::remove_var("BB_GIT_TRANSPORT_LOG");
+    std::env::set_var("PATH", old_path);
 
     assert_eq!(run.state, "success", "reason: {:?}", run.state_reason);
     let attempts = ledger.attempts(&run_id).unwrap();
@@ -114,10 +183,31 @@ fn tailnet_task_runs_end_to_end() {
     let artifact_dir = Path::new(attempts[0].artifact_dir.as_deref().unwrap());
     let report = fs::read_to_string(artifact_dir.join("REPORT.json")).unwrap();
     assert!(report.contains("bb.command_result.v1"));
+    assert!(
+        fs::read_to_string(&transport_log)
+            .unwrap()
+            .contains("transport-token|"),
+        "clone transport did not receive GH_TOKEN"
+    );
+    let ssh_log = fs::read_to_string(&log).unwrap();
+    assert!(
+        !ssh_log.contains("transport-token"),
+        "checkout token leaked into ssh argv: {ssh_log}"
+    );
 
     // The card was materialized into the (fake) remote workspace over ssh.
-    assert!(fake_home.join(".bb-tailnet/demo/LANE_CARD.md").exists());
-    assert!(fake_home.join(".bb-tailnet/demo/RUN.json").exists());
+    let prepared_workspace = fs::read_dir(fake_home.join(".bb-tailnet"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("demo-bb-attempt-"))
+        })
+        .expect("attempt-scoped tailnet workspace");
+    assert!(prepared_workspace.join("LANE_CARD.md").exists());
+    assert!(prepared_workspace.join("RUN.json").exists());
 }
 
 #[test]

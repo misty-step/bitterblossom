@@ -4,9 +4,9 @@ harness = "pi"
 model = "deepseek/deepseek-v4-flash"
 auth = "api"
 secrets = ["OPENROUTER_API_KEY", "GH_TOKEN"]
+checkout_secrets = ["GH_TOKEN"]
 skills = [
   "harness-kit/research#model-catalog",
   "harness-kit/harness-engineering#models",
   "bitterblossom/operator-min",
 ]
-

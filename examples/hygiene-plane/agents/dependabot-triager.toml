@@ -6,6 +6,7 @@ auth = "api"
 bin = "python3"
 args = ["bitterblossom/scripts/hygiene-reflex.py", "dependabot-triage"]
 secrets = ["GH_TOKEN"]
+checkout_secrets = ["GH_TOKEN"]
 
 [policy]
 trigger_bindings = ["manual", "cron"]

@@ -176,9 +176,12 @@ fn artifacts_bundle_cli_writes_portable_manifest_directory() {
         .iter()
         .find(|e| e["path"] == "binary.bin")
         .expect("binary artifact manifest entry");
-    assert_eq!(binary["included"], false);
-    assert_eq!(binary["policy"]["kind"], "manifest_only_binary");
-    assert!(!out_dir.join("attempt-1/binary.bin").exists());
+    assert_eq!(binary["included"], true);
+    assert_eq!(binary["bundle_path"], "attempt-1/binary.bin");
+    assert_eq!(
+        fs::read(out_dir.join("attempt-1/binary.bin")).unwrap(),
+        [0, 1, 2]
+    );
 }
 
 #[test]

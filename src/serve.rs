@@ -1392,6 +1392,7 @@ pub fn agents_view(plane: &Plane) -> Result<Vec<serde_json::Value>> {
                 AuthClass::Api => "api",
             }),
             "secrets": agent.secrets,
+            "checkout_secrets": agent.checkout_secrets,
             "optional_secrets": agent.optional_secrets,
             "skills": agent.skills,
             "policy": serde_json::to_value(&agent.policy)?,

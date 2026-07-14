@@ -1,0 +1,7 @@
+# Disposable contract proof. Production must use a configured remote
+# substrate and the real Estate mutation adapter; local remains dev/test only.
+dev = true
+db_path = ".bb/plane.db"
+
+[budget]
+max_cost_per_day_usd = 1.0

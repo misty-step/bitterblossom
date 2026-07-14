@@ -588,6 +588,28 @@ fn attempt_on_host(
             }
         }
     }
+    let mut checkout_secrets = Vec::new();
+    for name in &task.agent.checkout_secrets {
+        let value = if let Some((_, value)) = secrets.iter().find(|(secret, _)| secret == name) {
+            value.clone()
+        } else {
+            match crate::provider_keys::resolve_secret_for_task(plane, task, name) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    let Ok(value) = std::env::var(name) else {
+                        let _ = session.release();
+                        return fail(false, format!("checkout secret env var '{name}' not set"));
+                    };
+                    value
+                }
+                Err(e) => {
+                    let _ = session.release();
+                    return fail(false, format!("checkout credential: {e:#}"));
+                }
+            }
+        };
+        checkout_secrets.push((name.clone(), value));
+    }
     let trigger = ledger.run(run_id)?;
     // bitterblossom-930: mint once per attempt rather than reusing a stored
     // token across retries -- a fresh capability per attempt is simpler to
@@ -595,6 +617,12 @@ fn attempt_on_host(
     // last-write-wins by design (only the current attempt's token is valid).
     let ask_token = uuid::Uuid::new_v4().simple().to_string();
     ledger.set_run_ask_token(run_id, &ask_token)?;
+    let mut artifacts = task.spec.required_artifacts.clone();
+    for built_in in [substrate::REPORT_FILENAME, substrate::ASK_PACKET_FILENAME] {
+        if !artifacts.iter().any(|path| path == built_in) {
+            artifacts.push(built_in.to_string());
+        }
+    }
     let plan = WorkspacePlan {
         repos: task.spec.workspace.repos.clone(),
         card: task.card.clone(),
@@ -620,7 +648,9 @@ fn attempt_on_host(
         workspace_name: task.name.clone(),
         checkpoint: task.spec.workspace.checkpoint.clone(),
         secrets,
+        checkout_secrets,
         hermetic: matches!(task.agent.auth_class(), Ok(crate::spec::AuthClass::Api)),
+        artifacts,
     };
     if let Err(e) = session.prepare(&plan) {
         let _ = session.release();

@@ -183,6 +183,12 @@ pub struct AgentSpec {
     pub args: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Required credentials used only while materializing declared workspace
+    /// repositories. They never enter the agent workload environment. The
+    /// same name may also appear in `secrets` when the workload itself has
+    /// independently declared authority to use it.
+    #[serde(default)]
+    pub checkout_secrets: Vec<String>,
     /// Backlog 925: declared secrets that degrade the run instead of
     /// dead-lettering it when unresolvable (e.g. read-only repo-context
     /// tokens the agent's own card already knows how to work without). A
@@ -324,10 +330,9 @@ pub struct TaskSpec {
     pub verdict: Option<String>,
     #[serde(default)]
     pub roster_brief: Option<RosterSource>,
-    /// Artifact paths, relative to the attempt artifact dir, that must exist
-    /// after a zero-exit harness run for the run to count as success. Current
-    /// substrates release `REPORT.json`; other paths are rejected until the
-    /// artifact transport is generalized.
+    /// Safe workspace-relative artifact paths that must exist after a
+    /// zero-exit harness run. Substrates retain their exact regular-file bytes
+    /// in the attempt evidence tree and reject symlinks.
     #[serde(default)]
     pub required_artifacts: Vec<String>,
     /// Declared operator intent (bitterblossom-934): a stale one-off task
@@ -356,6 +361,20 @@ pub struct RepoSpec {
     pub url: String,
     #[serde(default = "default_ref")]
     pub r#ref: String,
+    /// Optional immutable checkout identity. When present, substrates fetch
+    /// and detach at this exact object instead of trusting the mutable ref.
+    pub commit: Option<String>,
+    /// Exact Git blob identities for tool/provider lock files consumed by the
+    /// workload. The substrate verifies these after checkout and before exec.
+    #[serde(default)]
+    pub locks: Vec<RepoLockSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoLockSpec {
+    pub path: String,
+    pub git_blob: String,
 }
 
 fn default_ref() -> String {
@@ -685,7 +704,12 @@ impl Plane {
                 }
                 _ => {}
             }
-            for secret in agent.secrets.iter().chain(agent.optional_secrets.iter()) {
+            for secret in agent
+                .secrets
+                .iter()
+                .chain(agent.optional_secrets.iter())
+                .chain(agent.checkout_secrets.iter())
+            {
                 if secret == "ANTHROPIC_API_KEY" || secret == "OPENAI_API_KEY" {
                     bail!(
                         "agent '{name}': secret '{secret}' is forbidden — \
@@ -701,6 +725,14 @@ impl Plane {
                     );
                 }
             }
+            for secret in &agent.checkout_secrets {
+                if secret != "GH_TOKEN" {
+                    bail!(
+                        "agent '{name}': unsupported checkout secret '{secret}' — \
+                         v1 repository transport accepts only GH_TOKEN"
+                    );
+                }
+            }
             agent
                 .policy
                 .validate(name, &agent.model)
@@ -710,6 +742,9 @@ impl Plane {
         let mut routes = std::collections::BTreeSet::new();
         for task in tasks.values() {
             validate_required_artifacts(&task.name, &task.spec.required_artifacts)?;
+            for repo in &task.spec.workspace.repos {
+                validate_repo_pin(&task.name, repo)?;
+            }
             if task.spec.substrate != "local" && task.spec.workspace.host.is_none() {
                 bail!(
                     "task '{}': substrate '{}' requires workspace.host",
@@ -1017,6 +1052,8 @@ fn repo_task_spec(
             repos: vec![RepoSpec {
                 url: workspace_repo.to_string(),
                 r#ref: repo.r#ref.clone(),
+                commit: None,
+                locks: Vec::new(),
             }],
             checkpoint: repo.workspace.checkpoint.clone(),
         },
@@ -1095,6 +1132,18 @@ fn validate_backup_spec(backup: &BackupSpec) -> Result<()> {
 }
 
 fn validate_required_artifacts(task: &str, artifacts: &[String]) -> Result<()> {
+    const RESERVED: &[&str] = &[
+        "RUN.json",
+        "EVENT.json",
+        "LANE_CARD.md",
+        "stdout.txt",
+        "stderr.txt",
+        "result.md",
+        "harness.pid",
+        "workspace",
+        ".home",
+        ".bb-git-askpass",
+    ];
     for artifact in artifacts {
         let path = Path::new(artifact);
         let valid = !artifact.trim().is_empty()
@@ -1107,9 +1156,65 @@ fn validate_required_artifacts(task: &str, artifacts: &[String]) -> Result<()> {
                 "task '{task}': required_artifacts entry {artifact:?} must be a non-empty relative path without '.' or '..'"
             );
         }
-        if artifact != crate::substrate::REPORT_FILENAME {
+        let top = path
+            .components()
+            .next()
+            .and_then(|component| match component {
+                Component::Normal(value) => value.to_str(),
+                _ => None,
+            });
+        if top.is_some_and(|name| RESERVED.contains(&name)) {
             bail!(
-                "task '{task}': required_artifacts entry {artifact:?} is not released by current substrates; only REPORT.json is supported today"
+                "task '{task}': required_artifacts entry {artifact:?} collides with Bitterblossom-owned evidence"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_repo_pin(task: &str, repo: &RepoSpec) -> Result<()> {
+    if let Some(commit) = &repo.commit {
+        if commit.len() != 40
+            || !commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!(
+                "task '{task}': workspace repo {} commit must be a full 40-character Git object id",
+                repo.url
+            );
+        }
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for lock in &repo.locks {
+        let path = Path::new(&lock.path);
+        let valid_path = !lock.path.trim().is_empty()
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)));
+        if !valid_path {
+            bail!(
+                "task '{task}': workspace repo {} lock path must be a non-empty relative path without '.' or '..'",
+                repo.url
+            );
+        }
+        if !paths.insert(lock.path.as_str()) {
+            bail!(
+                "task '{task}': workspace repo {} repeats lock path {:?}",
+                repo.url,
+                lock.path
+            );
+        }
+        if lock.git_blob.len() != 40
+            || !lock
+                .git_blob
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!(
+                "task '{task}': workspace repo {} lock git_blob must be a full 40-character Git object id",
+                repo.url
             );
         }
     }

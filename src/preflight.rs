@@ -124,6 +124,13 @@ fn check_tasks<'a>(plane: &Plane, tasks: impl IntoIterator<Item = &'a Task>) -> 
         check_secrets(
             plane,
             t,
+            &t.agent.checkout_secrets,
+            "missing_checkout_secret",
+            &mut findings,
+        );
+        check_secrets(
+            plane,
+            t,
             &t.agent.optional_secrets,
             "missing_optional_secret",
             &mut findings,
