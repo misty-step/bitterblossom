@@ -183,7 +183,6 @@ impl Session for TailnetSession {
             self.remote_home, plan.workspace_name, plan.marker
         );
         self.marker = plan.marker.clone();
-        self.secrets = plan.secrets.clone();
         self.hermetic = plan.hermetic;
         self.release_artifacts = plan.artifacts.clone();
 
@@ -200,7 +199,7 @@ impl Session for TailnetSession {
             let dir = repo_dir_name(&repo.url);
             let dest = format!("{}/{dir}", self.workspace);
             let transport: String = plan
-                .secrets
+                .checkout_secrets
                 .iter()
                 .filter(|(name, _)| name == "GH_TOKEN")
                 .map(|(name, value)| format!("export {name}={}\n", shell_quote(value)))
@@ -210,12 +209,21 @@ impl Session for TailnetSession {
                 git_auth = git_auth_setup_script(),
                 materialize = super::repo_materialize_script(repo, &dest),
             );
-            let out = remote_shell(&self.host, &script, Duration::from_secs(600))?;
+            // The checkout credential is carried only in SSH stdin. Putting
+            // this script in the remote-command argv exposes the token to the
+            // local process table and transport telemetry.
+            let out = ssh_exec(
+                &self.host,
+                &["sh".into()],
+                Some(&script),
+                Duration::from_secs(600),
+                None,
+            )?;
             if out.exit_code != 0 {
                 bail!("repo sync {} failed: {}", repo.url, out.stderr.trim());
             }
         }
-        self.secrets.retain(|(name, _)| name != "GH_TOKEN");
+        self.secrets = plan.secrets.clone();
 
         self.upload(CARD_FILENAME, &plan.card)?;
         for (name, content) in [

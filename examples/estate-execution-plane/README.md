@@ -17,8 +17,9 @@ plane-bound `hephaestus` identity, runs Estate's real disposable signed-data
 proof, and retains `ESTATE_EXECUTION_EVIDENCE.json`.
 
 This example intentionally contains no provider credential, provider mutation,
-or product-specific Rust branch. `GH_TOKEN` is read-only clone transport for
-the private Estate repository; it is not authorization to mutate
+or product-specific Rust branch. `GH_TOKEN` is declared only as a
+`checkout_secret` for read-only clone transport to the private Estate
+repository; it is not workload authority or authorization to mutate
 infrastructure. For production, replace the command binding
 with Estate's registered provider/host adapter, use a remote substrate, and
 declare the adapter's real Estate receipt path in `required_artifacts`. The

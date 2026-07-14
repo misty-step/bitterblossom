@@ -120,7 +120,7 @@ fn tailnet_task_runs_end_to_end() {
     let transport_log = root.join("git-transport.log");
     write_executable(
         &fake_bin.join("git"),
-        &format!("#!/bin/sh\nprintf '%s|%s\\n' \"${{GH_TOKEN:-}}\" \"$*\" >> \"$BB_GIT_TRANSPORT_LOG\"\nexec {real_git:?} \"$@\"\n"),
+        &format!("#!/bin/sh\nprintf '%s|%s\\n' \"${{GH_TOKEN:-}}\" \"$*\" >> {transport_log:?}\nexec {real_git:?} \"$@\"\n"),
     );
 
     let ssh_stub = root.join("ssh-stub.sh");
@@ -133,7 +133,7 @@ fn tailnet_task_runs_end_to_end() {
     fs::write(
         root.join("agents/remote.toml"),
         format!(
-            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"{}\"\nsecrets = [\"GH_TOKEN\", \"BB_GIT_TRANSPORT_LOG\"]\n",
+            "version = 1\nharness = \"command\"\nmodel = \"\"\nbin = \"{}\"\ncheckout_secrets = [\"GH_TOKEN\"]\n",
             command_stub.display()
         ),
     )
@@ -188,6 +188,11 @@ fn tailnet_task_runs_end_to_end() {
             .unwrap()
             .contains("transport-token|"),
         "clone transport did not receive GH_TOKEN"
+    );
+    let ssh_log = fs::read_to_string(&log).unwrap();
+    assert!(
+        !ssh_log.contains("transport-token"),
+        "checkout token leaked into ssh argv: {ssh_log}"
     );
 
     // The card was materialized into the (fake) remote workspace over ssh.

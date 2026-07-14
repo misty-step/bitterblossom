@@ -27,10 +27,10 @@ pub const READ_LIMIT: u64 = 1 << 20; // 1 MiB
 const INTERNAL_ARTIFACTS: &[&str] = &["harness.pid"];
 
 /// Persist public artifacts for one completed attempt, including nested
-/// declared receipts. Text
-/// bodies use the same per-file bound as `read`; binary and oversized files
-/// retain metadata only. Directories, internal harness markers, and symlinks
-/// are deliberately absent from the durable snapshot.
+/// declared receipts. Every bounded regular-file body is retained byte for
+/// byte, including binary receipts; oversized files retain metadata only.
+/// Directories, internal harness markers, and symlinks are deliberately absent
+/// from the durable snapshot.
 pub(crate) fn snapshot_attempt(ledger: &Ledger, attempt_id: i64, dir: &Path) -> Result<()> {
     match fs::read_dir(dir) {
         Ok(_) => {}
@@ -62,7 +62,7 @@ pub(crate) fn snapshot_attempt(ledger: &Ledger, attempt_id: i64, dir: &Path) -> 
         let profile =
             bundle_file_profile_from_reader(&mut file, meta.len(), content_type(&relative))
                 .with_context(|| format!("classify artifact snapshot candidate {name}"))?;
-        let content = if profile.size <= READ_LIMIT && !profile.binary {
+        let content = if profile.size <= READ_LIMIT {
             profile.bytes
         } else {
             None
@@ -393,9 +393,10 @@ fn snapshot_read_outcome(attempt: i64, snapshot: ArtifactSnapshotRow) -> Result<
 }
 
 /// Export a portable artifact bundle directory for a run. Text artifacts at or
-/// below `READ_LIMIT` are copied under `attempt-<n>/`; binary, oversized, and
-/// symlink artifacts are represented in `manifest.json` only. The bundle never
-/// follows symlinks and never records host artifact-dir paths.
+/// below `READ_LIMIT` are copied byte-for-byte under `attempt-<n>/`; oversized
+/// and symlink artifacts are represented in `manifest.json` only. The bundle
+/// never follows symlinks and never records host artifact-dir paths. CLI reads
+/// still refuse to stream binary bytes to stdout.
 pub fn bundle(ledger: &Ledger, run_id: &str, out_dir: &Path) -> Result<ArtifactBundleManifest> {
     ensure_run_exists(ledger, run_id)?;
     prepare_bundle_out_dir(out_dir)?;
@@ -478,12 +479,6 @@ pub fn bundle(ledger: &Ledger, run_id: &str, out_dir: &Path) -> Result<ArtifactB
                     reason: "artifact exceeds bundle inline byte limit",
                     limit: Some(READ_LIMIT),
                 })
-            } else if profile.binary {
-                Some(ArtifactBundlePolicy {
-                    kind: "manifest_only_binary",
-                    reason: "binary artifacts are recorded in the manifest only",
-                    limit: None,
-                })
             } else {
                 None
             };
@@ -553,12 +548,6 @@ fn append_snapshot_bundle_entries(
                 reason: "artifact exceeds bundle inline byte limit",
                 limit: Some(READ_LIMIT),
             })
-        } else if snapshot.binary {
-            Some(ArtifactBundlePolicy {
-                kind: "manifest_only_binary",
-                reason: "binary artifacts are recorded in the manifest only",
-                limit: None,
-            })
         } else {
             None
         };
@@ -585,7 +574,7 @@ fn append_snapshot_bundle_entries(
         }
         let content = snapshot
             .content
-            .context("durable artifact snapshot is missing its bounded text body")?;
+            .context("durable artifact snapshot is missing its bounded body")?;
         fs::write(&dest, content)
             .with_context(|| format!("copy durable artifact into bundle at {}", dest.display()))?;
         entries.push(ArtifactBundleEntry {

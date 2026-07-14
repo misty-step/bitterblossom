@@ -43,11 +43,13 @@ symlinks, preserves binary bytes across remote transports, and snapshots
 nested receipts into the durable evidence ledger. Bitterblossom-owned evidence
 names such as `RUN.json`, `stdout.txt`, and `result.md` cannot be redeclared.
 
-`GH_TOKEN`, when declared, exists only during immutable repository checkout.
-It is removed before pre-commands and harness execution on local, Sprites, and
-tailnet substrates. It authenticates clone transport; it is never an Estate
-capability or workload credential. Remote host adapters require `python3` for
-the bounded no-follow receipt collector.
+`GH_TOKEN` is declared under `checkout_secrets` for immutable repository
+checkout and exists only for that transport lifetime. It never enters
+pre-commands or harness execution on local, Sprites, or tailnet substrates.
+An unrelated workload may separately declare `GH_TOKEN` under `secrets` when
+its own GitHub authority requires it; Bitterblossom does not rewrite that
+meaning. Checkout transport is never an Estate capability. Remote host
+adapters require `python3` for the bounded no-follow receipt collector.
 
 ## Recovery law
 

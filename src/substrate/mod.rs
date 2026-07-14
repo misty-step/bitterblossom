@@ -26,6 +26,9 @@ pub struct WorkspacePlan {
     pub workspace_name: String,
     pub checkpoint: Option<String>,
     pub secrets: Vec<(String, String)>,
+    /// Attempt-scoped repository transport credentials. Substrates may expose
+    /// these only to checkout setup, never to pre-command or workload exec.
+    pub checkout_secrets: Vec<(String, String)>,
     pub hermetic: bool,
     /// Workspace-relative evidence paths to collect on release. These are
     /// validated as safe relative paths while loading the task declaration.

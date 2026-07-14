@@ -51,12 +51,22 @@ pub struct LocalSession {
 }
 
 impl LocalSession {
-    fn run_workload_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
+    fn run_checkout_shell(
+        &self,
+        script: &str,
+        checkout_secrets: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        let mut env = self.workload_env()?;
+        for (name, _) in &self.secrets {
+            env.retain(|(candidate, _)| candidate != name);
+        }
+        env.extend(checkout_secrets.iter().cloned());
         run_with_timeout(
             &["sh".into(), "-c".into(), script.into()],
             None,
             &self.workspace,
-            &self.workload_env()?,
+            &env,
             self.hermetic,
             timeout,
             RunControl::default(),
@@ -140,7 +150,6 @@ impl LocalSession {
 
 impl Session for LocalSession {
     fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
-        self.secrets = plan.secrets.clone();
         self.hermetic = plan.hermetic;
         self.release_artifacts = plan.artifacts.clone();
         for repo in &plan.repos {
@@ -151,15 +160,13 @@ impl Session for LocalSession {
                 .into_owned();
             let clone = super::repo_materialize_script(repo, &dest);
             let clone = format!("{}\n{clone}", git_auth_setup_script());
-            let out = self.run_workload_shell(&clone, Duration::from_secs(300))?;
+            let out =
+                self.run_checkout_shell(&clone, &plan.checkout_secrets, Duration::from_secs(300))?;
             if out.exit_code != 0 {
                 anyhow::bail!("clone {} failed: {}", repo.url, out.stderr.trim());
             }
         }
-        // GH_TOKEN is clone transport only. Estate workload authority comes
-        // from its plane-bound identity/capability and exact authorization,
-        // never from a repository credential inherited by execution.
-        self.secrets.retain(|(name, _)| name != "GH_TOKEN");
+        self.secrets = plan.secrets.clone();
         std::fs::write(self.workspace.join(CARD_FILENAME), &plan.card)?;
         std::fs::write(self.workspace.join("RUN.json"), &plan.run_context)?;
         if let Some(payload) = &plan.payload {

@@ -170,7 +170,9 @@ payloads, not Rust changes.
   `max_cost_per_run_usd`, and a breach follows the agent side-effect policy
   (`kill` by default) through the notification outbox. Harnesses that only
   report final cost still park the task and notify after completion.
-- Secrets are resolved per-exec and travel on stdin, never argv. API-auth
+- Secrets are resolved per-exec and travel on stdin, never argv. Repository
+  checkout credentials are declared separately and expire before workload
+  execution; identically named workload credentials remain independent. API-auth
   agents with `policy.provider_key_name` use plane-side scoped OpenRouter child
   keys minted by `bb keys`; `bb keys sync --check` compares provider-side caps
   with agent policy. The management key is never injected into runs.

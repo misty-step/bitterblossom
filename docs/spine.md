@@ -128,6 +128,9 @@ auth = "api"                      # api | subscription (defaults by harness)
 bin = "pi"                        # optional: override the harness binary path
 args = []                         # optional: extra CLI args appended verbatim
 secrets = ["OPENROUTER_API_KEY"]  # env names resolved per-exec, never persisted
+checkout_secrets = ["GH_TOKEN"]  # required only for repository materialization;
+                                  # never injected into the workload unless the
+                                  # same name is independently listed in secrets
 optional_secrets = ["GH_TOKEN"]   # backlog 925: unresolvable -> degrades the run
                                   # (absent from env) instead of dead-lettering it;
                                   # a name is never in both lists at once
@@ -963,7 +966,7 @@ output is a `failure` with raw output preserved on the attempt row — never
 a silent zero-cost success.
 
 `bb preflight` is a read-only pre-dispatch check, not a gate: it reports
-missing declared secrets, missing optional secrets (backlog 925 —
+missing declared secrets, missing checkout secrets, missing optional secrets (backlog 925 —
 `missing_optional_secret`, informational: dispatch will still run degraded,
 not dead-letter), missing policy-bound provider keys, and unspawnable
 `command`-harness binaries for one task or the submission-storm member set,

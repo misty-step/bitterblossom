@@ -467,10 +467,12 @@ fn hermetic_exec_passes_secrets_but_never_the_planes_env() {
     const PI_ENV_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
 printf '{"type":"turn_end"}\n'
-printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"leak=[%s] secret=[%s] home=[%s]"}],"usage":{"input":1,"output":2,"cost":{"total":0.0001}}}}\n' "$BB_TEST_LEAK" "$BB_TEST_SECRET" "$HOME"
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"leak=[%s] secret=[%s] github=[%s] home=[%s]"}],"usage":{"input":1,"output":2,"cost":{"total":0.0001}}}}\n' "$BB_TEST_LEAK" "$BB_TEST_SECRET" "$GH_TOKEN" "$HOME"
 "#;
     std::env::set_var("BB_TEST_LEAK", "plane-private");
     std::env::set_var("BB_TEST_SECRET", "declared-secret");
+    let old_gh_token = std::env::var_os("GH_TOKEN");
+    std::env::set_var("GH_TOKEN", "declared-workload-github-token");
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -482,7 +484,7 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
     fs::write(
         root.join("agents/stub.toml"),
         format!(
-            "harness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\"]\n",
+            "harness = \"pi\"\nmodel = \"m\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\", \"GH_TOKEN\"]\n",
             stub_path.display()
         ),
     )
@@ -506,9 +508,17 @@ printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"
     assert!(result.contains("leak=[]"), "plane env leaked: {result}");
     assert!(result.contains("secret=[declared-secret]"), "{result}");
     assert!(
+        result.contains("github=[declared-workload-github-token]"),
+        "declared workload GH_TOKEN was rewritten: {result}"
+    );
+    assert!(
         result.contains("workspace/.home"),
         "HOME not hermetic: {result}"
     );
+    match old_gh_token {
+        Some(value) => std::env::set_var("GH_TOKEN", value),
+        None => std::env::remove_var("GH_TOKEN"),
+    }
 }
 
 #[test]
@@ -610,7 +620,8 @@ printf '{"schema_version":"bb.command_result.v1","result":"ok"}\n'
     let git_log = root.join("git-auth.log");
     write_executable(
         &fake_bin.join("git"),
-        r#"#!/bin/sh
+        &format!(
+            r#"#!/bin/sh
 set -eu
 case "$1" in
   init)
@@ -623,7 +634,7 @@ case "$1" in
       fetch)
         user="$("$GIT_ASKPASS" "Username for https://github.com")"
         pass="$("$GIT_ASKPASS" "Password for https://github.com")"
-        printf '%s|%s|%s|%s\n' "$user" "$pass" "${GIT_TERMINAL_PROMPT:-}" "${GIT_CONFIG_KEY_0:-}" >> "$BB_GIT_AUTH_LOG"
+        printf '%s|%s|%s|%s\n' "$user" "$pass" "${{GIT_TERMINAL_PROMPT:-}}" "${{GIT_CONFIG_KEY_0:-}}" >> {git_log:?}
         ;;
     esac
     ;;
@@ -632,7 +643,8 @@ case "$1" in
     exit 9
     ;;
 esac
-"#,
+"#
+        ),
     );
     let old_path = std::env::var("PATH").unwrap_or_default();
     let old_gh_token = std::env::var_os("GH_TOKEN");
@@ -649,7 +661,7 @@ esac
     fs::write(
         root.join("agents/stub.toml"),
         format!(
-            "harness = \"command\"\nmodel = \"\"\nbin = \"{}\"\nsecrets = [\"GH_TOKEN\", \"BB_GIT_AUTH_LOG\"]\n",
+            "harness = \"command\"\nmodel = \"\"\nbin = \"{}\"\ncheckout_secrets = [\"GH_TOKEN\"]\n",
             stub_path.display()
         ),
     )

@@ -187,9 +187,13 @@ impl SpriteSession {
         )
     }
 
-    fn remote_workload_shell(&self, script: &str, timeout: Duration) -> Result<ExecResult> {
-        let exports: String = self
-            .secrets
+    fn remote_shell_with_secrets(
+        &self,
+        script: &str,
+        secrets: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        let exports: String = secrets
             .iter()
             .map(|(k, v)| format!("export {k}={}\n", shell_quote(v)))
             .collect();
@@ -206,7 +210,6 @@ impl Session for SpriteSession {
     fn prepare(&mut self, plan: &WorkspacePlan) -> Result<()> {
         self.workspace = remote_workspace_path(&format!("{}-{}", plan.workspace_name, plan.marker));
         self.marker = plan.marker.clone();
-        self.secrets = plan.secrets.clone();
         self.hermetic = plan.hermetic;
         self.release_artifacts = plan.artifacts.clone();
 
@@ -247,12 +250,16 @@ impl Session for SpriteSession {
                 git_auth = git_auth_setup_script(),
                 materialize = super::repo_materialize_script(repo, &dest),
             );
-            let out = self.remote_workload_shell(&script, Duration::from_secs(600))?;
+            let out = self.remote_shell_with_secrets(
+                &script,
+                &plan.checkout_secrets,
+                Duration::from_secs(600),
+            )?;
             if out.exit_code != 0 {
                 bail!("repo sync {} failed: {}", repo.url, out.stderr.trim());
             }
         }
-        self.secrets.retain(|(name, _)| name != "GH_TOKEN");
+        self.secrets = plan.secrets.clone();
         let card_local = self.artifacts.join(CARD_FILENAME);
         std::fs::write(&card_local, &plan.card)?;
         let upload = format!(

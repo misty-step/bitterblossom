@@ -8,7 +8,7 @@ role = "estate-executor"
 bin = "sh"
 # Clone transport only. It grants no Estate authority and is not used by the
 # offline break-glass path.
-secrets = ["GH_TOKEN"]
+checkout_secrets = ["GH_TOKEN"]
 args = [
   "-c",
   '''set -eu

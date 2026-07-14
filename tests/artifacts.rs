@@ -275,6 +275,20 @@ fn durable_snapshot_bounds_bodies_and_includes_nested_receipts() {
         artifacts::read(&ledger, &run, "escape").unwrap(),
         ReadOutcome::Missing { .. }
     ));
+
+    let bundle = dir.path().join("durable-binary-bundle");
+    let manifest = artifacts::bundle(&ledger, &run, &bundle).unwrap();
+    let binary = manifest
+        .entries
+        .iter()
+        .find(|entry| entry.path == "blob.bin")
+        .unwrap();
+    assert!(binary.included);
+    assert!(binary.binary);
+    assert_eq!(
+        fs::read(bundle.join("attempt-1/blob.bin")).unwrap(),
+        [0, 1, 2, 3]
+    );
 }
 
 #[test]
@@ -565,9 +579,12 @@ fn bundle_writes_deterministic_manifest_without_following_unsafe_paths() {
     }));
 
     let binary = entries.iter().find(|e| e["path"] == "blob.bin").unwrap();
-    assert_eq!(binary["included"], false);
-    assert_eq!(binary["policy"]["kind"], "manifest_only_binary");
-    assert!(!out.join("attempt-1/blob.bin").exists());
+    assert_eq!(binary["included"], true);
+    assert_eq!(binary["bundle_path"], "attempt-1/blob.bin");
+    assert_eq!(
+        fs::read(out.join("attempt-1/blob.bin")).unwrap(),
+        [0, 1, 2, 3]
+    );
 
     let oversized = entries.iter().find(|e| e["path"] == "huge.log").unwrap();
     assert_eq!(oversized["included"], false);

@@ -183,6 +183,12 @@ pub struct AgentSpec {
     pub args: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Required credentials used only while materializing declared workspace
+    /// repositories. They never enter the agent workload environment. The
+    /// same name may also appear in `secrets` when the workload itself has
+    /// independently declared authority to use it.
+    #[serde(default)]
+    pub checkout_secrets: Vec<String>,
     /// Backlog 925: declared secrets that degrade the run instead of
     /// dead-lettering it when unresolvable (e.g. read-only repo-context
     /// tokens the agent's own card already knows how to work without). A
@@ -698,7 +704,12 @@ impl Plane {
                 }
                 _ => {}
             }
-            for secret in agent.secrets.iter().chain(agent.optional_secrets.iter()) {
+            for secret in agent
+                .secrets
+                .iter()
+                .chain(agent.optional_secrets.iter())
+                .chain(agent.checkout_secrets.iter())
+            {
                 if secret == "ANTHROPIC_API_KEY" || secret == "OPENAI_API_KEY" {
                     bail!(
                         "agent '{name}': secret '{secret}' is forbidden — \
@@ -711,6 +722,14 @@ impl Plane {
                     bail!(
                         "agent '{name}': secret '{secret}' is declared both required \
                          and optional — it can only be one"
+                    );
+                }
+            }
+            for secret in &agent.checkout_secrets {
+                if secret != "GH_TOKEN" {
+                    bail!(
+                        "agent '{name}': unsupported checkout secret '{secret}' — \
+                         v1 repository transport accepts only GH_TOKEN"
                     );
                 }
             }

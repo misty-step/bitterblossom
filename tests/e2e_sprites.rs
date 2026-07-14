@@ -142,7 +142,7 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     let transport_log = root.join("git-transport.log");
     write_executable(
         &fake_bin.join("git"),
-        &format!("#!/bin/sh\nprintf '%s|%s\\n' \"${{GH_TOKEN:-}}\" \"$*\" >> \"$BB_GIT_TRANSPORT_LOG\"\nexec {real_git:?} \"$@\"\n"),
+        &format!("#!/bin/sh\nprintf '%s|%s\\n' \"${{GH_TOKEN:-}}\" \"$*\" >> {transport_log:?}\nexec {real_git:?} \"$@\"\n"),
     );
 
     let sprite_stub = root.join("sprite-stub.sh");
@@ -155,7 +155,7 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
     fs::write(
         root.join("agents/remote.toml"),
         format!(
-            "version = 1\nharness = \"claude\"\nmodel = \"claude-fable-5\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\", \"GH_TOKEN\", \"BB_GIT_TRANSPORT_LOG\"]\n",
+            "version = 1\nharness = \"claude\"\nmodel = \"claude-fable-5\"\nbin = \"{}\"\nsecrets = [\"BB_TEST_SECRET\"]\ncheckout_secrets = [\"GH_TOKEN\"]\n",
             claude_stub.display()
         ),
     )
@@ -260,6 +260,10 @@ fn sprites_task_runs_end_to_end_with_identical_row_shape() {
             .unwrap()
             .contains("transport-token|"),
         "clone transport did not receive GH_TOKEN"
+    );
+    assert!(
+        !log_text.contains("transport-token"),
+        "checkout token leaked into sprite argv: {log_text}"
     );
 
     std::env::remove_var("BB_SPRITE_BIN");

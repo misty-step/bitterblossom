@@ -352,7 +352,7 @@ rm -rf "$self_drill_tmp"
 # checkout plus working-byte lock verification, and reserved evidence paths.
 # All three adapters call that mechanism; no infrastructure authority or
 # product judgment enters the spine.
-SPINE_LOC_CAP=17530
+SPINE_LOC_CAP=17594
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

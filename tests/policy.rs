@@ -73,6 +73,32 @@ fn a_secret_cannot_be_declared_both_required_and_optional() {
 }
 
 #[test]
+fn checkout_secrets_are_explicit_and_use_the_supported_transport_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\ncheckout_secrets = [\"UNSCOPED_TOKEN\"]\n",
+        MANUAL,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("unsupported checkout secret"),
+        "{err}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "harness = \"pi\"\nmodel = \"m\"\nsecrets = [\"GH_TOKEN\"]\ncheckout_secrets = [\"GH_TOKEN\"]\n",
+        MANUAL,
+    )
+    .unwrap();
+    let agent = plane.agents.get("a").unwrap();
+    assert_eq!(agent.secrets, ["GH_TOKEN"]);
+    assert_eq!(agent.checkout_secrets, ["GH_TOKEN"]);
+}
+
+#[test]
 fn reflex_triggers_require_api_auth_agents() {
     let dir = tempfile::tempdir().unwrap();
     // claude defaults to subscription; a cron (reflex) trigger must fail.

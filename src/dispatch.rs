@@ -588,6 +588,28 @@ fn attempt_on_host(
             }
         }
     }
+    let mut checkout_secrets = Vec::new();
+    for name in &task.agent.checkout_secrets {
+        let value = if let Some((_, value)) = secrets.iter().find(|(secret, _)| secret == name) {
+            value.clone()
+        } else {
+            match crate::provider_keys::resolve_secret_for_task(plane, task, name) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    let Ok(value) = std::env::var(name) else {
+                        let _ = session.release();
+                        return fail(false, format!("checkout secret env var '{name}' not set"));
+                    };
+                    value
+                }
+                Err(e) => {
+                    let _ = session.release();
+                    return fail(false, format!("checkout credential: {e:#}"));
+                }
+            }
+        };
+        checkout_secrets.push((name.clone(), value));
+    }
     let trigger = ledger.run(run_id)?;
     // bitterblossom-930: mint once per attempt rather than reusing a stored
     // token across retries -- a fresh capability per attempt is simpler to
@@ -626,6 +648,7 @@ fn attempt_on_host(
         workspace_name: task.name.clone(),
         checkpoint: task.spec.workspace.checkpoint.clone(),
         secrets,
+        checkout_secrets,
         hermetic: matches!(task.agent.auth_class(), Ok(crate::spec::AuthClass::Api)),
         artifacts,
     };

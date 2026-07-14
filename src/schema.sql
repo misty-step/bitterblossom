@@ -70,9 +70,10 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 
 -- Public, top-level attempt artifacts must remain inspectable when a hosted
--- runtime loses its ephemeral artifact directories. Bodies are present only
--- for bounded text artifacts; binary and oversized files retain metadata so
--- list/read keep their refusal semantics without bloating the ledger.
+-- runtime loses its ephemeral artifact directories. Bodies are present for
+-- every bounded regular file, including binary receipts; oversized files
+-- retain metadata so list/read keep their refusal semantics without bloating
+-- the ledger.
 CREATE TABLE IF NOT EXISTS artifact_snapshots (
   attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
   path TEXT NOT NULL,
