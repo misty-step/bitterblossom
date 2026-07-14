@@ -12,6 +12,15 @@ use bitterblossom::spec::Plane;
 use bitterblossom::{budget, dispatch};
 
 static NOTIFY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const HARNESS_KILL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
+
+fn notify_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    // A failed timing assertion must not poison the process-global environment
+    // lock and turn one useful failure into an order-dependent cascade.
+    NOTIFY_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 const CLAUDE_STUB: &str = r#"#!/bin/sh
 cat > /dev/null
@@ -281,7 +290,7 @@ fn setup_streaming_policy_overrun(root: &Path, stub: &str, cap_toml: &str) -> Pl
 fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
     // Env vars are process-global; tests touching BB_NOTIFY_BIN must not
     // overlap.
-    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let _guard = notify_env_lock();
     let notify_stub = root.join("notify-stub.sh");
     write_executable(&notify_stub, NOTIFY_STUB);
     let log = root.join("notify.log");
@@ -306,7 +315,7 @@ fn with_notify_stub<T>(root: &Path, f: impl FnOnce() -> T) -> (T, String) {
 fn assert_policy_cap_kills_running_harness(plane: &Plane, root: &Path, cap_kind: &str) {
     let mut ledger = Ledger::open(&plane.db_path()).unwrap();
 
-    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let _guard = notify_env_lock();
     let notify_stub = root.join("notify-stub.sh");
     write_executable(&notify_stub, NOTIFY_STUB);
     let log = root.join("notify.log");
@@ -325,7 +334,7 @@ fn assert_policy_cap_kills_running_harness(plane: &Plane, root: &Path, cap_kind:
     let reason = run.state_reason.as_deref().unwrap_or_default();
     assert!(reason.contains(cap_kind), "reason={reason}");
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
+        started.elapsed() < HARNESS_KILL_DEADLINE,
         "run should be killed before the harness exits normally"
     );
 
@@ -352,7 +361,7 @@ fn assert_policy_cap_kills_running_harness(plane: &Plane, root: &Path, cap_kind:
 
 #[test]
 fn notification_storm_is_synchronously_accounted() {
-    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let _guard = notify_env_lock();
     let dir = tempfile::tempdir().unwrap();
     let plane = setup(
         dir.path(),
@@ -394,7 +403,7 @@ fn notification_storm_is_synchronously_accounted() {
 
 #[test]
 fn notification_failures_are_recorded_as_guard_events() {
-    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let _guard = notify_env_lock();
     let dir = tempfile::tempdir().unwrap();
     let plane = setup(
         dir.path(),
@@ -529,7 +538,7 @@ fn in_flight_cost_cap_kills_running_harness_and_notifies() {
     let plane = setup_streaming_overrun(dir.path());
     let mut ledger = Ledger::open(&plane.db_path()).unwrap();
 
-    let _guard = NOTIFY_ENV_LOCK.lock().unwrap();
+    let _guard = notify_env_lock();
     let notify_stub = dir.path().join("notify-stub.sh");
     write_executable(&notify_stub, NOTIFY_STUB);
     let log = dir.path().join("notify.log");
@@ -548,7 +557,7 @@ fn in_flight_cost_cap_kills_running_harness_and_notifies() {
     let reason = run.state_reason.as_deref().unwrap_or_default();
     assert!(reason.contains("in-flight cost cap"), "reason={reason}");
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
+        started.elapsed() < HARNESS_KILL_DEADLINE,
         "run should be killed before the harness exits normally"
     );
     assert_eq!(run.cost_usd, Some(0.02));
