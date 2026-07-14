@@ -1,0 +1,21 @@
+#!/bin/sh
+# Local secret gate (bitterblossom-974): scan STAGED changes with the same
+# repo-owned rules CI enforces (.gitleaks.toml). One-line install:
+#
+#   git config core.hooksPath .githooks
+#
+# Output is redacted: gitleaks prints rule/file/line, never the secret bytes.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --staged --pre-commit --redact --no-banner --config .gitleaks.toml . || {
+    echo "" >&2
+    echo "pre-commit: potential secret in staged changes (redacted above)." >&2
+    echo "If it is a genuinely synthetic fixture, see .gitleaks.toml allowlist" >&2
+    echo "conventions (sentinel naming) -- never commit real credential bytes." >&2
+    exit 1
+  }
+else
+  echo "pre-commit: gitleaks not installed (brew install gitleaks) -- local secret scan skipped; CI (.github/workflows/secret-scan.yml) still enforces it" >&2
+fi

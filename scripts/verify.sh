@@ -5,6 +5,23 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# bitterblossom-974: the same secret scan CI enforces on every branch
+# (.github/workflows/secret-scan.yml), bound into the local gate so agents
+# hit it before pushing. Repo-owned rules: .gitleaks.toml; acknowledged
+# historical fingerprints: .gitleaksignore. The selftest plants synthetic
+# fixtures (never committed) and proves every custom rule still fires --
+# the old TruffleHog gate rotted invisibly; this one cannot.
+echo "==> secret scan (gitleaks; .gitleaks.toml)"
+if command -v gitleaks >/dev/null 2>&1; then
+  scripts/secret-scan-selftest.sh
+  gitleaks git --redact --no-banner .
+elif [ -n "${CI:-}" ]; then
+  echo "CI must have gitleaks installed for this gate; see .github/workflows/ci.yml"
+  exit 1
+else
+  echo "gitleaks not found locally -- skipping (enforced in CI by .github/workflows/secret-scan.yml). Install: brew install gitleaks"
+fi
+
 echo "==> fmt"
 cargo fmt --check
 

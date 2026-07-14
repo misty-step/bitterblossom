@@ -1,0 +1,21 @@
+# Historical findings pinned by fingerprint (commit:file:rule:line).
+# Every entry below was eyeballed (masked) during bitterblossom-974: all are
+# synthetic test values or stock-rule false positives in files long deleted
+# from the tree (pre-v3 conductor/go/python eras). Git history is immutable
+# without a rewrite, so these are acknowledged, not secrets.
+# NEVER add an entry for a real credential: rotate it instead.
+106cfbf0740199e5238e6c88d221ef12a9f686d5:internal/dispatch/validation_test.go:bb-openrouter-api-key:73
+106cfbf0740199e5238e6c88d221ef12a9f686d5:internal/dispatch/validation_test.go:github-pat:74
+2abc348a75d213d226ed900c55ec7c1db24d28b4:base/skills/pr-fix/references/code-review-checklist.md:generic-api-key:177
+460a3424b9ab3705981338511e9f2e78aed157f0:scripts/test_conductor.py:generic-api-key:644
+460a3424b9ab3705981338511e9f2e78aed157f0:scripts/test_conductor.py:generic-api-key:661
+460a3424b9ab3705981338511e9f2e78aed157f0:scripts/test_conductor.py:generic-api-key:711
+460a3424b9ab3705981338511e9f2e78aed157f0:scripts/test_conductor.py:generic-api-key:723
+8e2b02fcd86139047906469e190a3b3202f6f250:scripts/test_conductor.py:generic-api-key:645
+8e2b02fcd86139047906469e190a3b3202f6f250:scripts/test_conductor.py:generic-api-key:674
+93bab81b4bcda20e7e98111d5ed6d446c54abfcd:internal/dispatch/validation_test.go:bb-openrouter-api-key:73
+93bab81b4bcda20e7e98111d5ed6d446c54abfcd:internal/dispatch/validation_test.go:github-pat:74
+9ecea96e81bdeea2062bc5f032bffea56599559a:conductor/test/conductor/sprite_agent_test.exs:generic-api-key:131
+9ecea96e81bdeea2062bc5f032bffea56599559a:conductor/test/conductor/sprite_agent_test.exs:generic-api-key:161
+9f23239ba0c1fc3c04e9c55ebf88181b7092ea2e:scripts/test_conductor.py:generic-api-key:789
+9f23239ba0c1fc3c04e9c55ebf88181b7092ea2e:scripts/test_conductor.py:generic-api-key:828
