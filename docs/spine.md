@@ -964,6 +964,16 @@ workflow config; no route decision ever comes from matching prose.
   the two can never both execute one group. Steps run sequentially through
   the same substrate/harness seams dispatch uses (`policies.substrate`,
   default `local`, which requires a dev plane exactly like task-land).
+- **Step host + repos (task-land parity).** A step may declare `host`
+  (substrate execution target, `org/name` syntax on sprites — the exact
+  value task-land puts in `workspace.host`) and `[[step.repos]]`
+  (repositories materialized into the step workspace: `url`, `ref`,
+  optional pinned `commit`, optional `locks` — the same `RepoSpec` shape
+  and pin validation as task-land `workspace.repos`). A host-requiring
+  substrate with a hostless step is refused at the config door with a
+  named error; the local substrate ignores `host` exactly as task-land
+  does. Both fields are optional and additive: pinned snapshots stored
+  before they existed stay valid and execute unchanged.
 - **Completion tool.** A step with zero or one route completes on successful
   harness completion — no result schema. A step with two or more routes must
   write `OUTCOME.json` (`{"outcome", "summary", "artifacts"}`) naming exactly

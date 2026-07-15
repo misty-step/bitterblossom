@@ -356,7 +356,7 @@ pub struct WorkspaceSpec {
     pub checkpoint: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RepoSpec {
     pub url: String,
     #[serde(default = "default_ref")]
@@ -370,7 +370,7 @@ pub struct RepoSpec {
     pub locks: Vec<RepoLockSpec>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoLockSpec {
     pub path: String,
@@ -1172,7 +1172,7 @@ fn validate_required_artifacts(task: &str, artifacts: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn validate_repo_pin(task: &str, repo: &RepoSpec) -> Result<()> {
+pub(crate) fn validate_repo_pin(owner: &str, repo: &RepoSpec) -> Result<()> {
     if let Some(commit) = &repo.commit {
         if commit.len() != 40
             || !commit
@@ -1180,7 +1180,7 @@ fn validate_repo_pin(task: &str, repo: &RepoSpec) -> Result<()> {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             bail!(
-                "task '{task}': workspace repo {} commit must be a full 40-character Git object id",
+                "{owner}: workspace repo {} commit must be a full 40-character Git object id",
                 repo.url
             );
         }
@@ -1195,13 +1195,13 @@ fn validate_repo_pin(task: &str, repo: &RepoSpec) -> Result<()> {
                 .all(|component| matches!(component, Component::Normal(_)));
         if !valid_path {
             bail!(
-                "task '{task}': workspace repo {} lock path must be a non-empty relative path without '.' or '..'",
+                "{owner}: workspace repo {} lock path must be a non-empty relative path without '.' or '..'",
                 repo.url
             );
         }
         if !paths.insert(lock.path.as_str()) {
             bail!(
-                "task '{task}': workspace repo {} repeats lock path {:?}",
+                "{owner}: workspace repo {} repeats lock path {:?}",
                 repo.url,
                 lock.path
             );
@@ -1213,7 +1213,7 @@ fn validate_repo_pin(task: &str, repo: &RepoSpec) -> Result<()> {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             bail!(
-                "task '{task}': workspace repo {} lock git_blob must be a full 40-character Git object id",
+                "{owner}: workspace repo {} lock git_blob must be a full 40-character Git object id",
                 repo.url
             );
         }

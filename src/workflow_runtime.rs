@@ -1222,7 +1222,15 @@ fn run_step(
         Ok(s) => s,
         Err(e) => return fail(format!("{e:#}"), &none),
     };
-    let mut session = match substrate.acquire(&format!("wf-{}", run.id), &attempt_dir) {
+    // Task-land parity (dispatch passes task.host()): the step's declared
+    // host addresses the substrate; absent (validation only admits that on
+    // the local substrate) keeps the historical run-scoped name, which local
+    // exec ignores.
+    let host = step
+        .host
+        .clone()
+        .unwrap_or_else(|| format!("wf-{}", run.id));
+    let mut session = match substrate.acquire(&host, &attempt_dir) {
         Ok(s) => s,
         Err(e) => return fail(format!("acquire: {e:#}"), &none),
     };
@@ -1241,7 +1249,7 @@ fn run_step(
     })
     .to_string();
     let plan = WorkspacePlan {
-        repos: Vec::new(),
+        repos: step.repos.clone(),
         card: card.clone(),
         run_context,
         payload: run.payload.clone(),

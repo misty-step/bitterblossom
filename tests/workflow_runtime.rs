@@ -1690,3 +1690,259 @@ bin = "{}"
     assert!(detail.contains("negative"), "{detail}");
     assert!(detail.contains("helper"), "{detail}");
 }
+
+// --- bitterblossom-workflow-step-host: substrate host + repos binding --------
+
+/// bb invocation with extra env (the sprites stub needs BB_SPRITE_BIN etc. to
+/// reach the `sprite` subprocess bb spawns).
+fn bb_env(root: &Path, args: &[&str], envs: &[(&str, &std::ffi::OsStr)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bb"));
+    cmd.args(["--config", root.to_str().unwrap()]).args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().unwrap()
+}
+
+/// The stub `sprite` CLI from tests/e2e_sprites.rs, trimmed to what a
+/// workflow step drill needs: it logs every invocation (including the
+/// `-s <host>` selector) and executes the remote command locally with
+/// /home/sprite mapped onto SPRITE_FAKE_HOME.
+const WF_SPRITE_STUB: &str = r#"#!/bin/bash
+log="$SPRITE_STUB_LOG"
+home="$(cd "$SPRITE_FAKE_HOME" && pwd -P)"
+cmd="$1"; shift
+echo "$cmd $*" >> "$log"
+case "$cmd" in
+  restore)
+    exit 0;;
+  exec)
+    declare -a rest
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -s|--dir|--env|-o) shift 2;;
+        --) shift; break;;
+        --file)
+          spec="$2"; shift 2
+          src="${spec%%:*}"; dest="${spec#*:}"
+          dest="${dest//\/home\/sprite/$home}"
+          mkdir -p "$(dirname "$dest")"
+          cp "$src" "$dest";;
+        *) break;;
+      esac
+    done
+    while [ $# -gt 0 ]; do
+      rest+=("${1//\/home\/sprite/$home}"); shift
+    done
+    if [ "${rest[0]}" = "setsid" ]; then
+      rest=("${rest[@]:1}")
+      [ "${rest[0]}" = "-w" ] && rest=("${rest[@]:1}")
+    fi
+    if [ "${rest[0]}" = "sh" ] && [ "${#rest[@]}" -eq 1 ]; then
+      sed "s|/home/sprite|$home|g" | sh
+      exit $?
+    fi
+    exec "${rest[@]}";;
+  *)
+    echo "stub: unknown command $cmd" >&2; exit 64;;
+esac
+"#;
+
+/// bitterblossom-workflow-step-host criterion 1+2 (red-first): a step's
+/// declared host must reach substrate acquire() — and a dev=false plane
+/// (the public-plane posture) must accept and run a host-bound step on a
+/// non-local substrate end to end.
+#[test]
+fn step_host_reaches_the_substrate_and_runs_on_a_prod_plane() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // dev defaults to false: this is the public-plane posture where the
+    // local substrate is refused and every workload runs on a remote host.
+    fs::write(
+        root.join("plane.toml"),
+        "[ingress]\nbind = \"127.0.0.1:0\"\n",
+    )
+    .unwrap();
+
+    let sprite_stub = root.join("sprite-stub");
+    fs::write(&sprite_stub, WF_SPRITE_STUB).unwrap();
+    let mut perms = fs::metadata(&sprite_stub).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&sprite_stub, perms).unwrap();
+    let fake_home = root.join("sprite-home");
+    fs::create_dir_all(&fake_home).unwrap();
+    let log = root.join("sprite-log");
+    fs::write(&log, "").unwrap();
+
+    let stub = write_stub(root, "work.sh", r#"echo "ran on the sprite""#);
+    let doc = write_doc(
+        root,
+        "hosted.toml",
+        &format!(
+            r#"
+name = "hosted"
+goal = "Run one step on a named sprite host."
+[[step]]
+name = "work"
+goal = "Do the work on the sprite."
+host = "misty-step/lane-1"
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+
+[policies]
+substrate = "sprites"
+"#,
+            stub.display()
+        ),
+    );
+    let envs: Vec<(&str, &std::ffi::OsStr)> = vec![
+        ("BB_SPRITE_BIN", sprite_stub.as_os_str()),
+        ("SPRITE_STUB_LOG", log.as_os_str()),
+        ("SPRITE_FAKE_HOME", fake_home.as_os_str()),
+    ];
+    let create = bb_env(root, &["workflow", "create", doc.as_str()], &envs);
+    assert!(
+        create.status.success(),
+        "create: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    assert!(bb_env(root, &["workflow", "activate", "hosted"], &envs)
+        .status
+        .success());
+    let accepted = bb_env(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "hosted",
+            "--trigger",
+            "test",
+            "--json",
+        ],
+        &envs,
+    );
+    assert!(accepted.status.success());
+    let accepted: serde_json::Value = serde_json::from_slice(&accepted.stdout).unwrap();
+    let run_id = accepted["run"]["id"].as_str().unwrap();
+
+    let exec = bb_env(root, &["workflow", "execute", run_id, "--json"], &envs);
+    assert!(
+        exec.status.success(),
+        "execute on a dev=false plane must accept a host-bound step\nstderr: {}",
+        String::from_utf8_lossy(&exec.stderr)
+    );
+    let view: serde_json::Value = serde_json::from_slice(&exec.stdout).unwrap();
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    assert_eq!(view["status"]["detail"], "ran on the sprite");
+
+    // the declared step host reached the substrate: the adapter pins the
+    // org from `org/name` syntax, so every sprite CLI call carries
+    // `-o misty-step -s lane-1` — never the old hardcoded wf-<runid> name
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains("-o misty-step -s lane-1"),
+        "step host never reached the sprite CLI:\n{calls}"
+    );
+    assert!(
+        !calls.contains("-s wf-"),
+        "substrate still addressed by the hardcoded run-id name:\n{calls}"
+    );
+}
+
+/// bitterblossom-workflow-step-host criterion 3 (red-first): a host-requiring
+/// substrate with a hostless step is refused at the config door with a named
+/// error — never a silent local fallback.
+#[test]
+fn hostless_step_on_host_requiring_substrate_is_refused_at_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "work.sh", r#"echo ok"#);
+    let doc = write_doc(
+        root,
+        "hostless.toml",
+        &format!(
+            r#"
+name = "hostless"
+goal = "Declare a remote substrate but no step host."
+[[step]]
+name = "work"
+goal = "Do the work."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+
+[policies]
+substrate = "sprites"
+"#,
+            stub.display()
+        ),
+    );
+    let refused = bb(root, &["workflow", "create", &doc]);
+    assert!(
+        !refused.status.success(),
+        "hostless step on sprites must not be creatable"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("work"), "{stderr}");
+    assert!(stderr.contains("sprites"), "{stderr}");
+    assert!(stderr.contains("host"), "{stderr}");
+}
+
+/// Additive-fields contract: a pinned snapshot stored BEFORE host/repos
+/// existed (no such keys in its JSON) still validates and executes
+/// unchanged on the substrate it declared.
+#[test]
+fn pre_host_field_pinned_snapshot_stays_valid_and_executes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "old.sh", r#"echo "still valid""#);
+    let seed = write_doc(
+        root,
+        "elder-seed.toml",
+        &format!(
+            r#"
+name = "elder"
+goal = "Seed workflow."
+[[step]]
+name = "work"
+goal = "Do the work."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &seed, "elder");
+    // a snapshot exactly as the pre-host-field binary stored it: no host,
+    // no repos keys anywhere
+    let old_doc = format!(
+        r#"{{"name":"elder","goal":"Pre-host-field snapshot.","step":[{{"name":"work","agent":{{"name":"stub","version":1,"harness":"command","model":"stub","bin":"{}"}},"goal":"Do the work."}}]}}"#,
+        stub.display()
+    );
+    let rev = insert_prerule_revision(root, "elder", &old_doc);
+    {
+        let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+        conn.execute(
+            "UPDATE workflows SET active_revision = ?1 WHERE name = 'elder'",
+            [rev],
+        )
+        .unwrap();
+    }
+    let run_id = accept_test_run(root, "elder");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    assert_eq!(view["status"]["detail"], "still valid");
+}

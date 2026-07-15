@@ -403,7 +403,18 @@ rm -rf "$self_drill_tmp"
 # CLI/HTTP projections of one view. No workload-specific semantic branch:
 # no outcome keyword, workload name, or domain rule appears in src/ (the
 # arbitrary-vocabulary drill in tests/workflow_runtime.rs pins that).
-SPINE_LOC_CAP=19692
+#
+# bitterblossom-workflow-step-host: 19692 -> 19736 (exact actual, zero banked
+# slack) for substrate host + repos binding on workflow steps — task-land
+# parity so a step can execute on a real substrate host (the public plane is
+# dev=false; every workload runs on Fly sprites). workflow.rs +36 (optional
+# WorkflowStep.host/repos with the same RepoSpec shape and pin validation as
+# workspace.repos, plus the config-door rule mirroring spec.rs: a
+# host-requiring substrate refuses a hostless step by name),
+# workflow_runtime.rs +8 (step.host -> substrate.acquire(), step.repos ->
+# WorkspacePlan.repos, exactly what dispatch.rs does with task.host()).
+# Mechanism only: no scheduling, no policy additions.
+SPINE_LOC_CAP=19736
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

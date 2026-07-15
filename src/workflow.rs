@@ -82,6 +82,19 @@ pub struct WorkflowStep {
     pub name: String,
     pub agent: StepAgent,
     pub goal: String,
+    /// Substrate execution target for this step's attempts, with task-land
+    /// `workspace.host` semantics: required when `policies.substrate` needs
+    /// a real host (sprites/tailnet), ignored by the local substrate.
+    /// Absent on a local/dev plane behaves exactly as before this field
+    /// existed. Optional and additive: pre-host pinned snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Repositories the substrate materializes into the step workspace
+    /// before execution — the same `RepoSpec` shape and semantics as
+    /// task-land `workspace.repos` (url, ref, optional pinned commit,
+    /// optional lock-file blob pins).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<crate::spec::RepoSpec>,
     /// Outcome -> next step name, or "done". Empty means: successful
     /// completion of this terminal step implies `completed`. Two or more
     /// routes make the step *branching*: its agent must supply exactly one
@@ -250,6 +263,27 @@ impl WorkflowDoc {
         if let Some(substrate) = self.policies.substrate.as_deref() {
             crate::substrate::for_task(substrate)
                 .with_context(|| format!("workflow '{}': bad policies.substrate", self.name))?;
+        }
+        // Task-land parity (spec.rs: "substrate '<s>' requires
+        // workspace.host"): a substrate that addresses a real host must have
+        // one declared on every step — a named refusal at the config door,
+        // never a silent fallback to a junk workspace name.
+        let substrate = self.policies.substrate.as_deref().unwrap_or("local");
+        for step in &self.steps {
+            if substrate != "local" && step.host.is_none() {
+                bail!(
+                    "workflow '{}': step '{}' needs a host: substrate '{substrate}' requires one \
+                     (same rule as task-land workspace.host)",
+                    self.name,
+                    step.name
+                );
+            }
+            for repo in &step.repos {
+                crate::spec::validate_repo_pin(
+                    &format!("workflow '{}': step '{}'", self.name, step.name),
+                    repo,
+                )?;
+            }
         }
         for step in &self.steps {
             for (outcome, target) in &step.routes {
@@ -469,6 +503,8 @@ impl WorkflowDoc {
                     bundle: None,
                 },
                 goal: task.card.trim().to_string(),
+                host: task.spec.workspace.host.clone(),
+                repos: task.spec.workspace.repos.clone(),
                 routes: BTreeMap::new(),
                 authority: Vec::new(),
             }],
