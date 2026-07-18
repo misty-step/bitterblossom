@@ -156,20 +156,11 @@ fn open_harness_agents_default_to_api_auth_and_openrouter_and_may_run_reflex() {
 }
 
 #[test]
-fn open_harness_agents_cannot_claim_subscription_auth() {
+fn pi_and_opencode_agents_cannot_claim_subscription_auth() {
     let dir = tempfile::tempdir().unwrap();
     let err = plane_with(
         dir.path(),
         "harness = \"pi\"\nmodel = \"m\"\nauth = \"subscription\"\n",
-        MANUAL,
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("no subscription auth"), "{err}");
-
-    let dir2 = tempfile::tempdir().unwrap();
-    let err = plane_with(
-        dir2.path(),
-        "harness = \"omp\"\nmodel = \"m\"\nauth = \"subscription\"\n",
         MANUAL,
     )
     .unwrap_err();
@@ -183,6 +174,61 @@ fn open_harness_agents_cannot_claim_subscription_auth() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("no subscription auth"), "{err}");
+}
+
+#[test]
+fn omp_subscription_auth_is_manual_and_local_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = plane_with(
+        dir.path(),
+        "harness = \"omp\"\nmodel = \"gpt-5.6-luna\"\nprovider = \"openai-codex\"\nauth = \"subscription\"\n",
+        MANUAL,
+    )
+    .unwrap();
+    assert_eq!(
+        plane.tasks["t"].agent.auth_class().unwrap(),
+        bitterblossom::spec::AuthClass::Subscription
+    );
+
+    let missing_provider = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        missing_provider.path(),
+        "harness = \"omp\"\nmodel = \"gpt-5.6-luna\"\nauth = \"subscription\"\n",
+        MANUAL,
+    )
+    .unwrap_err();
+    let detail = format!("{err:#}");
+    assert!(
+        detail.contains("requires provider = \"openai-codex\""),
+        "{detail}"
+    );
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir2.path(),
+        "harness = \"omp\"\nmodel = \"gpt-5.6-luna\"\nprovider = \"openai-codex\"\nauth = \"subscription\"\n",
+        CRON,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("run dispatch (manual) work only"),
+        "{err}"
+    );
+
+    let dir3 = tempfile::tempdir().unwrap();
+    let err = plane_with(
+        dir3.path(),
+        "harness = \"omp\"\nmodel = \"gpt-5.6-luna\"\nprovider = \"openai-codex\"\nauth = \"subscription\"\n",
+        "agent = \"a\"\nsubstrate = \"sprites\"\n\
+         [[trigger]]\nkind = \"manual\"\n\
+         [workspace]\nhost = \"org/test\"\n",
+    )
+    .unwrap_err();
+    let detail = format!("{err:#}");
+    assert!(
+        detail.contains("OMP subscription auth requires the local substrate"),
+        "{detail}"
+    );
 }
 
 #[test]

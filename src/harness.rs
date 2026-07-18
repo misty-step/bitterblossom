@@ -258,7 +258,7 @@ fn is_tool_action_type(kind: &str) -> bool {
 fn partial_agent_jsonl_stats(stdout: &str) -> AttemptStats {
     let mut turns: i64 = 0;
     let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
-    let mut saw_usage = false;
+    let (mut saw_usage, mut all_usage_had_cost) = (false, true);
     for line in stdout.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -281,17 +281,20 @@ fn partial_agent_jsonl_stats(stdout: &str) -> AttemptStats {
         saw_usage = true;
         tokens_in += usage.get("input").and_then(Value::as_i64).unwrap_or(0);
         tokens_out += usage.get("output").and_then(Value::as_i64).unwrap_or(0);
-        cost += usage
+        match usage
             .get("cost")
             .and_then(|c| c.get("total"))
             .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+        {
+            Some(value) => cost += value,
+            None => all_usage_had_cost = false,
+        }
     }
     AttemptStats {
         tokens_in: saw_usage.then_some(tokens_in),
         tokens_out: saw_usage.then_some(tokens_out),
         turns: (turns > 0).then_some(turns),
-        cost_usd: saw_usage.then_some(cost),
+        cost_usd: (saw_usage && all_usage_had_cost).then_some(cost),
     }
 }
 
@@ -560,7 +563,7 @@ fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     let mut last_message: Option<Value> = None;
     let mut saw_event = false;
     let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
-    let mut saw_usage = false;
+    let (mut saw_usage, mut all_usage_had_cost) = (false, true);
     for line in stdout.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -575,11 +578,14 @@ fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
                             saw_usage = true;
                             tokens_in += u.get("input").and_then(Value::as_i64).unwrap_or(0);
                             tokens_out += u.get("output").and_then(Value::as_i64).unwrap_or(0);
-                            cost += u
+                            match u
                                 .get("cost")
                                 .and_then(|c| c.get("total"))
                                 .and_then(Value::as_f64)
-                                .unwrap_or(0.0);
+                            {
+                                Some(value) => cost += value,
+                                None => all_usage_had_cost = false,
+                            }
                         }
                         last_message = Some(m.clone());
                     }
@@ -615,7 +621,7 @@ fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
             tokens_in: saw_usage.then_some(tokens_in),
             tokens_out: saw_usage.then_some(tokens_out),
             turns: Some(turns),
-            cost_usd: saw_usage.then_some(cost),
+            cost_usd: (saw_usage && all_usage_had_cost).then_some(cost),
         },
     })
 }

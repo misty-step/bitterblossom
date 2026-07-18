@@ -414,7 +414,15 @@ rm -rf "$self_drill_tmp"
 # workflow_runtime.rs +8 (step.host -> substrate.acquire(), step.repos ->
 # WorkspacePlan.repos, exactly what dispatch.rs does with task.host()).
 # Mechanism only: no scheduling, no policy additions.
-SPINE_LOC_CAP=19736
+# bitterblossom-ticket-to-pr-workflow Lane A: 19736 -> 19845 (exact actual,
+# zero banked slack) for the first workflow executor seam: effective auth is
+# pinned in StepAgent, direct/imported workflows share one harness/auth matrix,
+# accepted pinned revisions recheck manual-only subscription trigger authority,
+# local OMP subscription dispatch is locked to openai-codex without argument
+# escape hatches, and OMP usage keeps missing dollar cost unknown in both live
+# progress and final parsing. All are generic workflow admission/execution/
+# evidence mechanics; no backlog, PR, selection, or domain judgment entered src/.
+SPINE_LOC_CAP=19845
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

@@ -190,6 +190,97 @@ bin = "{}"
     assert!(String::from_utf8_lossy(&rerun.stderr).contains("succeeded"));
 }
 
+#[test]
+fn manual_local_omp_subscription_step_uses_operator_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let operator_home = root.join("operator-home");
+    fs::create_dir(&operator_home).unwrap();
+    let stub = write_stub(
+        root,
+        "omp-stub.sh",
+        r#"cat <<EOF
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"$HOME"}],"usage":{"input":12,"output":3}}}
+{"type":"turn_end","message":{"role":"assistant"}}
+EOF"#,
+    );
+    let doc = write_doc(
+        root,
+        "omp-subscription.toml",
+        &format!(
+            r#"
+name = "omp-subscription"
+goal = "Prove a manual local OMP subscription step."
+[[trigger]]
+kind = "manual"
+[[step]]
+name = "prove"
+goal = "Report the launch HOME."
+[step.agent]
+name = "omp-subscription"
+version = 1
+harness = "omp"
+model = "gpt-5.4-nano"
+provider = "openai-codex"
+auth = "subscription"
+bin = "{}"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "omp-subscription");
+    let accepted = bb_json(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "omp-subscription",
+            "--trigger",
+            "manual",
+            "--json",
+        ],
+    );
+    let run_id = accepted["run"]["id"].as_str().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .env("HOME", &operator_home)
+        .args(["--config", root.to_str().unwrap()])
+        .args(["workflow", "execute", run_id, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "execute failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    assert_eq!(
+        view["status"]["detail"],
+        operator_home.to_string_lossy().as_ref()
+    );
+    assert_eq!(view["steps"][0]["agent"]["auth"], "subscription");
+    assert_eq!(view["steps"][0]["cost_usd"], serde_json::Value::Null);
+
+    let bypass = bb(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "omp-subscription",
+            "--trigger",
+            "webhook",
+        ],
+    );
+    assert!(!bypass.status.success());
+    assert!(
+        String::from_utf8_lossy(&bypass.stderr).contains("accepts manual triggers only"),
+        "{}",
+        String::from_utf8_lossy(&bypass.stderr)
+    );
+}
+
 // --- criterion 2: result schemas only where routing needs them ---------------
 
 #[test]

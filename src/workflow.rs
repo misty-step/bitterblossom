@@ -23,7 +23,9 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::ledger::{new_id, now, Ledger};
-use crate::spec::{Task, TriggerSpec};
+use crate::spec::{
+    validate_omp_subscription_binding, validated_auth_class_for, AuthClass, Task, TriggerSpec,
+};
 
 pub const WORKFLOW_STATES: &[&str] = &["draft", "active", "paused", "archived"];
 pub const TRIGGER_KINDS: &[&str] = &["manual", "cron", "webhook", "internal", "test", "replay"];
@@ -118,13 +120,15 @@ pub struct StepAgent {
     pub model: String,
     /// Optional launch-contract completion so a pinned snapshot stays
     /// executable without any mutable agent file: harness binary override,
-    /// extra args, provider, and declared secret env names.
+    /// extra args, provider, auth class, and declared secret env names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bin: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<String>,
     /// Optional path to an immutable Roster v0.2 resolved bundle directory
@@ -164,6 +168,17 @@ impl WorkflowPolicies {
     fn is_empty(&self) -> bool {
         self == &Self::default()
     }
+}
+
+fn uses_subscription_auth(doc: &WorkflowDoc) -> Result<bool> {
+    for step in &doc.steps {
+        if validated_auth_class_for(&step.agent.harness, step.agent.auth.as_deref())?
+            == AuthClass::Subscription
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl WorkflowDoc {
@@ -259,6 +274,19 @@ impl WorkflowDoc {
                     crate::harness::HARNESSES.join(", ")
                 );
             }
+            validated_auth_class_for(&step.agent.harness, step.agent.auth.as_deref())
+                .with_context(|| format!("workflow '{}': step '{}' agent", self.name, step.name))?;
+            for secret in &step.agent.secrets {
+                if matches!(secret.as_str(), "ANTHROPIC_API_KEY" | "OPENAI_API_KEY") {
+                    bail!(
+                        "workflow '{}': step '{}' secret '{}' is forbidden — \
+                         subscription harnesses never receive model API keys",
+                        self.name,
+                        step.name,
+                        secret
+                    );
+                }
+            }
         }
         if let Some(substrate) = self.policies.substrate.as_deref() {
             crate::substrate::for_task(substrate)
@@ -274,6 +302,25 @@ impl WorkflowDoc {
                 bail!(
                     "workflow '{}': step '{}' needs a host: substrate '{substrate}' requires one \
                      (same rule as task-land workspace.host)",
+                    self.name,
+                    step.name
+                );
+            }
+            let auth = validated_auth_class_for(&step.agent.harness, step.agent.auth.as_deref())?;
+            validate_omp_subscription_binding(
+                &step.agent.harness,
+                auth,
+                step.agent.provider.as_deref(),
+                &step.agent.model,
+                &step.agent.args,
+                substrate,
+            )
+            .with_context(|| format!("workflow '{}': step '{}' agent", self.name, step.name))?;
+            if auth == AuthClass::Subscription
+                && self.triggers.iter().any(|trigger| trigger.kind != "manual")
+            {
+                bail!(
+                    "workflow '{}': step '{}' subscription auth is manual-only",
                     self.name,
                     step.name
                 );
@@ -499,6 +546,13 @@ impl WorkflowDoc {
                     bin: task.agent.bin.clone(),
                     args: task.agent.args.clone(),
                     provider: task.agent.provider.clone(),
+                    auth: Some(
+                        match task.agent.auth_class()? {
+                            AuthClass::Subscription => "subscription",
+                            AuthClass::Api => "api",
+                        }
+                        .into(),
+                    ),
                     secrets: task.agent.secrets.clone(),
                     bundle: None,
                 },
@@ -946,6 +1000,13 @@ impl Ledger {
             let revision = wf
                 .active_revision
                 .context("active workflow has no active revision (corrupt state)")?;
+            let pinned = self.workflow_revision_row(&wf.id, revision)?;
+            let document = WorkflowDoc::from_canonical_json(&pinned.document)?;
+            if trigger_kind != "manual" && uses_subscription_auth(&document)? {
+                bail!(
+                    "workflow '{name}' uses subscription auth and accepts manual triggers only"
+                );
+            }
             let id = format!("wfr-{}", new_id());
             let ts = now();
             self.conn.execute(

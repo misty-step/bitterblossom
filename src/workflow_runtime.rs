@@ -1057,7 +1057,7 @@ fn agent_spec_from(agent: &StepAgent) -> AgentSpec {
         role: None,
         skills: Vec::new(),
         provider: agent.provider.clone(),
-        auth: None,
+        auth: agent.auth.clone(),
         bin: agent.bin.clone(),
         args: agent.args.clone(),
         secrets: agent.secrets.clone(),

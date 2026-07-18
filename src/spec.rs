@@ -217,17 +217,71 @@ pub enum AuthClass {
     Api,
 }
 
+pub(crate) fn auth_class_for(harness: &str, auth: Option<&str>) -> Result<AuthClass> {
+    match auth {
+        Some("subscription") => Ok(AuthClass::Subscription),
+        Some("api") => Ok(AuthClass::Api),
+        Some(other) => bail!("unknown auth '{other}' (known: subscription, api)"),
+        None => Ok(match harness {
+            "claude" | "codex" => AuthClass::Subscription,
+            _ => AuthClass::Api,
+        }),
+    }
+}
+
+pub(crate) fn validated_auth_class_for(harness: &str, auth: Option<&str>) -> Result<AuthClass> {
+    let auth = auth_class_for(harness, auth)?;
+    match (harness, auth) {
+        ("claude" | "codex", AuthClass::Api) => bail!(
+            "{harness} runs on subscription auth only — \
+             Anthropic/OpenAI API keys are forbidden on this plane"
+        ),
+        ("pi" | "opencode", AuthClass::Subscription) => {
+            bail!("{harness} has no subscription auth; use auth = \"api\"")
+        }
+        _ => Ok(auth),
+    }
+}
+
+pub(crate) fn validate_omp_subscription_binding(
+    harness: &str,
+    auth: AuthClass,
+    provider: Option<&str>,
+    model: &str,
+    args: &[String],
+    substrate: &str,
+) -> Result<()> {
+    if harness != "omp" || auth != AuthClass::Subscription {
+        return Ok(());
+    }
+    if provider != Some("openai-codex") {
+        bail!("OMP subscription auth requires provider = \"openai-codex\"");
+    }
+    if let Some((model_provider, _)) = model.split_once('/') {
+        if model_provider != "openai-codex" {
+            bail!(
+                "OMP subscription auth model '{model}' overrides provider \
+                 \"openai-codex\""
+            );
+        }
+    }
+    if let Some(arg) = args.iter().find(|arg| {
+        matches!(arg.as_str(), "--provider" | "--model" | "--api-key")
+            || arg.starts_with("--provider=")
+            || arg.starts_with("--model=")
+            || arg.starts_with("--api-key=")
+    }) {
+        bail!("OMP subscription auth forbids provider override argument '{arg}'");
+    }
+    if substrate != "local" {
+        bail!("OMP subscription auth requires the local substrate");
+    }
+    Ok(())
+}
+
 impl AgentSpec {
     pub fn auth_class(&self) -> Result<AuthClass> {
-        match self.auth.as_deref() {
-            Some("subscription") => Ok(AuthClass::Subscription),
-            Some("api") => Ok(AuthClass::Api),
-            Some(other) => bail!("unknown auth '{other}' (known: subscription, api)"),
-            None => Ok(match self.harness.as_str() {
-                "claude" | "codex" => AuthClass::Subscription,
-                _ => AuthClass::Api,
-            }),
-        }
+        auth_class_for(&self.harness, self.auth.as_deref())
     }
 
     pub fn provider(&self) -> &str {
@@ -677,9 +731,8 @@ impl Plane {
             if agent.harness.trim().is_empty() {
                 bail!("agent '{name}': harness is required");
             }
-            let auth = agent
-                .auth_class()
-                .with_context(|| format!("agent '{name}'"))?;
+            validated_auth_class_for(&agent.harness, agent.auth.as_deref())
+                .map_err(|e| anyhow::anyhow!("agent '{name}': {e}"))?;
             if agent.harness == "command" {
                 if agent.bin.is_none() {
                     bail!("agent '{name}': harness = \"command\" requires bin");
@@ -689,20 +742,6 @@ impl Plane {
                     "agent '{name}': model is required for harness '{}'",
                     agent.harness
                 );
-            }
-            match (agent.harness.as_str(), auth) {
-                ("claude" | "codex", AuthClass::Api) => bail!(
-                    "agent '{name}': {} runs on subscription auth only — \
-                     Anthropic/OpenAI API keys are forbidden on this plane",
-                    agent.harness
-                ),
-                ("pi" | "omp" | "opencode", AuthClass::Subscription) => {
-                    bail!(
-                        "agent '{name}': {} has no subscription auth; use auth = \"api\"",
-                        agent.harness
-                    )
-                }
-                _ => {}
             }
             for secret in agent
                 .secrets
@@ -764,10 +803,8 @@ impl Plane {
                 .rollout
                 .validate(&task.name)
                 .with_context(|| format!("task '{}'", task.name))?;
-            let auth = task
-                .agent
-                .auth_class()
-                .with_context(|| format!("task '{}'", task.name))?;
+            let auth = validated_auth_class_for(&task.agent.harness, task.agent.auth.as_deref())
+                .map_err(|e| anyhow::anyhow!("task '{}': {e}", task.name))?;
             let reflex = task
                 .spec
                 .triggers
@@ -782,6 +819,15 @@ impl Plane {
                     task.agent_name
                 );
             }
+            validate_omp_subscription_binding(
+                &task.agent.harness,
+                auth,
+                task.agent.provider.as_deref(),
+                &task.agent.model,
+                &task.agent.args,
+                &task.spec.substrate,
+            )
+            .map_err(|e| anyhow::anyhow!("task '{}': {e}", task.name))?;
             for trigger in &task.spec.triggers {
                 match trigger {
                     TriggerSpec::Webhook {

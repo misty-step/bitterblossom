@@ -219,6 +219,51 @@ fn parse_omp_jsonl_events_sums_usage_and_keeps_last_text() {
 }
 
 #[test]
+fn parse_omp_usage_without_cost_keeps_cost_unavailable() {
+    let out = concat!(
+        r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"BB-OMP-SUBSCRIPTION-OK"}],"usage":{"input":200,"output":20}}}"#,
+        "\n",
+        r#"{"type":"turn_end","message":{"role":"assistant"}}"#,
+    );
+    let parsed = parse_output("omp", out).unwrap();
+    assert_eq!(parsed.result, "BB-OMP-SUBSCRIPTION-OK");
+    assert_eq!(parsed.stats.tokens_in, Some(200));
+    assert_eq!(parsed.stats.tokens_out, Some(20));
+    assert_eq!(parsed.stats.cost_usd, None);
+}
+
+#[test]
+fn parse_omp_mixed_cost_visibility_keeps_aggregate_unavailable() {
+    let out = concat!(
+        r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"usage":{"input":100,"output":10,"cost":{"total":0.002}}}}"#,
+        "\n",
+        r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"BB-OMP-MIXED-COST"}],"usage":{"input":200,"output":20}}}"#,
+    );
+    let parsed = parse_output("omp", out).unwrap();
+    assert_eq!(parsed.result, "BB-OMP-MIXED-COST");
+    assert_eq!(parsed.stats.tokens_in, Some(300));
+    assert_eq!(parsed.stats.tokens_out, Some(30));
+    assert_eq!(parsed.stats.cost_usd, None);
+}
+
+#[test]
+fn partial_omp_progress_never_launders_missing_cost_into_zero_or_a_partial_sum() {
+    let missing = r#"{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":200,"output":20}}}"#;
+    let mixed = concat!(
+        r#"{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":100,"output":10,"cost":{"total":0.002}}}}"#,
+        "\n",
+        r#"{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":200,"output":20}}}"#,
+    );
+    for out in [missing, mixed] {
+        let progress = parse_partial_progress("omp", out);
+        assert_eq!(progress.stats.cost_usd, None);
+    }
+    let mixed = parse_partial_progress("omp", mixed);
+    assert_eq!(mixed.stats.tokens_in, Some(300));
+    assert_eq!(mixed.stats.tokens_out, Some(30));
+}
+
+#[test]
 fn opencode_command_carries_provider_slash_model_and_reads_lane_card() {
     let agent: bitterblossom::spec::AgentSpec = toml::from_str(
         r#"

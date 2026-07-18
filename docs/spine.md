@@ -209,11 +209,15 @@ same way. Existing hand-authored agents keep working unchanged.
 
 Two auth classes, two work classes:
 
-- **`subscription`** (claude/codex default): the agent runs *as* the
-  operator on OAuth subscription auth. API keys are forbidden —
+- **`subscription`** (claude/codex default; explicit on OMP): the agent runs
+  *as* the operator on OAuth subscription auth. API keys are forbidden —
   `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` as agent secrets fail the load, as
-  does `auth = "api"` on those harnesses. Subscription agents bind only
-  to manual-only tasks (**dispatch** work).
+  does `auth = "api"` on Claude/Codex. Every subscription agent is manual-only
+  (**dispatch** work). OMP subscription additionally requires
+  `provider = "openai-codex"` and the local substrate because it consumes the
+  operator's local OMP auth broker. Provider-qualified models and extra OMP
+  arguments cannot override that binding; remote Claude/Codex subscription
+  dispatch remains valid.
 - **`api`** (pi/omp default): cheap open-weight models via OpenRouter. The
   only class allowed on webhook/cron triggers (**reflex** work). Execs
   are hermetic: scrubbed environment, workspace-local HOME, declared
@@ -650,18 +654,18 @@ plus live plane ledger receipts, 2026-07-14):
 | `claude`   | yes                   | `total_cost_usd` on the final result JSON (subscription auth; the figure is the CLI's own accounting, informational for these controls) |
 | `codex`    | **never**              | JSONL carries token usage only; no dollar figure exists on the subscription surface — `parse_codex` records NULL by construction |
 | `pi`       | yes                   | sum of assistant `message_end` `usage.cost.total` (OpenRouter per-response usage accounting) |
-| `omp`      | yes                   | same JSONL contract as `pi` |
+| `omp`      | yes or NULL           | sum of assistant `message_end` `usage.cost.total`; NULL unless every counted usage event carries a numeric total |
 | `opencode` | yes                   | sum of `step-finish` `cost` |
 | `command`  | self-reported only    | passthrough of `cost_usd` from `bb.command_result.v1`; **blind unless the wrapper emits it** |
 
-Caveats: "yes" is an empirical contract on parsed usage events, pinned by
-tests, not a runtime-enforced guarantee — `tests/cost_visibility.rs` asserts
-a non-null `cost_usd` lands in the ledger after a stubbed dispatch for every
-harness above that claims support, but a pi/omp response carrying usage
-without `cost.total` records `Some(0.0)`, and a completed run whose
-`message_end` carries no usage at all records NULL. A failed attempt killed
-before any usage event records NULL cost with the raw output preserved on
-the attempt row (fail-visible).
+Caveats: "yes" is an empirical parser contract, not a guarantee that every
+provider response supplies cost. `tests/cost_visibility.rs` asserts a non-null
+`cost_usd` lands after a stubbed metered dispatch; parser fixtures separately
+assert that pi/omp usage without `cost.total` records NULL. Mixed visibility
+also records NULL rather than understating an aggregate with a partial sum.
+A completed run whose `message_end` carries no usage, or a failed attempt
+killed before any usage event, records NULL cost with the raw output preserved
+on the attempt row (fail-visible).
 
 Because the spend controls read `cost_usd`, admission refuses the blind
 metered path: an agent whose declared secrets include `OPENROUTER_API_KEY`

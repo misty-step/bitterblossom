@@ -223,6 +223,205 @@ fn lifecycle_revise_rollback_and_audit_in_one_store() {
     }
 }
 
+#[test]
+fn codex_default_auth_and_omp_subscription_keep_effective_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let reflex = write_doc(
+        root,
+        "codex-reflex.toml",
+        r#"
+name = "codex-reflex"
+goal = "Reject unattended subscription dispatch."
+[[trigger]]
+kind = "webhook"
+route = "codex-reflex"
+secret_env = "BB_CODEX_REFLEX_HOOK"
+[[step]]
+name = "run"
+goal = "Do the work."
+[step.agent]
+name = "codex"
+version = 1
+harness = "codex"
+model = "gpt-5.6-luna"
+"#,
+    );
+    let reflex = bb(root, &["workflow", "create", reflex.to_str().unwrap()]);
+    assert!(!reflex.status.success());
+    assert!(
+        String::from_utf8_lossy(&reflex.stderr).contains("subscription auth is manual-only"),
+        "{}",
+        String::from_utf8_lossy(&reflex.stderr)
+    );
+
+    let remote = write_doc(
+        root,
+        "omp-remote.toml",
+        r#"
+name = "omp-remote"
+goal = "Reject remote OMP subscription dispatch."
+[[trigger]]
+kind = "manual"
+[[step]]
+name = "run"
+goal = "Do the work."
+host = "org/test"
+[step.agent]
+name = "omp"
+version = 1
+harness = "omp"
+model = "gpt-5.6-luna"
+provider = "openai-codex"
+auth = "subscription"
+[policies]
+substrate = "sprites"
+"#,
+    );
+    let remote = bb(root, &["workflow", "create", remote.to_str().unwrap()]);
+    assert!(!remote.status.success());
+    assert!(
+        String::from_utf8_lossy(&remote.stderr)
+            .contains("OMP subscription auth requires the local substrate"),
+        "{}",
+        String::from_utf8_lossy(&remote.stderr)
+    );
+}
+
+#[test]
+fn direct_workflows_reject_forbidden_model_api_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    for (suffix, secret) in [
+        ("openai", "OPENAI_API_KEY"),
+        ("anthropic", "ANTHROPIC_API_KEY"),
+    ] {
+        let doc = write_doc(
+            root,
+            &format!("{suffix}-secret.toml"),
+            &format!(
+                r#"
+name = "{suffix}-secret"
+goal = "Reject forbidden model API key injection."
+[[trigger]]
+kind = "manual"
+[[step]]
+name = "run"
+goal = "Do the work."
+[step.agent]
+name = "omp"
+version = 1
+harness = "omp"
+model = "gpt-5.6-luna"
+provider = "openai-codex"
+auth = "subscription"
+secrets = ["{secret}"]
+"#
+            ),
+        );
+        let rejected = bb(root, &["workflow", "create", doc.to_str().unwrap()]);
+        assert!(!rejected.status.success(), "{secret} was accepted");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains("is forbidden"),
+            "{}",
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+    }
+}
+
+#[test]
+fn direct_workflows_enforce_the_harness_auth_matrix() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    for (suffix, harness, auth, expected) in [
+        ("codex-api", "codex", "api", "subscription auth only"),
+        (
+            "pi-subscription",
+            "pi",
+            "subscription",
+            "no subscription auth",
+        ),
+    ] {
+        let doc = write_doc(
+            root,
+            &format!("{suffix}.toml"),
+            &format!(
+                r#"
+name = "{suffix}"
+goal = "Reject an unsupported harness/auth pair."
+[[trigger]]
+kind = "manual"
+[[step]]
+name = "run"
+goal = "Do the work."
+[step.agent]
+name = "{harness}"
+version = 1
+harness = "{harness}"
+model = "model"
+auth = "{auth}"
+"#
+            ),
+        );
+        let rejected = bb(root, &["workflow", "create", doc.to_str().unwrap()]);
+        assert!(!rejected.status.success(), "{suffix} was accepted");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+    }
+}
+
+#[test]
+fn direct_omp_subscription_rejects_effective_provider_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    for (suffix, model, args) in [
+        ("qualified-model", "openrouter/model", ""),
+        (
+            "provider-arg",
+            "gpt-5.6-luna",
+            "args = [\"--provider\", \"openrouter\"]",
+        ),
+    ] {
+        let doc = write_doc(
+            root,
+            &format!("{suffix}.toml"),
+            &format!(
+                r#"
+name = "{suffix}"
+goal = "Reject an OMP provider override."
+[[trigger]]
+kind = "manual"
+[[step]]
+name = "run"
+goal = "Do the work."
+[step.agent]
+name = "omp"
+version = 1
+harness = "omp"
+model = "{model}"
+provider = "openai-codex"
+auth = "subscription"
+{args}
+"#
+            ),
+        );
+        let rejected = bb(root, &["workflow", "create", doc.to_str().unwrap()]);
+        assert!(!rejected.status.success(), "{suffix} was accepted");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains("OMP subscription auth"),
+            "{}",
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+    }
+}
+
 // Review fix 1 (PR #1001): a `/` in a workflow name would make every
 // name-scoped HTTP route unaddressable (tiny_http does no percent-decoding
 // and the routes parse the name as one path segment), so names must reject
@@ -792,6 +991,7 @@ fn migration_fixture_imports_demo_plane_task_and_reads_back_active_state() {
     assert_eq!(agent["version"], 1);
     assert_eq!(agent["harness"], "opencode");
     assert_eq!(agent["model"], "deepseek/deepseek-v4-flash");
+    assert_eq!(agent["auth"], "api");
     let kinds: Vec<&str> = doc["trigger"]
         .as_array()
         .unwrap()
