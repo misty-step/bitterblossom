@@ -417,7 +417,7 @@ rm -rf "$self_drill_tmp"
 # 2026-07-21: raised for pinned reservations, unified plane admission, dated
 # spend reconciliation, mixed unpriced-attempt accounting, atomic migration,
 # enforced workflow run-count admission, and durable guard events.
-SPINE_LOC_CAP=20483
+SPINE_LOC_CAP=20487
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

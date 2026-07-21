@@ -1051,6 +1051,28 @@ fn terminal_mixed_metered_and_unpriced_attempts_keep_estimate_reservation() {
     assert_eq!(spend["observed_usd"], 0.10, "{spend}");
     assert_eq!(spend["estimated_usd"], 0.90, "{spend}");
     assert_eq!(spend["spend_today_usd"], 1.0, "{spend}");
+
+    let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_step_runs SET cost_usd = 0.20 WHERE id = 'wfs-unpriced'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workflow_child_agents
+         (step_run_id, name, authority_json, inherited, cost_usd, recorded_at)
+         VALUES ('wfs-priced', 'unpriced-child', '{}', 1, NULL, datetime('now'))",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let child_spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert!(
+        (child_spend["observed_usd"].as_f64().unwrap() - 0.30).abs() < 1e-9,
+        "{child_spend}"
+    );
+    assert_eq!(child_spend["estimated_usd"], 0.70, "{child_spend}");
+    assert_eq!(child_spend["spend_today_usd"], 1.0, "{child_spend}");
 }
 
 // --- criterion 5: migration fixture -----------------------------------------

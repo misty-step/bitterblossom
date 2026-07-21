@@ -1229,9 +1229,13 @@ impl Ledger {
                     EXISTS (SELECT 1 FROM workflow_step_runs sr
                             WHERE sr.run_id = r.id
                               AND substr(sr.started_at, 1, 10) = ?2),
-                    EXISTS (SELECT 1 FROM workflow_step_runs sr
-                            WHERE sr.run_id = r.id AND sr.cost_usd IS NULL
-                              AND substr(sr.started_at, 1, 10) = ?2)
+                    (EXISTS (SELECT 1 FROM workflow_step_runs sr
+                             WHERE sr.run_id = r.id AND sr.cost_usd IS NULL
+                               AND substr(sr.started_at, 1, 10) = ?2)
+                     OR EXISTS (SELECT 1 FROM workflow_child_agents c
+                                JOIN workflow_step_runs cs ON cs.id = c.step_run_id
+                                WHERE cs.run_id = r.id AND c.cost_usd IS NULL
+                                  AND substr(c.recorded_at, 1, 10) = ?2))
              FROM workflow_runs r LEFT JOIN workflow_run_status s ON s.run_id = r.id
              WHERE r.workflow_id = ?1",
         )?;
