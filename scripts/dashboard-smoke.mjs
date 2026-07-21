@@ -74,8 +74,11 @@ const serve = spawn(BB, ['--config', planeDir, 'serve'], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serveExited = false;
-serve.on('exit', () => {
-  serveExited = true;
+const serveExit = new Promise((resolve) => {
+  serve.on('exit', () => {
+    serveExited = true;
+    resolve();
+  });
 });
 
 async function waitForServe() {
@@ -165,6 +168,14 @@ try {
   await browser.close();
 } finally {
   serve.kill();
+  await Promise.race([
+    serveExit,
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  if (!serveExited) {
+    serve.kill('SIGKILL');
+    await serveExit;
+  }
   await rm(planeDir, { recursive: true, force: true });
 }
 
