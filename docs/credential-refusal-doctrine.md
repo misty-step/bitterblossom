@@ -127,12 +127,13 @@ operator's machine**. Consequences:
   (bitterblossom-915), so `op` works inside local workloads;
 - anything the operator's uid can read is ultimately readable.
 
-**Decision: the local substrate is a dev/test convenience and is documented
-as such, not hardened.** Unattended or untrusted workloads belong on the
-sprites substrate. Closing the gap locally would mean OS-level sandboxing,
-which is not this plane's mechanism to own. The doctrine (prompt seam + card
-contract) is the guardrail that applies on every substrate including this
-one.
+**Decision: the local substrate is an explicit operator choice and is not
+hardened for untrusted workloads.** Unattended or untrusted workloads should
+use the sprites substrate unless the operator has consciously granted local
+execution with `allow_local_substrate = true` on a production plane. Closing
+the hardening gap locally would mean OS-level sandboxing, which is not this
+plane's mechanism to own. The doctrine (prompt seam + card contract) remains
+the guardrail on every substrate.
 
 ### tailnet — same posture as sprites
 

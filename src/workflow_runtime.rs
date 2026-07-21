@@ -1209,11 +1209,10 @@ fn run_step(
     }
 
     let substrate_kind = doc.policies.substrate.as_deref().unwrap_or("local");
-    if substrate_kind == "local" && !plane.spec.dev {
-        // Same posture as task-land: local exec is dev/test machinery.
+    if substrate_kind == "local" && !plane.spec.dev && !plane.spec.allow_local_substrate {
         return fail(
-            "substrate 'local' requires a dev plane (`dev = true` in plane.toml); \
-             declare policies.substrate for production execution"
+            "substrate 'local' requires `allow_local_substrate = true` in production \
+             or `dev = true` for development/test"
                 .to_string(),
             &none,
         );
@@ -1222,10 +1221,6 @@ fn run_step(
         Ok(s) => s,
         Err(e) => return fail(format!("{e:#}"), &none),
     };
-    // Task-land parity (dispatch passes task.host()): the step's declared
-    // host addresses the substrate; absent (validation only admits that on
-    // the local substrate) keeps the historical run-scoped name, which local
-    // exec ignores.
     let host = step
         .host
         .clone()

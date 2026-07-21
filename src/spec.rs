@@ -12,6 +12,8 @@ pub struct PlaneSpec {
     #[serde(default)]
     pub dev: bool,
     #[serde(default)]
+    pub allow_local_substrate: bool,
+    #[serde(default)]
     pub ingress: IngressSpec,
     #[serde(default)]
     pub notify: NotifySpec,
@@ -31,6 +33,7 @@ impl Default for PlaneSpec {
         Self {
             db_path: default_db_path(),
             dev: false,
+            allow_local_substrate: false,
             ingress: IngressSpec::default(),
             notify: NotifySpec::default(),
             glass: GlassSpec::default(),
@@ -752,11 +755,10 @@ impl Plane {
                     task.spec.substrate
                 );
             }
-            if task.spec.substrate == "local" && !spec.dev {
+            if task.spec.substrate == "local" && !spec.dev && !spec.allow_local_substrate {
                 bail!(
-                    "task '{}': the local substrate is dev/test machinery — \
-                         production planes dispatch to a configured remote substrate. \
-                         Set `dev = true` in plane.toml only for a development plane.",
+                    "task '{}': local substrate requires `allow_local_substrate = true` \
+                         in production or `dev = true` for development/test.",
                     task.name
                 );
             }
@@ -922,9 +924,10 @@ fn load_workload_repo_tasks(
         if repo.path.is_none() {
             bail!("workload repo '{}': path is required", repo.name);
         }
-        if repo.substrate == "local" && !plane_spec.dev {
+        if repo.substrate == "local" && !plane_spec.dev && !plane_spec.allow_local_substrate {
             bail!(
-                "workload repo '{}': local substrate is dev/test machinery; set dev = true only for a development plane",
+                "workload repo '{}': local substrate requires `allow_local_substrate = true` \
+                 in production or `dev = true` for development/test",
                 repo.name
             );
         }

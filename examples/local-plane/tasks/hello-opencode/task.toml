@@ -1,5 +1,5 @@
 agent = "opencode-hello"     # the default open-harness agent (bitterblossom-935)
-substrate = "local"          # local substrate: dev/test machinery (plane sets dev = true)
+substrate = "local"          # local substrate: dev/test default (plane sets dev = true, or grants production explicitly)
 
 [budget]
 timeout_minutes = 2          # enforced: wall-clock kill

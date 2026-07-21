@@ -1,5 +1,6 @@
 # Disposable contract proof. Production must use a configured remote
-# substrate and the real Estate mutation adapter; local remains dev/test only.
+# substrate and the real Estate mutation adapter. Local remains dev/test by
+# default; production local execution requires allow_local_substrate = true.
 dev = true
 db_path = ".bb/plane.db"
 
