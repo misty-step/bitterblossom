@@ -761,6 +761,56 @@ fn runs_accepted_before_and_after_activation_keep_their_pinned_config() {
     );
 }
 
+#[test]
+fn workflow_daily_ceiling_denies_and_exposes_ledger_spend() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let text = DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_day_usd = 0.50\nestimated_cost_per_run_usd = 0.50",
+    );
+    let doc = write_doc(root, "budget.toml", &text);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+
+    let accepted = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    let run_id = accepted["run"]["id"].as_str().unwrap();
+    // Seed the immutable run's mutable status with observed spend, as a
+    // completed runtime would, then read it through the public CLI projection.
+    let db = root.join(".bb/plane.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "UPDATE workflow_run_status SET state = 'succeeded', cost_usd = 0.50 WHERE run_id = ?1",
+        [run_id],
+    )
+    .unwrap();
+    let spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(spend["spend_today_usd"], 0.5);
+    assert_eq!(spend["max_cost_per_day_usd"], 0.5);
+
+    let denied = bb(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(denied.status.code(), Some(3));
+    let denied_json: serde_json::Value = serde_json::from_slice(&denied.stdout).unwrap();
+    assert_eq!(denied_json["disposition"], "denied");
+    assert!(denied_json["reason"]
+        .as_str()
+        .unwrap()
+        .contains("workflow daily ceiling"));
+    let events = bb_json(root, &["workflow", "events", "pr-review", "--json"]);
+    assert!(events.as_array().unwrap().iter().any(|event| {
+        event["kind"] == "workflow_daily_ceiling"
+            && event["data"]
+                .as_str()
+                .unwrap_or("")
+                .contains("max_cost_per_day_usd")
+    }));
+
+    let exported = bb_ok(root, &["workflow", "export", "pr-review"]);
+    assert!(exported.contains("max_cost_per_day_usd = 0.5"));
+    assert!(exported.contains("estimated_cost_per_run_usd = 0.5"));
+}
+
 // --- criterion 5: migration fixture -----------------------------------------
 
 #[test]
@@ -885,7 +935,9 @@ fn concurrent_revisions_activations_and_accepts_never_lose_or_fork_history() {
                     {
                         AcceptOutcome::Accepted { run } => accepted.push((run.id, run.revision)),
                         AcceptOutcome::Duplicate { .. } => unreachable!("no dedupe key supplied"),
-                        AcceptOutcome::Denied { .. } => unreachable!("daily ceiling is not configured"),
+                        AcceptOutcome::Denied { .. } => {
+                            unreachable!("daily ceiling is not configured")
+                        }
                         AcceptOutcome::Suppressed { .. } => unreachable!("never paused"),
                     }
                 }

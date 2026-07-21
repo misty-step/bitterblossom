@@ -105,6 +105,62 @@ fn execute(root: &Path, run_id: &str) -> serde_json::Value {
     bb_json(root, &["workflow", "execute", run_id, "--json"])
 }
 
+#[test]
+fn metered_workflow_run_stops_in_flight_on_per_run_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(
+        root,
+        "metered.sh",
+        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.50,"tokens":{"input":1,"output":1}}}'
+sleep 2
+printf '%s\n' '{"part":{"type":"text","text":"done"}}'"#,
+    );
+    let doc = write_doc(
+        root,
+        "metered.toml",
+        &format!(
+            r#"
+name = "metered"
+goal = "Stop when the metered step exceeds its run budget."
+
+[[trigger]]
+kind = "test"
+
+[[step]]
+name = "work"
+goal = "Emit a metered result."
+[step.agent]
+name = "metered"
+version = 1
+harness = "opencode"
+model = "stub"
+bin = "{}"
+
+[policies]
+max_cost_per_run_usd = 0.01
+side_effect_policy = "kill"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "metered");
+    let run_id = accept_test_run(root, "metered");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(view["status"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("workflow in-flight cost cap"));
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    assert!(ledger
+        .list_guard_events(100)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "workflow_guard_spend_in_flight"));
+}
+
 // --- criterion 1: trigger -> two agent steps -> named outcome route -> done --
 
 #[test]

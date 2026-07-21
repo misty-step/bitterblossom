@@ -988,6 +988,7 @@ workflow config; no route decision ever comes from matching prose.
   launch snapshot, cost, and result. Children inherit the step's authority
   grant verbatim or declare a subset — declaring anything broader fails the
   step. Children never become workflow or agent catalog entries.
+- **Cost governance.** `policies.max_cost_per_day_usd` is the workflow UTC-day ceiling below the plane `[budget].max_cost_per_day_usd` ceiling. Acceptance reserves `estimated_cost_per_run_usd`, then `max_cost_per_run_usd`, then the conservative $1.00 fallback for queued runs; observed workflow run-group spend is queryable with `bb workflow spend <name>`. A denial writes `workflow_daily_ceiling` in workflow history. Cost-reporting steps stream into the per-run monitor and apply `side_effect_policy`; cost-blind steps never turn unknown into zero.
 - **Cycle guards.** A route cycle must declare at least one enforceable guard
   (`policies.max_rounds`, `policies.max_elapsed_seconds`, or the run-group
   spend cap `policies.max_cost_per_run_usd`); `bb workflow stop <run-id>` is

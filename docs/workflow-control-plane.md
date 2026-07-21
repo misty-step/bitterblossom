@@ -166,6 +166,28 @@ Every limit says whether it is hard, admission-only, or advisory. Every cost is
 reported, estimated with a pinned rate card, or unavailable. Aggregates expose
 coverage and never treat unknown as zero.
 
+The shipped policy surface is:
+
+```toml
+[policies]
+# Plane [budget].max_cost_per_day_usd remains the outer daily hard ceiling.
+max_cost_per_day_usd = 10.0
+max_cost_per_run_usd = 2.0
+# Used to reserve blind-harness runs at acceptance; max_cost_per_run_usd is
+# the fallback, then the conservative built-in estimate is $1.00.
+estimated_cost_per_run_usd = 1.0
+side_effect_policy = "kill" # kill | quarantine | log
+```
+
+Precedence is plane daily, workflow daily, then run-group per-run. A workflow
+acceptance is denied before a run row is created when observed spend plus
+queued reservations would exceed its daily ceiling. A named
+`workflow_daily_ceiling` event remains in workflow history. Metered harnesses
+are monitored while the step runs; `kill` and `quarantine` stop on a
+per-run breach, while `log` records an advisory breach. A blind harness is
+never counted as zero: its configured estimate reserves daily capacity and
+stops before execution when that estimate exceeds the per-run cap.
+
 ## Evidence and history
 
 Each run has an immutable evidence bundle:
