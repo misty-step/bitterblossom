@@ -143,6 +143,7 @@ fn cron_loop(root: &Path) {
         {
             let now = Utc::now();
             match crate::workflow_runtime::workflow_cron_tick(
+                &plane,
                 &ledger,
                 &mut wf_last_by,
                 wf_default_last,
@@ -1142,7 +1143,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             Ok(body) => body,
             Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
-        return workflow_post(&ledger, &path_no_query, &body);
+        return workflow_post(&plane, &ledger, &path_no_query, &body);
     }
 
     if method == "GET" && url == "/health" {
@@ -1213,7 +1214,9 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             };
             let mut ledger = Ledger::open(&plane.db_path())?;
             let resp = if let Some((workflow, trigger)) = &workflow_target {
-                ingress::handle_workflow_webhook(&ledger, workflow, trigger, &headers, &body)?
+                ingress::handle_workflow_webhook(
+                    &plane, &ledger, workflow, trigger, &headers, &body,
+                )?
             } else {
                 ingress::handle_webhook(&plane, &mut ledger, &route, &headers, &body)?
             };
@@ -1299,7 +1302,7 @@ struct WorkflowDocRequest {
     note: Option<String>,
 }
 
-fn workflow_post(ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String)> {
+fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String)> {
     let respond = |result: Result<(u16, serde_json::Value)>| -> Result<(u16, String)> {
         Ok(match result {
             Ok((status, value)) => (status, value.to_string()),
@@ -1417,6 +1420,7 @@ fn workflow_post(ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let outcome = crate::workflow_runtime::accept(
+                plane,
                 ledger,
                 &crate::workflow_runtime::TriggerEnvelope {
                     workflow: name.to_string(),

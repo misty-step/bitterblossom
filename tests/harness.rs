@@ -360,3 +360,20 @@ fn commission_prompt_carries_credential_refusal_doctrine() {
     let cmd = build_command(&agent, &TaskBudget::default()).unwrap();
     assert!(cmd.join(" ").contains("STOP-and-report"), "{cmd:?}");
 }
+
+#[test]
+fn missing_jsonl_dollar_field_stays_unmetered_not_zero() {
+    let out = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input":1,"output":2}}}"#;
+    let parsed = parse_output("pi", out).unwrap();
+    assert_eq!(parsed.stats.cost_usd, None);
+}
+
+#[test]
+fn negative_or_nonfinite_reported_cost_is_rejected() {
+    let pi = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"cost":{"total":-0.1}}}}"#;
+    assert!(parse_output("pi", pi).is_err());
+    let command = r#"{"schema_version":"bb.command_result.v1","result":"ok","cost_usd":-100.0}"#;
+    assert!(parse_output("command", command).is_err());
+    let claude = r#"{"type":"result","result":"ok","total_cost_usd":-1.0}"#;
+    assert!(parse_output("claude", claude).is_err());
+}

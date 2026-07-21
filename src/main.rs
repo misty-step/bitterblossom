@@ -1910,7 +1910,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                 payload,
                 dedupe_key,
             };
-            let outcome = bitterblossom::workflow_runtime::accept(ledger, &envelope)?;
+            let outcome = bitterblossom::workflow_runtime::accept(plane, ledger, &envelope)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {

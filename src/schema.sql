@@ -268,6 +268,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   trigger_kind TEXT NOT NULL,
   payload TEXT,
   dedupe_key TEXT,
+  estimated_cost_usd REAL NOT NULL DEFAULT 1.0,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS workflow_runs_workflow

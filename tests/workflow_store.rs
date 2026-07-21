@@ -811,6 +811,157 @@ fn workflow_daily_ceiling_denies_and_exposes_ledger_spend() {
     assert!(exported.contains("estimated_cost_per_run_usd = 0.5"));
 }
 
+#[test]
+fn plane_daily_budget_counts_workflow_reservations_and_standard_spend() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[budget]\nmax_cost_per_day_usd = 1.0\n",
+    )
+    .unwrap();
+    let doc = write_doc(
+        root,
+        "plane-budget.toml",
+        &DOC.replace(
+            "max_runs_per_day = 20",
+            "max_runs_per_day = 20\nmax_cost_per_day_usd = 10.0\nestimated_cost_per_run_usd = 1.0",
+        ),
+    );
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let first = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(first["disposition"], "accepted");
+    let second = bb(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(second.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&second.stdout).contains("global_daily_ceiling")
+            || String::from_utf8_lossy(&second.stdout).contains("plane daily ceiling")
+    );
+}
+
+#[test]
+fn plane_budget_combines_standard_observed_with_workflow_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[budget]\nmax_cost_per_day_usd = 1.0\n",
+    )
+    .unwrap();
+    let doc = write_doc(
+        root,
+        "combined.toml",
+        &DOC.replace(
+            "max_runs_per_day = 20",
+            "max_runs_per_day = 20\nmax_cost_per_day_usd = 10.0\nestimated_cost_per_run_usd = 0.5",
+        ),
+    );
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let db = root.join(".bb/plane.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("INSERT INTO runs (id, task, trigger_kind, state, trace_id, created_at, updated_at) VALUES ('std-1', 'standard', 'test', 'running', 'trace', datetime('now'), datetime('now'))", []).unwrap();
+    conn.execute("INSERT INTO attempts (run_id, n, agent_name, agent_version, harness, model, phase, cost_usd, started_at) VALUES ('std-1', 1, 'agent', 1, 'opencode', 'stub', 'executing', 0.75, datetime('now'))", []).unwrap();
+    let denied = bb(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(denied.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&denied.stdout).contains("plane daily ceiling"));
+}
+
+#[test]
+fn workflow_metered_parent_key_is_refused_at_acceptance() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let doc = write_doc(
+        root,
+        "metered-key.toml",
+        &DOC.replace(
+            "harness = \"opencode\"",
+            "harness = \"command\"\nsecrets = [\"OPENROUTER_API_KEY\"]",
+        ),
+    );
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let denied = bb(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(denied.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&denied.stdout).contains("cannot report cost_usd"));
+}
+
+#[test]
+fn queued_workflow_reservation_stays_pinned_after_revision_policy_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let first_doc = write_doc(
+        root,
+        "pinned-10.toml",
+        &DOC.replace(
+            "max_runs_per_day = 20",
+            "max_runs_per_day = 20\nmax_cost_per_day_usd = 10.0\nestimated_cost_per_run_usd = 10.0",
+        ),
+    );
+    bb_ok(root, &["workflow", "create", first_doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let first = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(first["run"]["estimated_cost_usd"], 10.0);
+    let second_text = DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_day_usd = 10.0\nestimated_cost_per_run_usd = 1.0",
+    );
+    let second_doc = write_doc(root, "pinned-1.toml", &second_text);
+    bb_ok(
+        root,
+        &[
+            "workflow",
+            "revise",
+            "pr-review",
+            second_doc.to_str().unwrap(),
+        ],
+    );
+    bb_ok(
+        root,
+        &["workflow", "activate", "pr-review", "--revision", "2"],
+    );
+    let denied = bb(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(denied.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&denied.stdout).contains("workflow daily ceiling"));
+}
+
+#[test]
+fn workflow_realized_spend_uses_step_occurrence_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = root.join("dated.sh");
+    fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' '{\\\"part\\\":{\\\"type\\\":\\\"step-finish\\\",\\\"cost\\\":0.25,\\\"tokens\\\":{\\\"input\\\":1,\\\"output\\\":1}}}'\nprintf '%s\\n' '{\\\"part\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}}'\n").unwrap();
+    let mut perms = fs::metadata(&stub).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&stub, perms).unwrap();
+    }
+    let doc_text = DOC.replace("bin =", &format!("bin = \\\"{}\\\"\n#", stub.display()));
+    let doc = write_doc(root, "dated.toml", &doc_text);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let accepted = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    let run_id = accepted["run"]["id"].as_str().unwrap();
+    let queued = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(queued["spend_today_usd"], 0.0);
+    assert_eq!(queued["reserved_usd"], 1.0);
+    bb_ok(root, &["workflow", "execute", run_id, "--json"]);
+    let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_step_runs SET started_at = '2000-01-01T00:00:00Z' WHERE run_id = ?1",
+        [run_id],
+    )
+    .unwrap();
+    let spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(spend["observed_usd"], 0.0);
+}
+
 // --- criterion 5: migration fixture -----------------------------------------
 
 #[test]
@@ -927,10 +1078,13 @@ fn concurrent_revisions_activations_and_accepts_never_lose_or_fork_history() {
             let db = db.clone();
             std::thread::spawn(move || {
                 let ledger = Ledger::open(&db).unwrap();
+                let plane =
+                    bitterblossom::spec::Plane::load(db.parent().unwrap().parent().unwrap())
+                        .unwrap();
                 let mut accepted = Vec::new();
                 for _ in 0..5 {
                     match ledger
-                        .accept_workflow_run("pr-review", "test", None, None)
+                        .accept_workflow_run(&plane, "pr-review", "test", None, None)
                         .unwrap()
                     {
                         AcceptOutcome::Accepted { run } => accepted.push((run.id, run.revision)),
@@ -977,4 +1131,117 @@ fn concurrent_revisions_activations_and_accepts_never_lose_or_fork_history() {
         let run = ledger.workflow_run(&run_id).unwrap();
         assert_eq!(run.revision, revision, "pin is immutable");
     }
+}
+
+#[test]
+fn blind_run_cap_is_pinned_per_revision_without_daily_revaluation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let first_text = DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_run_usd = 3.0",
+    );
+    let first_doc = write_doc(root, "blind-rev1.toml", &first_text);
+    bb_ok(root, &["workflow", "create", first_doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let first = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(first["run"]["estimated_cost_usd"], 3.0);
+    let second_text = first_text
+        .replace(
+            "goal = \"Review every reviewable pull-request head and post one formal review.\"",
+            "goal = \"Review each pull request with the revised blind reservation.\"",
+        )
+        .replace("max_cost_per_run_usd = 3.0", "max_cost_per_run_usd = 7.0");
+    let second_doc = write_doc(root, "blind-rev2.toml", &second_text);
+    bb_ok(
+        root,
+        &[
+            "workflow",
+            "revise",
+            "pr-review",
+            second_doc.to_str().unwrap(),
+        ],
+    );
+    bb_ok(
+        root,
+        &["workflow", "activate", "pr-review", "--revision", "2"],
+    );
+    let second = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(second["run"]["estimated_cost_usd"], 7.0);
+    let runs = bb_json(root, &["workflow", "runs", "pr-review", "--json"]);
+    assert_eq!(runs[0]["estimated_cost_usd"], 3.0, "{runs}");
+    assert_eq!(runs[1]["estimated_cost_usd"], 7.0, "{runs}");
+}
+
+#[test]
+fn recheck_stopped_run_without_attempt_releases_capacity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[budget]\nmax_cost_per_day_usd = 1.0\n",
+    )
+    .unwrap();
+    let text = DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_run_usd = 1.0\nmax_cost_per_day_usd = 10.0",
+    );
+    let doc = write_doc(root, "release.toml", &text);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let first = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    let first_id = first["run"]["id"].as_str().unwrap();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[budget]\nmax_cost_per_day_usd = 0.5\n",
+    )
+    .unwrap();
+    let stopped = bb_json(root, &["workflow", "execute", first_id, "--json"]);
+    assert_eq!(stopped["status"]["state"], "stopped", "{stopped}");
+    assert!(stopped["steps"].as_array().unwrap().is_empty(), "{stopped}");
+    let spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(spend["reserved_usd"], 0.0, "{spend}");
+    assert_eq!(spend["estimated_usd"], 0.0, "{spend}");
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[budget]\nmax_cost_per_day_usd = 1.0\n",
+    )
+    .unwrap();
+    let second = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(second["disposition"], "accepted", "{second}");
+}
+
+#[test]
+fn legacy_workflow_runs_backfill_pinned_estimate_and_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("legacy.db");
+    let document: WorkflowDoc = toml::from_str(&DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_run_usd = 4.0",
+    ))
+    .unwrap();
+    let canonical = serde_json::to_string(&document).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, active_revision INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE workflow_revisions (workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL, source TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id, revision));
+             CREATE TABLE workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, trigger_kind TEXT NOT NULL, payload TEXT, dedupe_key TEXT, created_at TEXT NOT NULL);",
+        ).unwrap();
+        conn.execute("INSERT INTO workflows VALUES ('wf-legacy','pr-review','active',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", []).unwrap();
+        conn.execute("INSERT INTO workflow_revisions VALUES ('wf-legacy',1,?1,'import',NULL,'2026-01-01T00:00:00Z')", [&canonical]).unwrap();
+        conn.execute("INSERT INTO workflow_runs VALUES ('wfr-legacy','wf-legacy',1,'test',NULL,NULL,'2026-01-01T00:00:00Z')", []).unwrap();
+    }
+    let ledger = Ledger::open(&db).unwrap();
+    let run = ledger.workflow_run("wfr-legacy").unwrap();
+    assert_eq!(run.estimated_cost_usd, 4.0);
+    assert_eq!(
+        ledger
+            .workflow_run_status("wfr-legacy")
+            .unwrap()
+            .unwrap()
+            .state,
+        "queued"
+    );
 }

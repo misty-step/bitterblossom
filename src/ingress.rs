@@ -155,6 +155,7 @@ pub fn handle_webhook(
 /// mechanics as task webhooks, converging on the workflow runtime's single
 /// normalized acceptance contract.
 pub fn handle_workflow_webhook(
+    plane: &Plane,
     ledger: &Ledger,
     workflow: &str,
     trigger: &crate::workflow::WorkflowTrigger,
@@ -180,6 +181,7 @@ pub fn handle_workflow_webhook(
     };
     let route = trigger.route.as_deref().unwrap_or_default();
     let outcome = crate::workflow_runtime::accept(
+        plane,
         ledger,
         &crate::workflow_runtime::TriggerEnvelope {
             workflow: workflow.to_string(),
@@ -189,22 +191,26 @@ pub fn handle_workflow_webhook(
         },
     )?;
     use crate::workflow::AcceptOutcome;
-    let body = match &outcome {
-        AcceptOutcome::Accepted { run } => {
-            serde_json::json!({"workflow_run_id": run.id, "duplicate": false})
-        }
-        AcceptOutcome::Duplicate { run } => {
-            serde_json::json!({"workflow_run_id": run.id, "duplicate": true})
-        }
-        AcceptOutcome::Denied { workflow, reason } => {
-            serde_json::json!({"denied": reason, "workflow": workflow})
-        }
-        AcceptOutcome::Suppressed { workflow, reason } => {
-            serde_json::json!({"suppressed": reason, "workflow": workflow})
-        }
+    let (status, body) = match &outcome {
+        AcceptOutcome::Accepted { run } => (
+            202,
+            serde_json::json!({"workflow_run_id": run.id, "duplicate": false}),
+        ),
+        AcceptOutcome::Duplicate { run } => (
+            202,
+            serde_json::json!({"workflow_run_id": run.id, "duplicate": true}),
+        ),
+        AcceptOutcome::Denied { workflow, reason } => (
+            429,
+            serde_json::json!({"denied": reason, "workflow": workflow}),
+        ),
+        AcceptOutcome::Suppressed { workflow, reason } => (
+            202,
+            serde_json::json!({"suppressed": reason, "workflow": workflow}),
+        ),
     };
     Ok(WebhookResponse {
-        status: 202,
+        status,
         body: body.to_string(),
     })
 }
