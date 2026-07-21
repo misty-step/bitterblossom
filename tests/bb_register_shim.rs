@@ -71,6 +71,7 @@ fn bb_register_shim_posts_start_payload_and_prints_registered_id() {
                 Err(err) => panic!("accept failed: {err}"),
             }
         };
+        stream.set_nonblocking(false).unwrap();
         let mut request = Vec::new();
         let mut buf = [0; 1024];
         loop {
@@ -139,6 +140,7 @@ fn bb_register_shim_surfaces_401_without_leaking_the_token() {
                 Err(err) => panic!("accept failed: {err}"),
             }
         };
+        stream.set_nonblocking(false).unwrap();
         let mut request = Vec::new();
         let mut buf = [0; 1024];
         loop {
