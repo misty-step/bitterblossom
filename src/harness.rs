@@ -7,6 +7,9 @@ use crate::substrate::CARD_FILENAME;
 
 fn json_cost(value: Option<&Value>, field: &str) -> Result<Option<f64>> {
     let Some(value) = value else { return Ok(None) };
+    if value.is_null() {
+        return Ok(None);
+    }
     let value = value
         .as_f64()
         .with_context(|| format!("{field} must be a JSON number"))?;
