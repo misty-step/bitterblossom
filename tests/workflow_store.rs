@@ -962,6 +962,38 @@ fn workflow_realized_spend_uses_step_occurrence_date() {
     assert_eq!(spend["observed_usd"], 0.0);
 }
 
+#[test]
+fn active_workflow_spend_counts_observed_cost_before_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let doc = write_doc(root, "active-spend.toml", DOC);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let accepted = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    let run_id = accepted["run"]["id"].as_str().unwrap();
+    let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_run_status SET state = 'running' WHERE run_id = ?1",
+        [run_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workflow_step_runs
+         (id, run_id, step, attempt, agent_json, goal, state, cost_usd,
+          authority_json, started_at)
+         VALUES ('wfs-active', ?1, 'review', 1, '{}', 'review', 'running',
+                 1.5, '{}', datetime('now'))",
+        [run_id],
+    )
+    .unwrap();
+    drop(conn);
+    let spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(spend["observed_usd"], 1.5, "{spend}");
+    assert_eq!(spend["reserved_usd"], 0.0, "{spend}");
+    assert_eq!(spend["spend_today_usd"], 1.5, "{spend}");
+}
+
 // --- criterion 5: migration fixture -----------------------------------------
 
 #[test]

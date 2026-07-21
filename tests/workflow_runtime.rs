@@ -364,6 +364,20 @@ estimated_cost_per_run_usd = 1.0
     assert_eq!(denied.status.code(), Some(3));
     let denied: serde_json::Value = serde_json::from_slice(&denied.stdout).unwrap();
     assert_eq!(denied["disposition"], "denied");
+    let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_step_runs
+         SET started_at = '2000-01-01T00:00:00Z'
+         WHERE run_id = ?1",
+        [first.as_str()],
+    )
+    .unwrap();
+    drop(conn);
+    let next_day = bb_json(root, &["workflow", "spend", "blind-sequential", "--json"]);
+    assert_eq!(next_day["estimated_usd"], 0.0, "{next_day}");
+    assert_eq!(next_day["spend_today_usd"], 0.0, "{next_day}");
+    let admitted = bb_json(root, &["workflow", "accept", "blind-sequential", "--json"]);
+    assert_eq!(admitted["disposition"], "accepted", "{admitted}");
 }
 
 // --- criterion 1: trigger -> two agent steps -> named outcome route -> done --

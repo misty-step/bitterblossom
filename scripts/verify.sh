@@ -416,7 +416,7 @@ rm -rf "$self_drill_tmp"
 # Mechanism only: no scheduling, no policy additions.
 # 2026-07-21: raised for pinned reservations, unified plane admission, dated spend
 # reconciliation, and exactly-once terminal cost accounting.
-SPINE_LOC_CAP=20452
+SPINE_LOC_CAP=20457
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

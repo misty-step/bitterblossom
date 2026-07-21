@@ -1215,7 +1215,9 @@ impl Ledger {
                                 AND substr(c.recorded_at, 1, 10) = ?2), 0.0),
                     EXISTS (SELECT 1 FROM workflow_step_runs sr
                             WHERE sr.run_id = r.id AND sr.cost_usd IS NOT NULL),
-                    EXISTS (SELECT 1 FROM workflow_step_runs sr WHERE sr.run_id = r.id)
+                    EXISTS (SELECT 1 FROM workflow_step_runs sr
+                            WHERE sr.run_id = r.id
+                              AND substr(sr.started_at, 1, 10) = ?2)
              FROM workflow_runs r LEFT JOIN workflow_run_status s ON s.run_id = r.id
              WHERE r.workflow_id = ?1",
         )?;
@@ -1240,7 +1242,7 @@ impl Ledger {
                 step_today,
                 child_today,
                 has_evidence,
-                has_attempt,
+                has_attempt_today,
             ) = row?;
             let estimate = crate::ledger::validate_cost_value(
                 estimate.unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD),
@@ -1261,9 +1263,12 @@ impl Ledger {
                 observed
             };
             if matches!(state.as_str(), "queued" | "running") {
-                spend.reserved_usd += estimate;
+                // Active runs reserve only the unspent part of the estimate.
+                // Observed step/child spend remains visible to plane admission.
+                spend.observed_usd += observed;
+                spend.reserved_usd += (estimate - observed).max(0.0);
                 spend.active_runs += 1;
-            } else if has_attempt && status_cost.is_none() {
+            } else if has_attempt_today && status_cost.is_none() {
                 // An unresolved parent with known child/step spend is charged
                 // once: the larger of its pinned estimate and observed amount.
                 spend.observed_usd += observed;
