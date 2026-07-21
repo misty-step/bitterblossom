@@ -1801,11 +1801,7 @@ fn backfill_workflow_run_reservations(conn: &Connection) -> Result<()> {
     for (run_id, document) in rows {
         let doc: crate::workflow::WorkflowDoc = serde_json::from_str(&document)
             .with_context(|| format!("decode pinned workflow document for legacy run {run_id}"))?;
-        let estimate = doc
-            .policies
-            .estimated_cost_per_run_usd
-            .or(doc.policies.max_cost_per_run_usd)
-            .unwrap_or(1.0);
+        let estimate = doc.policies.conservative_cost_estimate();
         let estimate = validate_cost_value(estimate, "legacy workflow reservation")?;
         if estimate <= 0.0 {
             bail!("legacy workflow run {run_id} has a non-positive pinned reservation");

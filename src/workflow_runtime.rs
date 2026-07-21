@@ -1070,11 +1070,7 @@ fn fired_guard(
             if let Some(cap) = doc.policies.max_cost_per_run_usd {
                 // A cost-blind harness has no observable dollar stream.
                 let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
-                    let estimate = doc
-                        .policies
-                        .estimated_cost_per_run_usd
-                        .or(doc.policies.max_cost_per_run_usd)
-                        .unwrap_or(1.0);
+                    let estimate = doc.policies.conservative_cost_estimate();
                     if !estimate.is_finite() || estimate <= 0.0 {
                         bail!(
                             "workflow '{}' has invalid conservative estimate {estimate}",

@@ -175,6 +175,12 @@ impl WorkflowPolicies {
     fn is_empty(&self) -> bool {
         self == &Self::default()
     }
+
+    pub(crate) fn conservative_cost_estimate(&self) -> f64 {
+        self.estimated_cost_per_run_usd
+            .or_else(|| self.max_cost_per_run_usd.filter(|value| *value != 0.0))
+            .unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD)
+    }
 }
 
 impl WorkflowDoc {
@@ -1015,11 +1021,7 @@ impl Ledger {
                 .context("active workflow has no active revision (corrupt state)")?;
             let revision_row = self.workflow_revision_row(&wf.id, revision)?;
             let doc = WorkflowDoc::from_canonical_json(&revision_row.document)?;
-            let estimate = doc
-                .policies
-                .estimated_cost_per_run_usd
-                .or(doc.policies.max_cost_per_run_usd)
-                .unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD);
+            let estimate = doc.policies.conservative_cost_estimate();
             if !estimate.is_finite() || estimate <= 0.0 {
                 bail!("workflow '{name}': conservative run estimate must be finite and greater than zero");
             }

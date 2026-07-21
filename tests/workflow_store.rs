@@ -834,6 +834,24 @@ fn workflow_run_count_policy_denies_second_same_day_acceptance() {
 }
 
 #[test]
+fn zero_per_run_cap_uses_default_conservative_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let text = DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_run_usd = 0.0",
+    );
+    let doc = write_doc(root, "zero-cap.toml", &text);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+
+    let accepted = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(accepted["disposition"], "accepted");
+    assert_eq!(accepted["run"]["estimated_cost_usd"], 1.0);
+}
+
+#[test]
 fn plane_daily_budget_counts_workflow_reservations_and_standard_spend() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -956,7 +974,15 @@ fn workflow_realized_spend_uses_step_occurrence_date() {
     let root = dir.path();
     write_plane(root);
     let stub = root.join("dated.sh");
-    fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' '{\\\"part\\\":{\\\"type\\\":\\\"step-finish\\\",\\\"cost\\\":0.25,\\\"tokens\\\":{\\\"input\\\":1,\\\"output\\\":1}}}'\nprintf '%s\\n' '{\\\"part\\\":{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}}'\n").unwrap();
+    fs::write(
+        &stub,
+        r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"outcome":"clear"}' > OUTCOME.json
+printf '%s\n' '{"schema_version":"bb.command_result.v1","result":"done","cost_usd":0.25}'
+"#,
+    )
+    .unwrap();
     let mut perms = fs::metadata(&stub).unwrap().permissions();
     #[cfg(unix)]
     {
@@ -964,7 +990,13 @@ fn workflow_realized_spend_uses_step_occurrence_date() {
         perms.set_mode(0o755);
         fs::set_permissions(&stub, perms).unwrap();
     }
-    let doc_text = DOC.replace("bin =", &format!("bin = \\\"{}\\\"\n#", stub.display()));
+    let doc_text = DOC.replace(
+        "harness = \"opencode\"\nmodel = \"moonshotai/kimi-k2.6\"",
+        &format!(
+            "harness = \"command\"\nmodel = \"stub\"\nbin = {:?}",
+            stub.display().to_string()
+        ),
+    );
     let doc = write_doc(root, "dated.toml", &doc_text);
     bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
     bb_ok(root, &["workflow", "activate", "pr-review"]);
@@ -973,7 +1005,9 @@ fn workflow_realized_spend_uses_step_occurrence_date() {
     let queued = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
     assert_eq!(queued["spend_today_usd"], 0.0);
     assert_eq!(queued["reserved_usd"], 1.0);
-    bb_ok(root, &["workflow", "execute", run_id, "--json"]);
+    let executed = bb_json(root, &["workflow", "execute", run_id, "--json"]);
+    assert_eq!(executed["status"]["state"], "succeeded", "{executed}");
+    assert_eq!(executed["status"]["cost_usd"], 0.25, "{executed}");
     let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
     conn.execute(
         "UPDATE workflow_step_runs SET started_at = '2000-01-01T00:00:00Z' WHERE run_id = ?1",
@@ -1335,6 +1369,12 @@ fn legacy_workflow_runs_backfill_pinned_estimate_and_status() {
     ))
     .unwrap();
     let canonical = serde_json::to_string(&document).unwrap();
+    let zero_document: WorkflowDoc = toml::from_str(&DOC.replace(
+        "max_runs_per_day = 20",
+        "max_runs_per_day = 20\nmax_cost_per_run_usd = 0.0",
+    ))
+    .unwrap();
+    let zero_canonical = serde_json::to_string(&zero_document).unwrap();
     {
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute_batch(
@@ -1345,10 +1385,17 @@ fn legacy_workflow_runs_backfill_pinned_estimate_and_status() {
         conn.execute("INSERT INTO workflows VALUES ('wf-legacy','pr-review','active',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", []).unwrap();
         conn.execute("INSERT INTO workflow_revisions VALUES ('wf-legacy',1,?1,'import',NULL,'2026-01-01T00:00:00Z')", [&canonical]).unwrap();
         conn.execute("INSERT INTO workflow_runs VALUES ('wfr-legacy','wf-legacy',1,'test',NULL,NULL,'2026-01-01T00:00:00Z')", []).unwrap();
+        conn.execute("INSERT INTO workflows VALUES ('wf-zero','zero-cap','active',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", []).unwrap();
+        conn.execute("INSERT INTO workflow_revisions VALUES ('wf-zero',1,?1,'import',NULL,'2026-01-01T00:00:00Z')", [&zero_canonical]).unwrap();
+        conn.execute("INSERT INTO workflow_runs VALUES ('wfr-zero','wf-zero',1,'test',NULL,NULL,'2026-01-01T00:00:00Z')", []).unwrap();
     }
     let ledger = Ledger::open(&db).unwrap();
     let run = ledger.workflow_run("wfr-legacy").unwrap();
     assert_eq!(run.estimated_cost_usd, 4.0);
+    assert_eq!(
+        ledger.workflow_run("wfr-zero").unwrap().estimated_cost_usd,
+        1.0
+    );
     assert_eq!(
         ledger
             .workflow_run_status("wfr-legacy")
