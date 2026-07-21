@@ -808,16 +808,17 @@ impl<'a> WorkflowInFlightMonitor<'a> {
     fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<String> {
         let progress = harness::parse_partial_progress(self.harness, snapshot.stdout);
         self.latest_stats = progress.stats;
-        let Some(cost) = self.latest_stats.cost_usd else {
-            return None;
-        };
+        let cost = self.latest_stats.cost_usd?;
         let changed = self
             .last_recorded_cost
             .is_none_or(|prior| (prior - cost).abs() > f64::EPSILON);
         if changed {
             let _ = self.ledger.record_progress(
                 self.run_id,
-                &format!("workflow cost observed ${cost:.4} elapsed={}s", snapshot.elapsed.as_secs()),
+                &format!(
+                    "workflow cost observed ${cost:.4} elapsed={}s",
+                    snapshot.elapsed.as_secs()
+                ),
             );
             self.last_recorded_cost = Some(cost);
         }
@@ -1345,11 +1346,7 @@ fn run_step(
     // dispatched lanes and receive exactly the same one.
     let prompt = format!("{}\n\n{card}", harness::commission_prompt());
     let max_cost = doc.policies.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
-    let side_effect_policy = doc
-        .policies
-        .side_effect_policy
-        .as_deref()
-        .unwrap_or("kill");
+    let side_effect_policy = doc.policies.side_effect_policy.as_deref().unwrap_or("kill");
     let monitor_needed = max_cost.is_finite() && harness::reports_cost(&step.agent.harness);
     let mut in_flight = WorkflowInFlightMonitor {
         ledger,

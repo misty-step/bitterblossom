@@ -1931,7 +1931,10 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                     }
                 }
             }
-            if matches!(outcome, AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }) {
+            if matches!(
+                outcome,
+                AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }
+            ) {
                 std::process::exit(3);
             }
         }
@@ -2000,9 +2003,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             } else {
                 println!(
                     "workflow {} spend_today_usd={} max_cost_per_day_usd={}",
-                    name,
-                    view["spend_today_usd"],
-                    view["max_cost_per_day_usd"]
+                    name, view["spend_today_usd"], view["max_cost_per_day_usd"]
                 );
             }
         }

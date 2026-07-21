@@ -1075,6 +1075,7 @@ bb workflow accept <name> [--trigger K] [--payload JSON] [--dedupe-key K] [--jso
 bb workflow execute <run-id> [--json]             # run one accepted run group to a terminal state
 bb workflow stop <run-id> [--reason TEXT] [--json] # external stop signal; applies before the next step attempt
 bb workflow runs <name> [--json] | run-show <run-id> [--json]      # pinned config + status + step attempts + children
+bb workflow spend <name> [--json]                    # observed UTC-day spend and workflow daily ceiling
 bb serve                                          # webhook + cron + queue
 bb mcp serve                                      # MCP stdio server: 10 always-on read-only tools (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate) plus opt-in mutating bb_dispatch (BB_MCP_ENABLE_DISPATCH=1); JSON-RPC over stdin/stdout; see docs/mcp-dispatch-authority.md
 ```
