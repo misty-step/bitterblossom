@@ -161,6 +161,51 @@ side_effect_policy = "kill"
         .any(|event| event.kind == "workflow_guard_spend_in_flight"));
 }
 
+#[test]
+fn blind_workflow_step_uses_conservative_estimate_before_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "blind.sh", "echo should-not-run");
+    let doc = write_doc(
+        root,
+        "blind.toml",
+        &format!(
+            r#"
+name = "blind"
+goal = "Refuse an unmetered run that exceeds its conservative estimate."
+
+[[trigger]]
+kind = "test"
+
+[[step]]
+name = "work"
+goal = "Do not execute beyond the run cap."
+[step.agent]
+name = "blind"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+
+[policies]
+max_cost_per_run_usd = 0.01
+estimated_cost_per_run_usd = 1.0
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "blind");
+    let run_id = accept_test_run(root, "blind");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(view["status"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("unknown spend is never treated as zero"));
+    assert_eq!(view["steps"].as_array().unwrap().len(), 0);
+}
+
 // --- criterion 1: trigger -> two agent steps -> named outcome route -> done --
 
 #[test]

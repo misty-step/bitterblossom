@@ -326,11 +326,17 @@ impl WorkflowDoc {
         for (field, value) in [
             ("max_cost_per_run_usd", self.policies.max_cost_per_run_usd),
             ("max_cost_per_day_usd", self.policies.max_cost_per_day_usd),
-            ("estimated_cost_per_run_usd", self.policies.estimated_cost_per_run_usd),
+            (
+                "estimated_cost_per_run_usd",
+                self.policies.estimated_cost_per_run_usd,
+            ),
         ] {
             if let Some(value) = value {
                 if !value.is_finite() || value < 0.0 {
-                    bail!("workflow '{}': policies.{field} must be finite and >= 0", self.name);
+                    bail!(
+                        "workflow '{}': policies.{field} must be finite and >= 0",
+                        self.name
+                    );
                 }
             }
         }
@@ -986,11 +992,7 @@ impl Ledger {
                 .active_revision
                 .context("active workflow has no active revision (corrupt state)")?;
             let revision_row = self.workflow_revision_row(&wf.id, revision)?;
-            let doc = WorkflowDoc::from_canonical_json(&revision_row.document)
-                .and_then(|doc| {
-                    doc.validate()?;
-                    Ok(doc)
-                })?;
+            let doc = WorkflowDoc::from_canonical_json(&revision_row.document)?;
             if let Some(max) = doc.policies.max_cost_per_day_usd {
                 let spent = self.workflow_cost_today_by_id(&wf.id)?;
                 let queued = self.workflow_queued_today_by_id(&wf.id)?;
