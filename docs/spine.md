@@ -69,8 +69,8 @@ Repo-owned `task.toml` owns the card, triggers, adapter commands, verdict
 marker, and optional budget requests that stay within the plane-granted
 caps. Agent binding, substrate, workspace host/repos/checkpoint, and budget
 ceilings remain plane-owned. `bb check` fails when a repo task names an
-unknown or ungranted agent, requests `substrate = "local"` (unless the
-plane granted local on a dev plane), exceeds a budget cap, or attempts to
+unknown or ungranted agent, requests `substrate = "local"` (unless the plane sets
+`allow_local_substrate = true` or is a dev plane), exceeds a budget cap, or attempts to
 declare workspace authority. Removing a `[[workload_repo]]` entry removes
 its namespaced tasks and trigger routes on the next config load; dispatch
 workers reload config for each run, HTTP ingress reloads per request, and
@@ -224,7 +224,9 @@ Two auth classes, two work classes:
 
 ```toml
 agent = "reviewer"                # agents/reviewer.toml
-substrate = "sprites"             # remote-only; "local" needs plane dev = true
+substrate = "sprites"             # bounded alternate; local needs an explicit plane grant
+                                   # (`allow_local_substrate = true`) on production
+                                   # or `dev = true` for development/test
 required_artifacts = ["REPORT.json"] # optional: zero-exit success requires these
 
 [workspace]                       # materialized by the substrate adapter
@@ -963,7 +965,9 @@ workflow config; no route decision ever comes from matching prose.
   <run-id>` drives one synchronously. The queued→running claim is a CAS, so
   the two can never both execute one group. Steps run sequentially through
   the same substrate/harness seams dispatch uses (`policies.substrate`,
-  default `local`, which requires a dev plane exactly like task-land).
+  default `local`, which requires the same explicit `allow_local_substrate = true`
+  grant on production planes (or `dev = true` for development/test) exactly
+  like task-land).
 - **Step host + repos (task-land parity).** A step may declare `host`
   (substrate execution target, `org/name` syntax on sprites — the exact
   value task-land puts in `workspace.host`) and `[[step.repos]]`

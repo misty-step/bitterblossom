@@ -1,5 +1,5 @@
 agent = "moment-scorer"     # the zero-credential command agent above
-substrate = "local"         # local substrate: dev/test machinery (plane sets dev = true)
+substrate = "local"         # local substrate: dev/test default (plane sets dev = true, or grants production explicitly)
                             # graduate to your real substrate (sprites, etc.) alongside
                             # the absolute --db path swap in agents/moment-scorer.toml.
 

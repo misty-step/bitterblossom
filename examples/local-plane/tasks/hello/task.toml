@@ -1,5 +1,5 @@
 agent = "local-command"      # the zero-credential command agent above
-substrate = "local"          # local substrate: dev/test machinery (plane sets dev = true)
+substrate = "local"          # local substrate: dev/test default (plane sets dev = true, or grants production explicitly)
 
 [budget]
 timeout_minutes = 1         # enforced: wall-clock kill

@@ -1,6 +1,6 @@
 # Dev/test plane for the powder-chew local drill (bitterblossom-959).
-# `dev = true` is what makes `substrate = "local"` legal at all
-# (docs/spine.md: "the local substrate is dev/test machinery").
+# `dev = true` permits local execution for this dev/test drill. Production
+# planes must set `allow_local_substrate = true` as a separate conscious grant.
 dev = true
 db_path = ".bb/plane.db"
 

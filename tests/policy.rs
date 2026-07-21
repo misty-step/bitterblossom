@@ -205,7 +205,39 @@ fn local_substrate_is_rejected_outside_dev_planes() {
     )
     .unwrap();
     let err = Plane::load(root).unwrap_err();
-    assert!(err.to_string().contains("dev/test machinery"), "{err}");
+    assert!(err.to_string().contains("allow_local_substrate"), "{err}");
+}
+
+#[test]
+fn local_substrate_is_allowed_by_explicit_production_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::create_dir_all(root.join("tasks/t")).unwrap();
+    fs::write(root.join("plane.toml"), "allow_local_substrate = true\n").unwrap();
+    fs::write(
+        root.join("agents/a.toml"),
+        "harness = \"pi\"\nmodel = \"m\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tasks/t/card.md"), "card\n").unwrap();
+    fs::write(
+        root.join("tasks/t/task.toml"),
+        "agent = \"a\"\nsubstrate = \"local\"\n[[trigger]]\nkind = \"manual\"\n",
+    )
+    .unwrap();
+
+    let plane = Plane::load(root).unwrap();
+    assert_eq!(plane.tasks["t"].spec.substrate, "local");
+    assert!(!plane.spec.dev);
+    assert!(plane.spec.allow_local_substrate);
+}
+
+#[test]
+fn local_substrate_grant_is_not_implied_by_dev_false() {
+    let spec: bitterblossom::spec::PlaneSpec = toml::from_str("dev = false\n").unwrap();
+    assert!(!spec.dev);
+    assert!(!spec.allow_local_substrate);
 }
 
 #[test]
