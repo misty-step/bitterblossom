@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::ledger::Ledger;
 use crate::spec::{Plane, Task};
+use crate::workflow::WorkflowDoc;
 #[derive(Clone, Debug)]
 pub struct Violation {
     pub kind: &'static str,
@@ -66,6 +67,113 @@ pub fn pre_dispatch_check(
     budget_limits(plane, ledger, task)
 }
 
+/// Refusal shared by standard-task and workflow admission. A declared
+/// metered parent key is not safe on a harness with no eventual dollar report
+/// unless an effective capped child key is declared for the exact provider.
+pub fn metered_parent_key_violation(
+    agent_name: &str,
+    harness: &str,
+    provider: &str,
+    secrets: &[String],
+    optional_secrets: &[String],
+    provider_key_name: Option<&str>,
+    provider_spend_cap_usd: Option<f64>,
+) -> Option<Violation> {
+    let holds_metered_key = secrets
+        .iter()
+        .chain(optional_secrets.iter())
+        .any(|s| s == crate::provider_keys::OPENROUTER_SECRET_ENV);
+    let child_key_cap_effective =
+        provider == "openrouter" && provider_key_name.is_some() && provider_spend_cap_usd.is_some();
+    if holds_metered_key && !crate::harness::reports_cost(harness) && !child_key_cap_effective {
+        return Some(Violation {
+            kind: "cost_blind_harness",
+            detail: format!(
+                "agent '{agent_name}' holds {secret} on harness '{harness}', which cannot report cost_usd — every plane spend control is blind to this run; declare policy.provider_key_name + policy.provider_spend_cap_usd on provider openrouter and mint the capped child key, or move the workload to a cost-reporting harness",
+                secret = crate::provider_keys::OPENROUTER_SECRET_ENV,
+            ),
+        });
+    }
+    None
+}
+
+/// Apply one serialized admission projection to a workflow. The caller owns
+/// the surrounding BEGIN IMMEDIATE, so standard task spend, all workflow
+/// realized spend, active reservations, and this run's pinned reservation are
+/// observed and admitted as one atomic decision.
+pub fn workflow_admission_limit(
+    plane: &Plane,
+    ledger: &Ledger,
+    workflow_name: &str,
+    doc: &WorkflowDoc,
+    additional_reservation: f64,
+) -> Result<Option<Violation>> {
+    for step in &doc.steps {
+        let provider = step.agent.provider.as_deref().unwrap_or("openrouter");
+        if let Some(v) = metered_parent_key_violation(
+            &step.agent.name,
+            &step.agent.harness,
+            provider,
+            &step.agent.secrets,
+            &[],
+            None,
+            None,
+        ) {
+            return Ok(Some(v));
+        }
+    }
+
+    let wf = ledger.workflow_by_name(workflow_name)?;
+    if let Some(max) = doc.policies.max_runs_per_day {
+        let today = ledger.workflow_runs_today_by_id(&wf.id)?;
+        if today >= u64::from(max) {
+            return Ok(Some(Violation {
+                kind: "workflow_max_runs_per_day",
+                detail: format!("{today} workflow runs today >= max_runs_per_day {max}"),
+            }));
+        }
+    }
+
+    let standard_observed = ledger.standard_cost_today()?.0;
+    let workflow_spend = ledger.workflow_spend_today_all()?;
+    let plane_projected = standard_observed
+        + workflow_spend.observed_usd
+        + workflow_spend.estimated_usd
+        + workflow_spend.reserved_usd
+        + additional_reservation;
+    if let Some(ceiling) = plane.spec.budget.max_cost_per_day_usd {
+        if plane_projected > ceiling {
+            return Ok(Some(Violation {
+                kind: "global_daily_ceiling",
+                detail: format!(
+                    "plane daily ceiling: projected ${plane_projected:.4} (standard observed ${standard_observed:.4} + workflow observed ${:.4} + estimated ${:.4} + reserved ${:.4} + new reservation ${additional_reservation:.4}) > max_cost_per_day_usd ${ceiling:.2}",
+                    workflow_spend.observed_usd,
+                    workflow_spend.estimated_usd,
+                    workflow_spend.reserved_usd,
+                ),
+            }));
+        }
+    }
+
+    let own = ledger.workflow_spend_today_by_id(&wf.id)?;
+    if let Some(ceiling) = doc.policies.max_cost_per_day_usd {
+        let projected =
+            own.observed_usd + own.estimated_usd + own.reserved_usd + additional_reservation;
+        if projected > ceiling {
+            return Ok(Some(Violation {
+                kind: "workflow_daily_ceiling",
+                detail: format!(
+                    "workflow daily ceiling: projected ${projected:.4} (observed ${:.4} + estimated ${:.4} + reserved ${:.4} + new reservation ${additional_reservation:.4}) > max_cost_per_day_usd ${ceiling:.2}",
+                    own.observed_usd,
+                    own.estimated_usd,
+                    own.reserved_usd,
+                ),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 /// Spend/quota limits that survive an unpark — a released run would still
 /// re-block on these. The task park is handled by `pre_dispatch_check`.
 pub fn budget_limits(plane: &Plane, ledger: &Ledger, task: &Task) -> Result<Option<Violation>> {
@@ -83,33 +191,16 @@ pub fn budget_limits(plane: &Plane, ledger: &Ledger, task: &Task) -> Result<Opti
     // "openrouter" exactly, so a declared cap on any other provider string is
     // a dead letter and does not admit. Prepare swaps the capped child key in
     // and refuses to run if it was never minted.
-    let holds_metered_key = task
-        .agent
-        .secrets
-        .iter()
-        .chain(task.agent.optional_secrets.iter())
-        .any(|s| s == crate::provider_keys::OPENROUTER_SECRET_ENV);
-    let child_key_cap_effective = task.agent.provider() == "openrouter"
-        && task.agent.policy.provider_key_name.is_some()
-        && task.agent.policy.provider_spend_cap_usd.is_some();
-    if holds_metered_key
-        && !crate::harness::reports_cost(&task.agent.harness)
-        && !child_key_cap_effective
-    {
-        return Ok(Some(Violation {
-            kind: "cost_blind_harness",
-            detail: format!(
-                "agent '{agent}' holds {secret} on harness '{harness}', which cannot \
-                 report cost_usd — every plane spend control is blind to this run; \
-                 declare policy.provider_key_name + policy.provider_spend_cap_usd on \
-                 provider \"openrouter\" and mint the capped child key \
-                 (`bb keys mint {agent}`), or move the workload to a cost-reporting \
-                 harness",
-                agent = task.agent_name,
-                harness = task.agent.harness,
-                secret = crate::provider_keys::OPENROUTER_SECRET_ENV,
-            ),
-        }));
+    if let Some(v) = metered_parent_key_violation(
+        &task.agent_name,
+        &task.agent.harness,
+        task.agent.provider(),
+        &task.agent.secrets,
+        &task.agent.optional_secrets,
+        task.agent.policy.provider_key_name.as_deref(),
+        task.agent.policy.provider_spend_cap_usd,
+    ) {
+        return Ok(Some(v));
     }
     if let Some(max) = task.spec.budget.max_runs_per_day {
         let today = ledger.runs_today(&task.name)?;
@@ -121,11 +212,21 @@ pub fn budget_limits(plane: &Plane, ledger: &Ledger, task: &Task) -> Result<Opti
         }
     }
     if let Some(ceiling) = plane.spec.budget.max_cost_per_day_usd {
-        let spent = ledger.cost_today()?;
-        if spent >= ceiling {
+        let standard_spent = ledger.standard_cost_today()?.0;
+        let workflow_spend = ledger.workflow_spend_today_all()?;
+        let projected = standard_spent
+            + workflow_spend.observed_usd
+            + workflow_spend.estimated_usd
+            + workflow_spend.reserved_usd;
+        if projected >= ceiling {
             return Ok(Some(Violation {
                 kind: "global_daily_ceiling",
-                detail: format!("${spent:.2} spent today >= ceiling ${ceiling:.2}"),
+                detail: format!(
+                    "${projected:.2} spent or reserved today >= ceiling ${ceiling:.2} (standard ${standard_spent:.2} + workflow observed ${:.2} + estimated ${:.2} + reserved ${:.2})",
+                    workflow_spend.observed_usd,
+                    workflow_spend.estimated_usd,
+                    workflow_spend.reserved_usd,
+                ),
             }));
         }
     }

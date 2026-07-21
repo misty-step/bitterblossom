@@ -5,6 +5,23 @@ use crate::ledger::AttemptStats;
 use crate::spec::{AgentSpec, TaskBudget};
 use crate::substrate::CARD_FILENAME;
 
+fn json_cost(value: Option<&Value>, field: &str) -> Result<Option<f64>> {
+    let Some(value) = value else { return Ok(None) };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value
+        .as_f64()
+        .with_context(|| format!("{field} must be a JSON number"))?;
+    Ok(Some(crate::ledger::validate_cost_value(value, field)?))
+}
+
+fn partial_json_cost(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
 pub struct ParsedOutput {
     pub result: String,
     pub stats: AttemptStats,
@@ -30,6 +47,13 @@ pub const HARNESSES: &[&str] = &["claude", "codex", "pi", "omp", "command", "ope
 /// guarantees it, so the plane must treat the harness as cost-blind.
 pub fn reports_cost(harness: &str) -> bool {
     matches!(harness, "claude" | "pi" | "omp" | "opencode")
+}
+
+/// Whether cost is available while stdout is still streaming. Claude emits
+/// its dollar total only in the terminal result object, so it is eventually
+/// reportable but cannot drive an in-flight monitor.
+pub fn streams_cost(harness: &str) -> bool {
+    matches!(harness, "pi" | "omp" | "opencode")
 }
 
 /// The uniform commission preamble every dispatched lane receives, on every
@@ -259,6 +283,7 @@ fn partial_agent_jsonl_stats(stdout: &str) -> AttemptStats {
     let mut turns: i64 = 0;
     let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
     let mut saw_usage = false;
+    let mut saw_cost = false;
     for line in stdout.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -281,17 +306,17 @@ fn partial_agent_jsonl_stats(stdout: &str) -> AttemptStats {
         saw_usage = true;
         tokens_in += usage.get("input").and_then(Value::as_i64).unwrap_or(0);
         tokens_out += usage.get("output").and_then(Value::as_i64).unwrap_or(0);
-        cost += usage
-            .get("cost")
-            .and_then(|c| c.get("total"))
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+        if let Some(value) = partial_json_cost(usage.get("cost").and_then(|cost| cost.get("total")))
+        {
+            cost += value;
+            saw_cost = true;
+        }
     }
     AttemptStats {
         tokens_in: saw_usage.then_some(tokens_in),
         tokens_out: saw_usage.then_some(tokens_out),
         turns: (turns > 0).then_some(turns),
-        cost_usd: saw_usage.then_some(cost),
+        cost_usd: saw_cost.then_some(cost),
     }
 }
 
@@ -304,7 +329,7 @@ fn partial_claude_stats(stdout: &str) -> AttemptStats {
         tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
         tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
         turns: v.get("num_turns").and_then(Value::as_i64),
-        cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+        cost_usd: partial_json_cost(v.get("total_cost_usd")),
     }
 }
 
@@ -352,7 +377,7 @@ fn partial_command_stats(stdout: &str) -> AttemptStats {
         tokens_in: v.get("tokens_in").and_then(Value::as_i64),
         tokens_out: v.get("tokens_out").and_then(Value::as_i64),
         turns: v.get("turns").and_then(Value::as_i64),
-        cost_usd: v.get("cost_usd").and_then(Value::as_f64),
+        cost_usd: partial_json_cost(v.get("cost_usd")),
     }
 }
 
@@ -361,10 +386,11 @@ fn partial_command_stats(stdout: &str) -> AttemptStats {
 /// per-turn token usage live on `step-finish`), `tool` records a completed
 /// tool call, `text` carries assistant text. Unlike pi/omp there is no
 /// streaming delta noise to filter — every line is a discrete, complete event.
-fn opencode_step_finish_usage(stdout: &str) -> (i64, i64, i64, f64, bool) {
+fn opencode_step_finish_usage(stdout: &str) -> Result<(i64, i64, i64, f64, bool, bool)> {
     let (mut turns, mut tokens_in, mut tokens_out) = (0i64, 0i64, 0i64);
     let mut cost = 0f64;
     let mut saw_usage = false;
+    let mut saw_cost = false;
     for line in stdout.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -374,23 +400,27 @@ fn opencode_step_finish_usage(stdout: &str) -> (i64, i64, i64, f64, bool) {
             continue;
         }
         turns += 1;
-        cost += part.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
+        if let Some(value) = json_cost(part.get("cost"), "opencode part.cost")? {
+            cost += value;
+            saw_cost = true;
+        }
         if let Some(tokens) = part.get("tokens") {
             saw_usage = true;
             tokens_in += tokens.get("input").and_then(Value::as_i64).unwrap_or(0);
             tokens_out += tokens.get("output").and_then(Value::as_i64).unwrap_or(0);
         }
     }
-    (turns, tokens_in, tokens_out, cost, saw_usage)
+    Ok((turns, tokens_in, tokens_out, cost, saw_usage, saw_cost))
 }
 
 fn partial_opencode_stats(stdout: &str) -> AttemptStats {
-    let (turns, tokens_in, tokens_out, cost, saw_usage) = opencode_step_finish_usage(stdout);
+    let (turns, tokens_in, tokens_out, cost, saw_usage, saw_cost) =
+        opencode_step_finish_usage(stdout).unwrap_or((0, 0, 0, 0.0, false, false));
     AttemptStats {
         tokens_in: saw_usage.then_some(tokens_in),
         tokens_out: saw_usage.then_some(tokens_out),
         turns: (turns > 0).then_some(turns),
-        cost_usd: saw_usage.then_some(cost),
+        cost_usd: saw_cost.then_some(cost),
     }
 }
 
@@ -418,14 +448,15 @@ fn parse_opencode(stdout: &str) -> Result<ParsedOutput> {
     if result.is_empty() {
         bail!("opencode output: no assistant text content — incomplete run");
     }
-    let (turns, tokens_in, tokens_out, cost, saw_usage) = opencode_step_finish_usage(stdout);
+    let (turns, tokens_in, tokens_out, cost, saw_usage, saw_cost) =
+        opencode_step_finish_usage(stdout)?;
     Ok(ParsedOutput {
         result,
         stats: AttemptStats {
             tokens_in: saw_usage.then_some(tokens_in),
             tokens_out: saw_usage.then_some(tokens_out),
             turns: (turns > 0).then_some(turns),
-            cost_usd: saw_usage.then_some(cost),
+            cost_usd: saw_cost.then_some(cost),
         },
     })
 }
@@ -459,7 +490,7 @@ fn parse_command(stdout: &str) -> Result<ParsedOutput> {
             tokens_in: v.get("tokens_in").and_then(Value::as_i64),
             tokens_out: v.get("tokens_out").and_then(Value::as_i64),
             turns: v.get("turns").and_then(Value::as_i64),
-            cost_usd: v.get("cost_usd").and_then(Value::as_f64),
+            cost_usd: json_cost(v.get("cost_usd"), "command cost_usd")?,
         },
     })
 }
@@ -504,7 +535,7 @@ fn parse_claude(stdout: &str) -> Result<ParsedOutput> {
             tokens_in: usage.get("input_tokens").and_then(Value::as_i64),
             tokens_out: usage.get("output_tokens").and_then(Value::as_i64),
             turns: v.get("num_turns").and_then(Value::as_i64),
-            cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+            cost_usd: json_cost(v.get("total_cost_usd"), "claude total_cost_usd")?,
         },
     })
 }
@@ -561,6 +592,7 @@ fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
     let mut saw_event = false;
     let (mut tokens_in, mut tokens_out, mut cost) = (0i64, 0i64, 0f64);
     let mut saw_usage = false;
+    let mut saw_cost = false;
     for line in stdout.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -575,11 +607,13 @@ fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
                             saw_usage = true;
                             tokens_in += u.get("input").and_then(Value::as_i64).unwrap_or(0);
                             tokens_out += u.get("output").and_then(Value::as_i64).unwrap_or(0);
-                            cost += u
-                                .get("cost")
-                                .and_then(|c| c.get("total"))
-                                .and_then(Value::as_f64)
-                                .unwrap_or(0.0);
+                            if let Some(value) = json_cost(
+                                u.get("cost").and_then(|cost| cost.get("total")),
+                                "agent usage.cost.total",
+                            )? {
+                                cost += value;
+                                saw_cost = true;
+                            }
                         }
                         last_message = Some(m.clone());
                     }
@@ -615,7 +649,7 @@ fn parse_agent_jsonl(harness: &str, stdout: &str) -> Result<ParsedOutput> {
             tokens_in: saw_usage.then_some(tokens_in),
             tokens_out: saw_usage.then_some(tokens_out),
             turns: Some(turns),
-            cost_usd: saw_usage.then_some(cost),
+            cost_usd: saw_cost.then_some(cost),
         },
     })
 }

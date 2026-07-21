@@ -34,10 +34,11 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::budget;
 use crate::harness;
 use crate::ledger::{new_id, now, AttemptStats, Ledger};
 use crate::spec::{AgentSpec, AuthClass, Plane, TaskBudget};
-use crate::substrate::{self, WorkspacePlan};
+use crate::substrate::{self, ExecMonitor, ExecSnapshot, WorkspacePlan};
 use crate::workflow::{AcceptOutcome, StepAgent, WorkflowDoc, WorkflowStep, ROUTE_DONE};
 
 /// The completion tool: a branching step's agent writes this file with one
@@ -119,8 +120,9 @@ pub struct TriggerEnvelope {
 /// THE acceptance path. Webhook ingress, the cron scheduler, internal
 /// emitters, synthetic tests, the CLI, and the HTTP API all build a
 /// [`TriggerEnvelope`] and call this one function.
-pub fn accept(ledger: &Ledger, envelope: &TriggerEnvelope) -> Result<AcceptOutcome> {
+pub fn accept(plane: &Plane, ledger: &Ledger, envelope: &TriggerEnvelope) -> Result<AcceptOutcome> {
     ledger.accept_workflow_run(
+        plane,
         &envelope.workflow,
         envelope.source.kind(),
         envelope.payload.as_deref(),
@@ -177,6 +179,7 @@ pub struct CronAcceptance {
 /// most `max_fires` newest fires per workflow are accepted; skipped older
 /// fires are recorded as a guard event, mirroring task cron collapse.
 pub fn workflow_cron_tick(
+    plane: &Plane,
     ledger: &Ledger,
     last_by_workflow: &mut HashMap<String, DateTime<Utc>>,
     default_last: DateTime<Utc>,
@@ -228,6 +231,7 @@ pub fn workflow_cron_tick(
         for fire in fires {
             let scheduled = fire.to_rfc3339();
             let outcome = accept(
+                plane,
                 ledger,
                 &TriggerEnvelope {
                     workflow: wf.name.clone(),
@@ -422,6 +426,7 @@ impl Ledger {
     }
 
     fn add_workflow_run_cost(&self, run_id: &str, cost: f64) -> Result<()> {
+        let cost = crate::ledger::validate_cost_value(cost, "workflow run observed cost")?;
         self.conn.execute(
             "UPDATE workflow_run_status
              SET cost_usd = COALESCE(cost_usd, 0) + ?2, updated_at = ?3
@@ -535,6 +540,10 @@ impl Ledger {
         exit_code: Option<i64>,
         stats: &AttemptStats,
     ) -> Result<()> {
+        let cost = stats
+            .cost_usd
+            .map(|value| crate::ledger::validate_cost_value(value, "workflow step observed cost"))
+            .transpose()?;
         self.conn.execute(
             "UPDATE workflow_step_runs
              SET state = ?2, outcome = ?3, summary = ?4, error = ?5, exit_code = ?6,
@@ -550,7 +559,7 @@ impl Ledger {
                 stats.tokens_in,
                 stats.tokens_out,
                 stats.turns,
-                stats.cost_usd,
+                cost,
                 now()
             ],
         )?;
@@ -789,6 +798,60 @@ enum StepDisposition {
     },
     Failed(String),
     Incomplete(String),
+    Stopped(String),
+}
+
+struct WorkflowInFlightMonitor<'a> {
+    ledger: &'a Ledger,
+    run_id: &'a str,
+    workflow: &'a str,
+    harness: &'a str,
+    max_cost_usd: f64,
+    prior_cost_usd: f64,
+    side_effect_policy: &'a str,
+    latest_stats: AttemptStats,
+    last_recorded_cost: Option<f64>,
+    breached: bool,
+}
+
+impl<'a> WorkflowInFlightMonitor<'a> {
+    fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<String> {
+        let progress = harness::parse_partial_progress(self.harness, snapshot.stdout);
+        self.latest_stats = progress.stats;
+        let cost = self.latest_stats.cost_usd?;
+        let total = self.prior_cost_usd + cost;
+        let changed = self
+            .last_recorded_cost
+            .is_none_or(|prior| (prior - cost).abs() > f64::EPSILON);
+        if changed {
+            let _ = self.ledger.record_progress(
+                self.run_id,
+                &format!(
+                    "workflow cost observed ${cost:.4} (run total ${total:.4}) elapsed={}s",
+                    snapshot.elapsed.as_secs()
+                ),
+            );
+            self.last_recorded_cost = Some(cost);
+        }
+        if total <= self.max_cost_usd || self.breached {
+            return None;
+        }
+        let reason = format!(
+            "workflow in-flight cost cap {}: observed run total ${total:.4} (current step ${cost:.4} + prior ${prior:.4}) > max_cost_per_run_usd ${max:.2}",
+            self.side_effect_policy, prior = self.prior_cost_usd, max = self.max_cost_usd
+        );
+        let _ = self.ledger.record_guard_event(
+            "workflow_guard_spend_in_flight",
+            Some(self.workflow),
+            &reason,
+            1,
+        );
+        self.breached = true;
+        match self.side_effect_policy {
+            "log" => None,
+            _ => Some(reason),
+        }
+    }
 }
 
 /// Execute one accepted workflow run to a terminal state. Claims the run
@@ -817,6 +880,16 @@ pub fn execute_if_queued(
     let run = ledger.workflow_run(run_id)?;
     if !ledger.claim_workflow_run(run_id)? {
         return Ok(None);
+    }
+    if let Some((kind, reason)) = ledger.recheck_workflow_run_admission(plane, run_id)? {
+        ledger.record_guard_event(
+            &format!("workflow_admission_recheck_{kind}"),
+            Some(&run.workflow),
+            &reason,
+            1,
+        )?;
+        ledger.set_workflow_run_state(run_id, "stopped", Some(&reason))?;
+        return Ok(Some(run_detail_view(ledger, run_id)?));
     }
     // A claimed run must reach a terminal state even when the executor
     // itself errors (unreadable pinned doc, fs failure) OR panics: both
@@ -891,6 +964,9 @@ fn execute_claimed(
             }
             StepDisposition::Incomplete(reason) => {
                 break ("incomplete", Some(reason), "workflow_run_incomplete");
+            }
+            StepDisposition::Stopped(reason) => {
+                break ("stopped", Some(reason), "workflow_run_stopped");
             }
             StepDisposition::Succeeded { outcome, summary } => {
                 let target = match step.routes.len() {
@@ -992,50 +1068,67 @@ fn fired_guard(
         Some(f) => Some(f),
         None => {
             if let Some(cap) = doc.policies.max_cost_per_run_usd {
-                // When spend is the ONLY cycle guard, an attempt that
-                // reported no cost makes the guard indeterminate: unknown
-                // spend is never treated as zero (the status-row contract),
-                // so the cycle stops naming exactly that instead of looping
-                // unmetered. Bounded runs (rounds/elapsed declared, or no
-                // cycle at all) proceed; the cap simply cannot see the
-                // unmetered attempts.
-                let spend_is_only_cycle_guard =
-                    doc.policies.max_rounds.is_none() && doc.policies.max_elapsed_seconds.is_none();
-                // Scoped to steps ON cycles: a validation-admitted blind
-                // entry step off the cycle runs a bounded number of times
-                // and must not make every run of the shape dead on arrival.
-                let unmetered = if spend_is_only_cycle_guard {
-                    let cycle_steps: Vec<&str> = doc
-                        .steps_on_cycles()
-                        .into_iter()
-                        .map(|s| s.name.as_str())
-                        .collect();
-                    ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
-                } else {
-                    0
-                };
-                if unmetered > 0 {
-                    Some((
-                        "workflow_guard_spend_indeterminate",
-                        format!(
-                            "spend guard indeterminate: {unmetered} cycle-step attempt(s) \
-                             reported no cost and max_cost_per_run_usd is the only cycle guard \
-                             — unknown spend is never treated as zero"
-                        ),
-                    ))
-                } else {
-                    let observed = ledger
-                        .workflow_run_status(&run.id)?
-                        .and_then(|s| s.cost_usd)
-                        .unwrap_or(0.0);
-                    (observed > cap).then(|| {
+                // A cost-blind harness has no observable dollar stream.
+                let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
+                    let estimate = doc.policies.conservative_cost_estimate();
+                    if !estimate.is_finite() || estimate <= 0.0 {
+                        bail!(
+                            "workflow '{}' has invalid conservative estimate {estimate}",
+                            run.workflow
+                        );
+                    }
+                    (estimate > cap).then(|| {
                         (
-                            "workflow_guard_spend",
+                            "workflow_guard_spend_estimate",
                             format!(
-                                "spend guard: observed ${observed:.4} of run-group cap ${cap:.2}"
+                                "spend estimate: cost-blind harness '{}' reserves ${estimate:.4} > max_cost_per_run_usd ${cap:.2}; unknown spend is never treated as zero",
+                                step.agent.harness
                             ),
                         )
                     })
+                } else {
+                    None
+                };
+                if estimate_violation.is_some() {
+                    estimate_violation
+                } else {
+                    // A spend-only cycle becomes indeterminate after an
+                    // unmetered attempt. Bounded runs can continue.
+                    let spend_is_only_cycle_guard = doc.policies.max_rounds.is_none()
+                        && doc.policies.max_elapsed_seconds.is_none();
+                    let unmetered = if spend_is_only_cycle_guard {
+                        let cycle_steps: Vec<&str> = doc
+                            .steps_on_cycles()
+                            .into_iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
+                    } else {
+                        0
+                    };
+                    if unmetered > 0 {
+                        Some((
+                            "workflow_guard_spend_indeterminate",
+                            format!(
+                                "spend guard indeterminate: {unmetered} cycle-step attempt(s) \
+                                 reported no cost and max_cost_per_run_usd is the only cycle guard \
+                                 — unknown spend is never treated as zero"
+                            ),
+                        ))
+                    } else {
+                        let observed = ledger
+                            .workflow_run_status(&run.id)?
+                            .and_then(|s| s.cost_usd)
+                            .unwrap_or(0.0);
+                        (observed > cap).then(|| {
+                            (
+                                "workflow_guard_spend",
+                                format!(
+                                    "spend guard: observed ${observed:.4} of run-group cap ${cap:.2}"
+                                ),
+                            )
+                        })
+                    }
                 }
             } else {
                 None
@@ -1135,6 +1228,40 @@ fn tail(s: &str, max: usize) -> String {
     format!("…{}", &s[start..])
 }
 
+fn finish_attempt(
+    ledger: &Ledger,
+    run_id: &str,
+    step_run_id: &str,
+    state: &str,
+    error: Option<&str>,
+    exit_code: Option<i64>,
+    stats: &AttemptStats,
+) -> Result<()> {
+    if let Some(cost) = stats.cost_usd {
+        ledger.add_workflow_run_cost(run_id, cost)?;
+    }
+    ledger.finish_workflow_step_run(step_run_id, state, None, None, error, exit_code, stats)
+}
+
+fn final_spend_breach(
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    max_cost: f64,
+    side_effect_policy: &str,
+    current_cost: f64,
+) -> Result<Option<String>> {
+    let total = ledger
+        .workflow_run_status(&run.id)?
+        .and_then(|status| status.cost_usd)
+        .unwrap_or(current_cost);
+    if total <= max_cost {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "spend guard: observed run total ${total:.4} (workflow final cost cap {side_effect_policy}: current step ${current_cost:.4}) > max_cost_per_run_usd ${max_cost:.2}"
+    )))
+}
+
 fn run_step(
     plane: &Plane,
     ledger: &Ledger,
@@ -1177,6 +1304,17 @@ fn run_step(
         )))
     };
     let none = AttemptStats::default();
+    if let Some(v) = budget::metered_parent_key_violation(
+        &step.agent.name,
+        &step.agent.harness,
+        step.agent.provider.as_deref().unwrap_or("openrouter"),
+        &step.agent.secrets,
+        &[],
+        None,
+        None,
+    ) {
+        return fail(v.detail, &none);
+    }
 
     let bundle = match load_bundle(&step.agent) {
         Ok(b) => b,
@@ -1272,7 +1410,36 @@ fn run_step(
     // refused-credential STOP-and-report guardrail; workflow steps are
     // dispatched lanes and receive exactly the same one.
     let prompt = format!("{}\n\n{card}", harness::commission_prompt());
-    let exec = match session.execute(&cmd, Some(&prompt), timeout, None) {
+    let max_cost = doc.policies.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
+    let side_effect_policy = doc.policies.side_effect_policy.as_deref().unwrap_or("kill");
+    let monitor_needed = max_cost.is_finite() && harness::streams_cost(&step.agent.harness);
+    let prior_cost_usd = ledger
+        .workflow_run_status(&run.id)?
+        .and_then(|status| status.cost_usd)
+        .unwrap_or(0.0);
+    let mut in_flight = WorkflowInFlightMonitor {
+        ledger,
+        run_id: &run.id,
+        workflow: &run.workflow,
+        harness: &step.agent.harness,
+        max_cost_usd: max_cost,
+        prior_cost_usd,
+        side_effect_policy,
+        latest_stats: AttemptStats::default(),
+        last_recorded_cost: None,
+        breached: false,
+    };
+    let mut monitor_check = |snapshot: &ExecSnapshot<'_>| in_flight.observe(snapshot);
+    let mut exec_monitor = ExecMonitor {
+        poll_interval: Duration::from_millis(100),
+        check: &mut monitor_check,
+    };
+    let exec = match session.execute(
+        &cmd,
+        Some(&prompt),
+        timeout,
+        monitor_needed.then_some(&mut exec_monitor),
+    ) {
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
@@ -1281,39 +1448,111 @@ fn run_step(
     };
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;
     session.write_artifact("stderr.txt", exec.stderr.as_bytes())?;
-    if exec.timed_out {
+    if let Some(reason) = exec.termination_reason.as_deref() {
+        let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
         let _ = session.release();
-        return fail(
-            format!("wall-clock timeout after {}s (killed)", timeout.as_secs()),
-            &none,
-        );
+        finish_attempt(
+            ledger,
+            &run.id,
+            &step_run_id,
+            "stopped",
+            Some(reason),
+            Some(exec.exit_code),
+            &stats,
+        )?;
+        return Ok(StepDisposition::Stopped(reason.to_string()));
+    }
+    if exec.timed_out {
+        let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
+        let _ = session.release();
+        let reason = format!("wall-clock timeout after {}s (killed)", timeout.as_secs());
+        finish_attempt(
+            ledger,
+            &run.id,
+            &step_run_id,
+            "failed",
+            Some(&reason),
+            Some(exec.exit_code),
+            &stats,
+        )?;
+        return Ok(StepDisposition::Failed(reason));
     }
     if exec.exit_code != 0 {
+        let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
         let _ = session.release();
-        return fail(
-            format!(
-                "harness exit {}: {}",
-                exec.exit_code,
-                tail(exec.stderr.trim(), 500)
-            ),
-            &none,
+        let reason = format!(
+            "harness exit {}: {}",
+            exec.exit_code,
+            tail(exec.stderr.trim(), 500)
         );
+        finish_attempt(
+            ledger,
+            &run.id,
+            &step_run_id,
+            "failed",
+            Some(&reason),
+            Some(exec.exit_code),
+            &stats,
+        )?;
+        return Ok(StepDisposition::Failed(reason));
     }
     let parsed = match harness::parse_output(&agent.harness, &exec.stdout) {
         Ok(p) => p,
         Err(e) => {
+            let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
             let _ = session.release();
-            return fail(format!("unparseable harness output: {e:#}"), &none);
+            let reason = format!("unparseable harness output: {e:#}");
+            finish_attempt(
+                ledger,
+                &run.id,
+                &step_run_id,
+                "failed",
+                Some(&reason),
+                Some(exec.exit_code),
+                &stats,
+            )?;
+            return Ok(StepDisposition::Failed(reason));
         }
     };
     session.write_artifact("result.md", parsed.result.as_bytes())?;
-    // Release failures (including the substrate's own artifact size cap) are
-    // attempt-scoped: a named step failure, never an executor error.
+    // Release failures remain attempt-scoped, but known spend is retained.
     if let Err(e) = session.release() {
-        return fail(format!("release: {e:#}"), &parsed.stats);
+        finish_attempt(
+            ledger,
+            &run.id,
+            &step_run_id,
+            "failed",
+            Some(&format!("release: {e:#}")),
+            Some(exec.exit_code),
+            &parsed.stats,
+        )?;
+        return Ok(StepDisposition::Failed(format!("release: {e:#}")));
     }
     if let Some(cost) = parsed.stats.cost_usd {
         ledger.add_workflow_run_cost(&run.id, cost)?;
+    }
+
+    if let Some(cost) = parsed.stats.cost_usd {
+        if let Some(reason) = final_spend_breach(ledger, run, max_cost, side_effect_policy, cost)? {
+            ledger.record_guard_event(
+                "workflow_guard_spend_final",
+                Some(&run.workflow),
+                &reason,
+                1,
+            )?;
+            if side_effect_policy != "log" {
+                ledger.finish_workflow_step_run(
+                    &step_run_id,
+                    "stopped",
+                    None,
+                    None,
+                    Some(&reason),
+                    Some(exec.exit_code),
+                    &parsed.stats,
+                )?;
+                return Ok(StepDisposition::Stopped(reason));
+            }
+        }
     }
 
     // Child-agent evidence, with monotonic authority narrowing.
@@ -1393,6 +1632,28 @@ fn run_step(
         let child_cost: f64 = decls.iter().filter_map(|d| d.cost_usd).sum();
         if child_cost > 0.0 {
             ledger.add_workflow_run_cost(&run.id, child_cost)?;
+            if let Some(reason) =
+                final_spend_breach(ledger, run, max_cost, side_effect_policy, child_cost)?
+            {
+                ledger.record_guard_event(
+                    "workflow_guard_spend_final",
+                    Some(&run.workflow),
+                    &reason,
+                    1,
+                )?;
+                if side_effect_policy != "log" {
+                    ledger.finish_workflow_step_run(
+                        &step_run_id,
+                        "stopped",
+                        None,
+                        None,
+                        Some(&reason),
+                        Some(exec.exit_code),
+                        &parsed.stats,
+                    )?;
+                    return Ok(StepDisposition::Stopped(reason));
+                }
+            }
         }
     }
 

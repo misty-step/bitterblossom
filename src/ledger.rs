@@ -284,6 +284,9 @@ impl Ledger {
                 "ledger schema version {existing_version} is newer than this bb binary supports ({LEDGER_SCHEMA_VERSION}); roll forward or restore a compatible backup"
             );
         }
+        // Keep additive schema changes and their data backfills atomic. If a
+        // legacy document cannot migrate, reopening sees the original schema.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "runs", "config_source_repo", "TEXT")?;
         ensure_column(&conn, "runs", "config_source_ref", "TEXT")?;
@@ -316,9 +319,29 @@ impl Ledger {
         // migrate additively; the partial unique index must be created after
         // the column exists, so it lives here rather than in schema.sql.
         ensure_column(&conn, "workflow_runs", "dedupe_key", "TEXT")?;
+        // Pin the conservative reservation on every accepted workflow run so
+        // later policy revisions never revalue queued/running capacity.
+        let had_workflow_estimate = column_exists(&conn, "workflow_runs", "estimated_cost_usd")?;
+        ensure_column(
+            &conn,
+            "workflow_runs",
+            "estimated_cost_usd",
+            "REAL NOT NULL DEFAULT 1.0",
+        )?;
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS workflow_runs_dedupe
                ON workflow_runs(workflow_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+        )?;
+        if !had_workflow_estimate {
+            backfill_workflow_run_reservations(&conn)?;
+        }
+        // Store-era ledgers may have accepted rows before the mutable status
+        // table existed. Queue those rows so reservations remain visible and
+        // the runner can drain them instead of losing them on restart.
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_run_status (run_id, state, updated_at)
+             SELECT id, 'queued', created_at FROM workflow_runs",
+            [],
         )?;
         conn.execute(
             "UPDATE submissions SET head_version = report_json
@@ -326,6 +349,7 @@ impl Ledger {
             [],
         )?;
         conn.pragma_update(None, "user_version", LEDGER_SCHEMA_VERSION)?;
+        conn.execute_batch("COMMIT")?;
         Ok(Self { conn })
     }
 
@@ -1144,13 +1168,19 @@ impl Ledger {
             |r| r.get(0),
         )?)
     }
-    pub fn cost_today(&self) -> Result<f64> {
+    pub fn standard_cost_today(&self) -> Result<(f64, i64)> {
         let day = &now()[..10];
         Ok(self.conn.query_row(
-            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM attempts WHERE substr(started_at, 1, 10) = ?1",
+            "SELECT COALESCE(SUM(cost_usd), 0.0),
+                    SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END)
+             FROM attempts WHERE substr(started_at, 1, 10) = ?1",
             params![day],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
         )?)
+    }
+
+    pub fn cost_today(&self) -> Result<f64> {
+        Ok(self.standard_cost_today()?.0)
     }
 
     /// Cost governor slice 1 (bitterblossom-960): sum of today's attempt
@@ -1745,15 +1775,50 @@ fn row_to_notification_outbox(r: &rusqlite::Row<'_>) -> rusqlite::Result<Notific
     })
 }
 
-fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<()> {
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let cols = stmt
         .query_map([], |r| r.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !cols.iter().any(|c| c == column) {
+    Ok(cols.iter().any(|name| name == column))
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<()> {
+    if !column_exists(conn, table, column)? {
         conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
     }
     Ok(())
+}
+
+fn backfill_workflow_run_reservations(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, wr.document FROM workflow_runs r
+         JOIN workflow_revisions wr ON wr.workflow_id = r.workflow_id AND wr.revision = r.revision",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (run_id, document) in rows {
+        let doc: crate::workflow::WorkflowDoc = serde_json::from_str(&document)
+            .with_context(|| format!("decode pinned workflow document for legacy run {run_id}"))?;
+        let estimate = doc.policies.conservative_cost_estimate();
+        let estimate = validate_cost_value(estimate, "legacy workflow reservation")?;
+        if estimate <= 0.0 {
+            bail!("legacy workflow run {run_id} has a non-positive pinned reservation");
+        }
+        conn.execute(
+            "UPDATE workflow_runs SET estimated_cost_usd = ?2 WHERE id = ?1",
+            params![run_id, estimate],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_cost_value(value: f64, field: &str) -> Result<f64> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("{field} must be finite and non-negative, got {value}");
+    }
+    Ok(value)
 }
 
 fn ledger_schema_version(conn: &Connection) -> Result<i64> {

@@ -988,6 +988,7 @@ workflow config; no route decision ever comes from matching prose.
   launch snapshot, cost, and result. Children inherit the step's authority
   grant verbatim or declare a subset — declaring anything broader fails the
   step. Children never become workflow or agent catalog entries.
+- **Cost governance.** `policies.max_cost_per_day_usd` is the workflow UTC-day ceiling below the plane `[budget].max_cost_per_day_usd` ceiling. Acceptance reserves `estimated_cost_per_run_usd`, then `max_cost_per_run_usd`, then the conservative $1.00 fallback for queued runs; observed workflow run-group spend is queryable with `bb workflow spend <name>`. A denial writes `workflow_daily_ceiling` in workflow history. Cost-reporting steps stream into the per-run monitor and apply `side_effect_policy`; cost-blind steps never turn unknown into zero.
 - **Cycle guards.** A route cycle must declare at least one enforceable guard
   (`policies.max_rounds`, `policies.max_elapsed_seconds`, or the run-group
   spend cap `policies.max_cost_per_run_usd`); `bb workflow stop <run-id>` is
@@ -1074,6 +1075,7 @@ bb workflow accept <name> [--trigger K] [--payload JSON] [--dedupe-key K] [--jso
 bb workflow execute <run-id> [--json]             # run one accepted run group to a terminal state
 bb workflow stop <run-id> [--reason TEXT] [--json] # external stop signal; applies before the next step attempt
 bb workflow runs <name> [--json] | run-show <run-id> [--json]      # pinned config + status + step attempts + children
+bb workflow spend <name> [--json]                    # observed UTC-day spend and workflow daily ceiling
 bb serve                                          # webhook + cron + queue
 bb mcp serve                                      # MCP stdio server: 10 always-on read-only tools (bb_status, bb_check, bb_tasks, bb_runs_list, bb_runs_show, bb_artifacts_list, bb_artifact_read, bb_dlq_list, bb_preflight, bb_gate) plus opt-in mutating bb_dispatch (BB_MCP_ENABLE_DISPATCH=1); JSON-RPC over stdin/stdout; see docs/mcp-dispatch-authority.md
 ```

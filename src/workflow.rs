@@ -23,7 +23,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::ledger::{new_id, now, Ledger};
-use crate::spec::{Task, TriggerSpec};
+use crate::spec::{Plane, Task, TriggerSpec};
 
 pub const WORKFLOW_STATES: &[&str] = &["draft", "active", "paused", "archived"];
 pub const TRIGGER_KINDS: &[&str] = &["manual", "cron", "webhook", "internal", "test", "replay"];
@@ -147,6 +147,17 @@ pub struct WorkflowPolicies {
     /// caps the summed observed cost of every step attempt in the group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_per_run_usd: Option<f64>,
+    /// Workflow-scoped UTC-day spend ceiling. Admission reserves a
+    /// conservative per-run estimate so queued runs cannot oversubscribe it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_per_day_usd: Option<f64>,
+    /// Conservative reservation for a run whose harness cannot report dollars.
+    /// When absent, max_cost_per_run_usd or the built-in $1.00 estimate applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_per_run_usd: Option<f64>,
+    /// Side-effect action for an in-flight per-run spend breach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effect_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<u32>,
     /// Execution substrate for step attempts (default: local).
@@ -163,6 +174,12 @@ pub struct WorkflowPolicies {
 impl WorkflowPolicies {
     fn is_empty(&self) -> bool {
         self == &Self::default()
+    }
+
+    pub(crate) fn conservative_cost_estimate(&self) -> f64 {
+        self.estimated_cost_per_run_usd
+            .or_else(|| self.max_cost_per_run_usd.filter(|value| *value != 0.0))
+            .unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD)
     }
 }
 
@@ -187,6 +204,24 @@ impl WorkflowDoc {
         }
         if self.goal.trim().is_empty() {
             bail!("workflow '{}': goal is required", self.name);
+        }
+        for (field, value) in [
+            ("max_cost_per_run_usd", self.policies.max_cost_per_run_usd),
+            ("max_cost_per_day_usd", self.policies.max_cost_per_day_usd),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value < 0.0 {
+                    bail!(
+                        "workflow '{}': policies.{field} must be finite and non-negative",
+                        self.name
+                    );
+                }
+            }
+        }
+        if let Some(value) = self.policies.estimated_cost_per_run_usd {
+            if !value.is_finite() || value <= 0.0 {
+                bail!("workflow '{}': policies.estimated_cost_per_run_usd must be finite and greater than zero", self.name);
+            }
         }
         for trigger in &self.triggers {
             match trigger.kind.as_str() {
@@ -311,6 +346,31 @@ impl WorkflowDoc {
                 "workflow '{}': policies.max_elapsed_seconds must be >= 1",
                 self.name
             );
+        }
+        for (field, value) in [
+            ("max_cost_per_run_usd", self.policies.max_cost_per_run_usd),
+            ("max_cost_per_day_usd", self.policies.max_cost_per_day_usd),
+            (
+                "estimated_cost_per_run_usd",
+                self.policies.estimated_cost_per_run_usd,
+            ),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value < 0.0 {
+                    bail!(
+                        "workflow '{}': policies.{field} must be finite and >= 0",
+                        self.name
+                    );
+                }
+            }
+        }
+        if let Some(policy) = &self.policies.side_effect_policy {
+            if !matches!(policy.as_str(), "kill" | "quarantine" | "log") {
+                bail!(
+                    "workflow '{}': policies.side_effect_policy '{policy}' is unknown (known: kill, quarantine, log)",
+                    self.name
+                );
+            }
         }
         // An unattended cycle must be bounded by at least one genuinely
         // enforceable guard (the external stop signal alone needs an
@@ -512,6 +572,9 @@ impl WorkflowDoc {
                 timeout_minutes: task.spec.budget.timeout_minutes,
                 max_runs_per_day: task.spec.budget.max_runs_per_day,
                 max_cost_per_run_usd: task.spec.budget.max_cost_per_run_usd,
+                max_cost_per_day_usd: None,
+                estimated_cost_per_run_usd: None,
+                side_effect_policy: None,
                 concurrency: None,
                 substrate: None,
                 max_rounds: None,
@@ -561,6 +624,8 @@ pub struct WorkflowRunRow {
     pub trigger_kind: String,
     pub payload: Option<String>,
     pub dedupe_key: Option<String>,
+    /// Conservative daily reservation pinned from the accepted revision.
+    pub estimated_cost_usd: f64,
     pub created_at: String,
 }
 
@@ -574,6 +639,12 @@ pub enum AcceptOutcome {
     /// no new run is created — redeliveries repair nothing and fork nothing.
     Duplicate {
         run: WorkflowRunRow,
+    },
+    /// The workflow daily cost ceiling rejected this acceptance. No run row
+    /// is created; the named workflow event is the durable denial evidence.
+    Denied {
+        workflow: String,
+        reason: String,
     },
     Suppressed {
         workflow: String,
@@ -594,7 +665,7 @@ const WORKFLOW_SELECT: &str =
 const REVISION_SELECT: &str =
     "SELECT workflow_id, revision, document, source, note, created_at FROM workflow_revisions";
 const WORKFLOW_RUN_SELECT: &str = "SELECT r.id, r.workflow_id, w.name, r.revision, \
-     r.trigger_kind, r.payload, r.dedupe_key, r.created_at \
+     r.trigger_kind, r.payload, r.dedupe_key, r.estimated_cost_usd, r.created_at \
      FROM workflow_runs r JOIN workflows w ON w.id = r.workflow_id";
 
 fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRow> {
@@ -628,7 +699,8 @@ fn row_to_workflow_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRunRow
         trigger_kind: r.get(4)?,
         payload: r.get(5)?,
         dedupe_key: r.get(6)?,
-        created_at: r.get(7)?,
+        estimated_cost_usd: r.get(7)?,
+        created_at: r.get(8)?,
     })
 }
 
@@ -895,6 +967,7 @@ impl Ledger {
     /// disposition; draft/archived refuse.
     pub fn accept_workflow_run(
         &self,
+        plane: &Plane,
         name: &str,
         trigger_kind: &str,
         payload: Option<&str>,
@@ -946,12 +1019,27 @@ impl Ledger {
             let revision = wf
                 .active_revision
                 .context("active workflow has no active revision (corrupt state)")?;
+            let revision_row = self.workflow_revision_row(&wf.id, revision)?;
+            let doc = WorkflowDoc::from_canonical_json(&revision_row.document)?;
+            let estimate = doc.policies.conservative_cost_estimate();
+            if !estimate.is_finite() || estimate <= 0.0 {
+                bail!("workflow '{name}': conservative run estimate must be finite and greater than zero");
+            }
+            if let Some(violation) = crate::budget::workflow_admission_limit(
+                plane, self, &wf.name, &doc, estimate,
+            )? {
+                self.workflow_audit(&wf.id, violation.kind, Some(&violation.detail))?;
+                return Ok(AcceptOutcome::Denied {
+                    workflow: wf.name,
+                    reason: violation.detail,
+                });
+            }
             let id = format!("wfr-{}", new_id());
             let ts = now();
             self.conn.execute(
-                "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![id, wf.id, revision, trigger_kind, payload, dedupe_key, ts],
+                "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, estimated_cost_usd, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![id, wf.id, revision, trigger_kind, payload, dedupe_key, estimate, ts],
             )?;
             self.conn.execute(
                 "INSERT INTO workflow_run_status (run_id, state, updated_at)
@@ -966,6 +1054,25 @@ impl Ledger {
             Ok(AcceptOutcome::Accepted {
                 run: self.workflow_run(&id)?,
             })
+        })
+    }
+
+    /// Recheck queued capacity under the same immediate transaction used by
+    /// acceptance. The run's pinned estimate is already an active reservation;
+    /// no current-policy estimate is introduced here.
+    pub fn recheck_workflow_run_admission(
+        &self,
+        plane: &Plane,
+        run_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        self.workflow_tx(|| {
+            let run = self.workflow_run(run_id)?;
+            let revision = self.workflow_revision_row(&run.workflow_id, run.revision)?;
+            let doc = WorkflowDoc::from_canonical_json(&revision.document)?;
+            Ok(
+                crate::budget::workflow_admission_limit(plane, self, &run.workflow, &doc, 0.0)?
+                    .map(|v| (v.kind.to_string(), v.detail)),
+            )
         })
     }
 
@@ -1085,7 +1192,146 @@ impl Ledger {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    pub(crate) fn workflow_runs_today_by_id(&self, workflow_id: &str) -> Result<u64> {
+        let day = &now()[..10];
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_runs
+             WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = ?2",
+            params![workflow_id, day],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Read workflow spend by the UTC date on which each step or child cost
+    /// occurred. Acceptance date is reservation metadata only and never
+    /// substitutes for the occurrence date of realized spend.
+    pub fn workflow_spend_today(&self, name: &str) -> Result<WorkflowSpendToday> {
+        let wf = self.workflow_by_name(name)?;
+        self.workflow_spend_today_by_id(&wf.id)
+    }
+
+    pub(crate) fn workflow_spend_today_by_id(
+        &self,
+        workflow_id: &str,
+    ) -> Result<WorkflowSpendToday> {
+        let day = &now()[..10];
+        let mut stmt = self.conn.prepare(
+            "SELECT r.estimated_cost_usd, COALESCE(s.state, 'queued'), s.cost_usd, s.updated_at,
+                    COALESCE((SELECT SUM(sr.cost_usd) FROM workflow_step_runs sr
+                              WHERE sr.run_id = r.id AND sr.cost_usd IS NOT NULL
+                                AND substr(sr.started_at, 1, 10) = ?2), 0.0),
+                    COALESCE((SELECT SUM(c.cost_usd) FROM workflow_child_agents c
+                              JOIN workflow_step_runs cs ON cs.id = c.step_run_id
+                              WHERE cs.run_id = r.id AND c.cost_usd IS NOT NULL
+                                AND substr(c.recorded_at, 1, 10) = ?2), 0.0),
+                    EXISTS (SELECT 1 FROM workflow_step_runs sr
+                            WHERE sr.run_id = r.id AND sr.cost_usd IS NOT NULL),
+                    EXISTS (SELECT 1 FROM workflow_step_runs sr
+                            WHERE sr.run_id = r.id
+                              AND substr(sr.started_at, 1, 10) = ?2),
+                    (EXISTS (SELECT 1 FROM workflow_step_runs sr
+                             WHERE sr.run_id = r.id AND sr.cost_usd IS NULL
+                               AND substr(sr.started_at, 1, 10) = ?2)
+                     OR EXISTS (SELECT 1 FROM workflow_child_agents c
+                                JOIN workflow_step_runs cs ON cs.id = c.step_run_id
+                                WHERE cs.run_id = r.id AND c.cost_usd IS NULL
+                                  AND substr(c.recorded_at, 1, 10) = ?2))
+             FROM workflow_runs r LEFT JOIN workflow_run_status s ON s.run_id = r.id
+             WHERE r.workflow_id = ?1",
+        )?;
+        let mut spend = WorkflowSpendToday::default();
+        for row in stmt.query_map(params![workflow_id, day], |r| {
+            Ok((
+                r.get::<_, Option<f64>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, f64>(5)?,
+                r.get::<_, bool>(6)?,
+                r.get::<_, bool>(7)?,
+                r.get::<_, bool>(8)?,
+            ))
+        })? {
+            let (
+                estimate,
+                state,
+                status_cost,
+                updated_at,
+                step_today,
+                child_today,
+                has_evidence,
+                has_attempt_today,
+                has_unpriced_attempt_today,
+            ) = row?;
+            let estimate = crate::ledger::validate_cost_value(
+                estimate.unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD),
+                "workflow reservation",
+            )?;
+            let status_cost = status_cost
+                .map(|value| crate::ledger::validate_cost_value(value, "workflow status cost"))
+                .transpose()?;
+            let observed = step_today + child_today;
+            let observed = if !has_evidence
+                && status_cost.is_some()
+                && updated_at
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with(day))
+            {
+                status_cost.unwrap_or(0.0)
+            } else {
+                observed
+            };
+            if matches!(state.as_str(), "queued" | "running") {
+                // Active runs reserve only the unspent part of the estimate.
+                // Observed step/child spend remains visible to plane admission.
+                spend.observed_usd += observed;
+                spend.reserved_usd += (estimate - observed).max(0.0);
+                spend.active_runs += 1;
+            } else if has_unpriced_attempt_today || (has_attempt_today && status_cost.is_none()) {
+                // A terminal run with any unpriced attempt remains partly
+                // unknown even when another attempt reported parent cost.
+                // Charge observed spend plus the unspent pinned estimate.
+                spend.observed_usd += observed;
+                spend.estimated_usd += (estimate - observed).max(0.0);
+                spend.estimated_runs += 1;
+            } else {
+                spend.observed_usd += observed;
+            }
+        }
+        Ok(spend)
+    }
+
+    pub(crate) fn workflow_spend_today_all(&self) -> Result<WorkflowSpendToday> {
+        let mut total = WorkflowSpendToday::default();
+        for wf in self.list_workflows()? {
+            let spend = self.workflow_spend_today_by_id(&wf.id)?;
+            total.observed_usd += spend.observed_usd;
+            total.estimated_usd += spend.estimated_usd;
+            total.reserved_usd += spend.reserved_usd;
+            total.estimated_runs += spend.estimated_runs;
+            total.active_runs += spend.active_runs;
+        }
+        Ok(total)
+    }
 }
+
+/// Daily workflow coverage separated by observed, conservatively estimated,
+/// and genuinely unavailable cost. Active reservations use each run's pinned
+/// estimate and are separate from realized spend.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct WorkflowSpendToday {
+    pub observed_usd: f64,
+    pub estimated_usd: f64,
+    pub reserved_usd: f64,
+    pub estimated_runs: i64,
+    pub active_runs: i64,
+}
+
+/// Conservative reservation used when a harness has no dollar meter.
+const DEFAULT_WORKFLOW_COST_ESTIMATE_USD: f64 = 1.0;
 
 /// One workflow's full projection: row + revision metadata + parsed active
 /// document. The same shape backs `bb workflow show --json` and
@@ -1142,6 +1388,34 @@ pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "run": run,
         "document": document,
+    }))
+}
+
+/// Current-day spend projection for the workflow CLI and API consumers.
+pub fn workflow_spend_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
+    let wf = ledger.workflow_by_name(name)?;
+    let max = wf
+        .active_revision
+        .and_then(|revision| ledger.workflow_revision(name, revision).ok())
+        .and_then(|row| WorkflowDoc::from_canonical_json(&row.document).ok())
+        .and_then(|doc| doc.policies.max_cost_per_day_usd);
+    let spend = ledger.workflow_spend_today(name)?;
+    let realized = spend.observed_usd + spend.estimated_usd;
+    Ok(serde_json::json!({
+        "workflow": name,
+        "date": &now()[..10],
+        "spend_today_usd": realized,
+        "projected_today_usd": realized + spend.reserved_usd,
+        "observed_usd": spend.observed_usd,
+        "estimated_usd": spend.estimated_usd,
+        "reserved_usd": spend.reserved_usd,
+        "coverage": {
+            "observed_usd": spend.observed_usd,
+            "estimated_usd": spend.estimated_usd,
+            "estimated_runs": spend.estimated_runs,
+            "active_runs": spend.active_runs,
+        },
+        "max_cost_per_day_usd": max,
     }))
 }
 

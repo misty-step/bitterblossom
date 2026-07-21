@@ -30,6 +30,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use bitterblossom::ledger::Ledger;
+use bitterblossom::spec::Plane;
 
 fn write_plane(root: &Path) {
     fs::write(
@@ -103,6 +104,286 @@ fn accept_test_run(root: &Path, workflow: &str) -> String {
 
 fn execute(root: &Path, run_id: &str) -> serde_json::Value {
     bb_json(root, &["workflow", "execute", run_id, "--json"])
+}
+
+#[test]
+fn metered_workflow_run_stops_in_flight_on_per_run_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(
+        root,
+        "metered.sh",
+        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.50,"tokens":{"input":1,"output":1}}}'
+sleep 2
+printf '%s\n' '{"part":{"type":"text","text":"done"}}'"#,
+    );
+    let doc = write_doc(
+        root,
+        "metered.toml",
+        &format!(
+            r#"
+name = "metered"
+goal = "Stop when the metered step exceeds its run budget."
+
+[[trigger]]
+kind = "test"
+
+[[step]]
+name = "work"
+goal = "Emit a metered result."
+[step.agent]
+name = "metered"
+version = 1
+harness = "opencode"
+model = "stub"
+bin = "{}"
+
+[policies]
+max_cost_per_run_usd = 0.01
+side_effect_policy = "kill"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "metered");
+    let run_id = accept_test_run(root, "metered");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(view["status"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("workflow in-flight cost cap"));
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    assert!(ledger
+        .list_guard_events(100)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "workflow_guard_spend_in_flight"));
+    let status = ledger.workflow_run_status(&run_id).unwrap().unwrap();
+    assert_eq!(status.cost_usd, Some(0.50));
+    let steps = ledger.workflow_step_runs(&run_id).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].cost_usd, Some(0.50));
+}
+
+#[test]
+fn multi_step_cap_includes_prior_run_group_cost() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(
+        root,
+        "cumulative.sh",
+        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.60,"tokens":{"input":1,"output":1}}}'
+printf '%s\n' '{"part":{"type":"text","text":"done"}}'
+sleep 2"#,
+    );
+    let doc = write_doc(
+        root,
+        "cumulative.toml",
+        &format!(
+            r#"
+name = "cumulative"
+goal = "The run-group cap includes prior completed step cost."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "first"
+goal = "Use the first half of the budget."
+[step.agent]
+name = "metered"
+version = 1
+harness = "opencode"
+model = "stub"
+bin = "{}"
+[step.routes]
+done = "second"
+[[step]]
+name = "second"
+goal = "The second step cannot exceed the cumulative cap."
+[step.agent]
+name = "metered"
+version = 1
+harness = "opencode"
+model = "stub"
+bin = "{}"
+[policies]
+max_cost_per_run_usd = 1.0
+side_effect_policy = "kill"
+"#,
+            stub.display(),
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "cumulative");
+    let run_id = accept_test_run(root, "cumulative");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(view["status"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("run total"));
+    assert_eq!(view["status"]["cost_usd"], 1.2);
+    assert_eq!(view["steps"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn final_only_claude_cost_is_checked_before_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(
+        root,
+        "claude-final.sh",
+        r#"printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0.02,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'"#,
+    );
+    let doc = write_doc(
+        root,
+        "claude-final.toml",
+        &format!(
+            r#"
+name = "claude-final"
+goal = "Final-only Claude cost still enforces the run cap."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Return an over-cap final result."
+[step.agent]
+name = "claude-stub"
+version = 1
+harness = "claude"
+model = "stub"
+bin = "{}"
+[policies]
+max_cost_per_run_usd = 0.01
+side_effect_policy = "kill"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "claude-final");
+    let run_id = accept_test_run(root, "claude-final");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(view["status"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("final cost cap"));
+    assert_eq!(view["status"]["cost_usd"], 0.02);
+}
+
+#[test]
+fn blind_workflow_step_uses_conservative_estimate_before_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "blind.sh", "echo should-not-run");
+    let doc = write_doc(
+        root,
+        "blind.toml",
+        &format!(
+            r#"
+name = "blind"
+goal = "Refuse an unmetered run that exceeds its conservative estimate."
+
+[[trigger]]
+kind = "test"
+
+[[step]]
+name = "work"
+goal = "Do not execute beyond the run cap."
+[step.agent]
+name = "blind"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+
+[policies]
+max_cost_per_run_usd = 0.01
+estimated_cost_per_run_usd = 1.0
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "blind");
+    let run_id = accept_test_run(root, "blind");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(view["status"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("unknown spend is never treated as zero"));
+    assert_eq!(view["steps"].as_array().unwrap().len(), 0);
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    assert!(ledger
+        .list_guard_events(100)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "workflow_guard_spend_estimate"));
+}
+
+#[test]
+fn terminal_blind_run_reserves_pinned_estimate_for_sequential_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "blind-success.sh", "echo completed");
+    let doc = write_doc(
+        root,
+        "blind-sequential.toml",
+        &format!(
+            r#"
+name = "blind-sequential"
+goal = "A successful cost-blind run still consumes estimated daily capacity."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Complete without a dollar report."
+[step.agent]
+name = "blind"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+[policies]
+max_cost_per_day_usd = 1.0
+estimated_cost_per_run_usd = 1.0
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "blind-sequential");
+    let first = accept_test_run(root, "blind-sequential");
+    let view = execute(root, &first);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    assert_eq!(view["status"]["cost_usd"], serde_json::Value::Null);
+    let spend = bb_json(root, &["workflow", "spend", "blind-sequential", "--json"]);
+    assert_eq!(spend["observed_usd"], 0.0);
+    assert_eq!(spend["estimated_usd"], 1.0);
+    assert_eq!(spend["coverage"]["estimated_runs"], 1);
+    assert_eq!(spend["spend_today_usd"], 1.0);
+    let denied = bb(root, &["workflow", "accept", "blind-sequential", "--json"]);
+    assert_eq!(denied.status.code(), Some(3));
+    let denied: serde_json::Value = serde_json::from_slice(&denied.stdout).unwrap();
+    assert_eq!(denied["disposition"], "denied");
+    let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_step_runs
+         SET started_at = '2000-01-01T00:00:00Z'
+         WHERE run_id = ?1",
+        [first.as_str()],
+    )
+    .unwrap();
+    drop(conn);
+    let next_day = bb_json(root, &["workflow", "spend", "blind-sequential", "--json"]);
+    assert_eq!(next_day["estimated_usd"], 0.0, "{next_day}");
+    assert_eq!(next_day["spend_today_usd"], 0.0, "{next_day}");
+    let admitted = bb_json(root, &["workflow", "accept", "blind-sequential", "--json"]);
+    assert_eq!(admitted["disposition"], "accepted", "{admitted}");
 }
 
 // --- criterion 1: trigger -> two agent steps -> named outcome route -> done --
@@ -950,10 +1231,12 @@ fn all_trigger_sources_share_one_normalized_acceptance_contract() {
     // a deterministic window; dedupe key is the scheduled timestamp
     use chrono::TimeZone;
     let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    let plane = Plane::load(root).unwrap();
     let mut lasts = std::collections::HashMap::new();
     let window_start = chrono::Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 1).unwrap();
     let window_end = chrono::Utc.with_ymd_and_hms(2026, 7, 14, 12, 6, 0).unwrap();
     let accepted = bitterblossom::workflow_runtime::workflow_cron_tick(
+        &plane,
         &ledger,
         &mut lasts,
         window_start,
@@ -966,6 +1249,7 @@ fn all_trigger_sources_share_one_normalized_acceptance_contract() {
     // overlapping window re-derives the same scheduled fire: duplicate
     let mut lasts_again = std::collections::HashMap::new();
     let replay = bitterblossom::workflow_runtime::workflow_cron_tick(
+        &plane,
         &ledger,
         &mut lasts_again,
         window_start,
@@ -1562,9 +1846,11 @@ bin = "{}"
     // cron door: the tick must skip the poisoned workflow and still accept
     // the healthy workflow's due fire
     let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    let plane = Plane::load(root).unwrap();
     let mut last = std::collections::HashMap::new();
     let now = chrono::Utc::now();
     let accepted = bitterblossom::workflow_runtime::workflow_cron_tick(
+        &plane,
         &ledger,
         &mut last,
         now - chrono::Duration::minutes(6),
@@ -1641,7 +1927,8 @@ max_cost_per_run_usd = 1.0
     assert_eq!(view["status"]["state"], "stopped", "{view}");
     let detail = view["status"]["detail"].as_str().unwrap();
     assert!(
-        detail.contains("spend guard: observed"),
+        (detail.contains("spend guard: observed") || detail.contains("in-flight cost cap"))
+            && !detail.contains("indeterminate"),
         "must stop on the real spend cap, not indeterminate: {detail}"
     );
     // prep (unmetered, off-cycle) + two metered spins (0.6 + 0.6 > 1.0)
@@ -1945,4 +2232,124 @@ bin = "{}"
     let view = execute(root, &run_id);
     assert_eq!(view["status"]["state"], "succeeded", "{view}");
     assert_eq!(view["status"]["detail"], "still valid");
+}
+
+#[test]
+fn terminal_child_cost_is_checked_before_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(
+        root,
+        "terminal-child.sh",
+        r#"cat > CHILD_AGENTS.json <<'EOF'
+[{"name":"helper","cost_usd":0.95}]
+EOF
+printf '%s\n' '{"schema_version":"bb.command_result.v1","result":"done","cost_usd":0.10}'"#,
+    );
+    let doc = write_doc(
+        root,
+        "terminal-child.toml",
+        &format!(
+            r#"
+name = "terminal-child"
+goal = "A terminal child must remain inside the run cap."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Report delegated spend."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+[policies]
+max_cost_per_run_usd = 1.0
+side_effect_policy = "kill"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "terminal-child");
+    let run_id = accept_test_run(root, "terminal-child");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert!(
+        view["status"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("spend guard"),
+        "{view}"
+    );
+    assert_eq!(view["steps"][0]["state"], "stopped", "{view}");
+    assert!(
+        (view["status"]["cost_usd"].as_f64().unwrap() - 1.05).abs() < 1e-9,
+        "{view}"
+    );
+}
+
+#[test]
+fn nonzero_harness_exit_retains_partial_cost_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(
+        root,
+        "nonzero-cost.sh",
+        r#"printf '%s\n' '{"schema_version":"bb.command_result.v1","result":"partial","cost_usd":0.70}'
+exit 7"#,
+    );
+    let doc = write_doc(
+        root,
+        "nonzero-cost.toml",
+        &format!(
+            r#"
+name = "nonzero-cost"
+goal = "A failed harness still records known spend."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Fail after reporting cost."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "nonzero-cost");
+    let run_id = accept_test_run(root, "nonzero-cost");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(view["status"]["cost_usd"], 0.70, "{view}");
+    assert_eq!(view["steps"][0]["cost_usd"], 0.70, "{view}");
+}
+
+#[test]
+fn denied_workflow_webhook_returns_429() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let path = pipeline_doc(root);
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("\n[policies]\nmax_cost_per_day_usd = 0.5\nestimated_cost_per_run_usd = 1.0\n");
+    fs::write(&path, text).unwrap();
+    create_and_activate(root, &path, "pipeline");
+    let (_serve, port) = spawn_serve(root, &[("BB_HOOK_WFTEST", PIPELINE_SECRET)]);
+    let event = r#"{"id":"denied-1"}"#;
+    let (status, body) = http(
+        port,
+        "POST",
+        "/hooks/wfhook",
+        &signed_headers(PIPELINE_SECRET, event),
+        Some(event),
+    );
+    assert_eq!(status, 429, "{body}");
+    assert!(body["denied"].is_string(), "{body}");
 }
