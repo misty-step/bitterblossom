@@ -168,10 +168,14 @@ try {
   await browser.close();
 } finally {
   serve.kill();
+  let shutdownTimer;
   await Promise.race([
     serveExit,
-    new Promise((resolve) => setTimeout(resolve, 5000)),
+    new Promise((resolve) => {
+      shutdownTimer = setTimeout(resolve, 5000);
+    }),
   ]);
+  clearTimeout(shutdownTimer);
   if (!serveExited) {
     serve.kill('SIGKILL');
     await serveExit;
