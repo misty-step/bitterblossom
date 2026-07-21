@@ -374,6 +374,12 @@ enum WorkflowCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show current-day observed spend and the workflow daily ceiling.
+    Spend {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Audit trail: every lifecycle act, acceptance, and suppression.
     Events {
         name: String,
@@ -1917,12 +1923,15 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                         "duplicate: dedupe key already accepted run {} on '{}'",
                         run.id, run.workflow
                     ),
+                    AcceptOutcome::Denied { workflow, reason } => {
+                        println!("denied on '{workflow}': {reason}");
+                    }
                     AcceptOutcome::Suppressed { workflow, reason } => {
                         println!("suppressed on '{workflow}': {reason}")
                     }
                 }
             }
-            if matches!(outcome, AcceptOutcome::Suppressed { .. }) {
+            if matches!(outcome, AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }) {
                 std::process::exit(3);
             }
         }
@@ -1982,6 +1991,19 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                     run["created_at"].as_str().unwrap_or("-"),
                 );
                 println!("{}", serde_json::to_string_pretty(&view["document"])?);
+            }
+        }
+        WorkflowCommand::Spend { name, json } => {
+            let view = workflow::workflow_spend_view(ledger, &name)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                println!(
+                    "workflow {} spend_today_usd={} max_cost_per_day_usd={}",
+                    name,
+                    view["spend_today_usd"],
+                    view["max_cost_per_day_usd"]
+                );
             }
         }
         WorkflowCommand::Events { name, json } => {

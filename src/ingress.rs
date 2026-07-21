@@ -196,6 +196,9 @@ pub fn handle_workflow_webhook(
         AcceptOutcome::Duplicate { run } => {
             serde_json::json!({"workflow_run_id": run.id, "duplicate": true})
         }
+        AcceptOutcome::Denied { workflow, reason } => {
+            serde_json::json!({"denied": reason, "workflow": workflow})
+        }
         AcceptOutcome::Suppressed { workflow, reason } => {
             serde_json::json!({"suppressed": reason, "workflow": workflow})
         }

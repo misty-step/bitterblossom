@@ -1428,6 +1428,7 @@ fn workflow_post(ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String
             let status = match &outcome {
                 workflow::AcceptOutcome::Accepted { .. } => 201,
                 workflow::AcceptOutcome::Duplicate { .. } => 200,
+                workflow::AcceptOutcome::Denied { .. } => 429,
                 workflow::AcceptOutcome::Suppressed { .. } => 202,
             };
             Ok((status, serde_json::to_value(outcome)?))

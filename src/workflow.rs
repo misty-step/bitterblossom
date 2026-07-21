@@ -147,6 +147,17 @@ pub struct WorkflowPolicies {
     /// caps the summed observed cost of every step attempt in the group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_per_run_usd: Option<f64>,
+    /// Workflow-scoped UTC-day spend ceiling. Admission reserves a
+    /// conservative per-run estimate so queued runs cannot oversubscribe it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_per_day_usd: Option<f64>,
+    /// Conservative reservation for a run whose harness cannot report dollars.
+    /// When absent, max_cost_per_run_usd or the built-in $1.00 estimate applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_per_run_usd: Option<f64>,
+    /// Side-effect action for an in-flight per-run spend breach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effect_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<u32>,
     /// Execution substrate for step attempts (default: local).
@@ -311,6 +322,25 @@ impl WorkflowDoc {
                 "workflow '{}': policies.max_elapsed_seconds must be >= 1",
                 self.name
             );
+        }
+        for (field, value) in [
+            ("max_cost_per_run_usd", self.policies.max_cost_per_run_usd),
+            ("max_cost_per_day_usd", self.policies.max_cost_per_day_usd),
+            ("estimated_cost_per_run_usd", self.policies.estimated_cost_per_run_usd),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value < 0.0 {
+                    bail!("workflow '{}': policies.{field} must be finite and >= 0", self.name);
+                }
+            }
+        }
+        if let Some(policy) = &self.policies.side_effect_policy {
+            if !matches!(policy.as_str(), "kill" | "quarantine" | "log") {
+                bail!(
+                    "workflow '{}': policies.side_effect_policy '{policy}' is unknown (known: kill, quarantine, log)",
+                    self.name
+                );
+            }
         }
         // An unattended cycle must be bounded by at least one genuinely
         // enforceable guard (the external stop signal alone needs an
@@ -512,6 +542,9 @@ impl WorkflowDoc {
                 timeout_minutes: task.spec.budget.timeout_minutes,
                 max_runs_per_day: task.spec.budget.max_runs_per_day,
                 max_cost_per_run_usd: task.spec.budget.max_cost_per_run_usd,
+                max_cost_per_day_usd: None,
+                estimated_cost_per_run_usd: None,
+                side_effect_policy: None,
                 concurrency: None,
                 substrate: None,
                 max_rounds: None,
@@ -574,6 +607,12 @@ pub enum AcceptOutcome {
     /// no new run is created — redeliveries repair nothing and fork nothing.
     Duplicate {
         run: WorkflowRunRow,
+    },
+    /// The workflow daily cost ceiling rejected this acceptance. No run row
+    /// is created; the named workflow event is the durable denial evidence.
+    Denied {
+        workflow: String,
+        reason: String,
     },
     Suppressed {
         workflow: String,
@@ -946,6 +985,32 @@ impl Ledger {
             let revision = wf
                 .active_revision
                 .context("active workflow has no active revision (corrupt state)")?;
+            let revision_row = self.workflow_revision_row(&wf.id, revision)?;
+            let doc = WorkflowDoc::from_canonical_json(&revision_row.document)
+                .and_then(|doc| {
+                    doc.validate()?;
+                    Ok(doc)
+                })?;
+            if let Some(max) = doc.policies.max_cost_per_day_usd {
+                let spent = self.workflow_cost_today_by_id(&wf.id)?;
+                let queued = self.workflow_queued_today_by_id(&wf.id)?;
+                let estimate = doc
+                    .policies
+                    .estimated_cost_per_run_usd
+                    .or(doc.policies.max_cost_per_run_usd)
+                    .unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD);
+                let projected = spent + queued as f64 * estimate + estimate;
+                if projected > max {
+                    let reason = format!(
+                        "workflow daily ceiling: projected ${projected:.4} (spent ${spent:.4} + {queued} queued reservation(s) + ${estimate:.4} estimate) > max_cost_per_day_usd ${max:.2}"
+                    );
+                    self.workflow_audit(&wf.id, "workflow_daily_ceiling", Some(&reason))?;
+                    return Ok(AcceptOutcome::Denied {
+                        workflow: wf.name,
+                        reason,
+                    });
+                }
+            }
             let id = format!("wfr-{}", new_id());
             let ts = now();
             self.conn.execute(
@@ -1085,7 +1150,41 @@ impl Ledger {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    /// Observed workflow run-group spend for the current UTC day. The join to
+    /// workflow_runs keeps the aggregation keyed to immutable workflow
+    /// identity rather than a mutable display name.
+    pub fn workflow_cost_today(&self, name: &str) -> Result<f64> {
+        let wf = self.workflow_by_name(name)?;
+        self.workflow_cost_today_by_id(&wf.id)
+    }
+
+    fn workflow_cost_today_by_id(&self, workflow_id: &str) -> Result<f64> {
+        let day = &now()[..10];
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(s.cost_usd), 0.0)
+             FROM workflow_runs r JOIN workflow_run_status s ON s.run_id = r.id
+             WHERE r.workflow_id = ?1 AND substr(r.created_at, 1, 10) = ?2",
+            params![workflow_id, day],
+            |r| r.get(0),
+        )?)
+    }
+
+    fn workflow_queued_today_by_id(&self, workflow_id: &str) -> Result<i64> {
+        let day = &now()[..10];
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*)
+             FROM workflow_runs r JOIN workflow_run_status s ON s.run_id = r.id
+             WHERE r.workflow_id = ?1 AND substr(r.created_at, 1, 10) = ?2
+               AND s.state IN ('queued', 'running')",
+            params![workflow_id, day],
+            |r| r.get(0),
+        )?)
+    }
 }
+
+/// Conservative reservation used when a harness has no dollar meter.
+const DEFAULT_WORKFLOW_COST_ESTIMATE_USD: f64 = 1.0;
 
 /// One workflow's full projection: row + revision metadata + parsed active
 /// document. The same shape backs `bb workflow show --json` and
@@ -1142,6 +1241,23 @@ pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "run": run,
         "document": document,
+    }))
+}
+
+/// Current-day spend projection for the workflow CLI and API consumers.
+pub fn workflow_spend_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
+    let wf = ledger.workflow_by_name(name)?;
+    let max = wf
+        .active_revision
+        .and_then(|revision| ledger.workflow_revision(name, revision).ok())
+        .and_then(|row| WorkflowDoc::from_canonical_json(&row.document).ok())
+        .and_then(|doc| doc.policies.max_cost_per_day_usd);
+    let spent = ledger.workflow_cost_today(name)?;
+    Ok(serde_json::json!({
+        "workflow": name,
+        "date": &now()[..10],
+        "spend_today_usd": spent,
+        "max_cost_per_day_usd": max,
     }))
 }
 
