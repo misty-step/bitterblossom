@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use crate::harness;
 use crate::ledger::{new_id, now, AttemptStats, Ledger};
 use crate::spec::{AgentSpec, AuthClass, Plane, TaskBudget};
-use crate::substrate::{self, WorkspacePlan};
+use crate::substrate::{self, ExecMonitor, ExecSnapshot, WorkspacePlan};
 use crate::workflow::{AcceptOutcome, StepAgent, WorkflowDoc, WorkflowStep, ROUTE_DONE};
 
 /// The completion tool: a branching step's agent writes this file with one
@@ -789,6 +789,57 @@ enum StepDisposition {
     },
     Failed(String),
     Incomplete(String),
+    Stopped(String),
+}
+
+struct WorkflowInFlightMonitor<'a> {
+    ledger: &'a Ledger,
+    run_id: &'a str,
+    workflow: &'a str,
+    harness: &'a str,
+    max_cost_usd: f64,
+    side_effect_policy: &'a str,
+    latest_stats: AttemptStats,
+    last_recorded_cost: Option<f64>,
+    breached: bool,
+}
+
+impl<'a> WorkflowInFlightMonitor<'a> {
+    fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<String> {
+        let progress = harness::parse_partial_progress(self.harness, snapshot.stdout);
+        self.latest_stats = progress.stats;
+        let Some(cost) = self.latest_stats.cost_usd else {
+            return None;
+        };
+        let changed = self
+            .last_recorded_cost
+            .is_none_or(|prior| (prior - cost).abs() > f64::EPSILON);
+        if changed {
+            let _ = self.ledger.record_progress(
+                self.run_id,
+                &format!("workflow cost observed ${cost:.4} elapsed={}s", snapshot.elapsed.as_secs()),
+            );
+            self.last_recorded_cost = Some(cost);
+        }
+        if cost <= self.max_cost_usd || self.breached {
+            return None;
+        }
+        let reason = format!(
+            "workflow in-flight cost cap {}: observed ${cost:.4} > max_cost_per_run_usd ${:.2}",
+            self.side_effect_policy, self.max_cost_usd
+        );
+        let _ = self.ledger.record_guard_event(
+            "workflow_guard_spend_in_flight",
+            Some(self.workflow),
+            &reason,
+            1,
+        );
+        self.breached = true;
+        match self.side_effect_policy {
+            "log" => None,
+            _ => Some(reason),
+        }
+    }
 }
 
 /// Execute one accepted workflow run to a terminal state. Claims the run
@@ -892,6 +943,9 @@ fn execute_claimed(
             StepDisposition::Incomplete(reason) => {
                 break ("incomplete", Some(reason), "workflow_run_incomplete");
             }
+            StepDisposition::Stopped(reason) => {
+                break ("stopped", Some(reason), "workflow_run_stopped");
+            }
             StepDisposition::Succeeded { outcome, summary } => {
                 let target = match step.routes.len() {
                     0 => ROUTE_DONE.to_string(),
@@ -992,6 +1046,24 @@ fn fired_guard(
         Some(f) => Some(f),
         None => {
             if let Some(cap) = doc.policies.max_cost_per_run_usd {
+                // A cost-blind harness has no observable dollar stream. Reserve
+                // the configured estimate (or the conservative default) rather
+                // than treating unknown spend as zero; refuse a step whose
+                // estimate alone would breach the run ceiling.
+                if !harness::reports_cost(&step.agent.harness) {
+                    let estimate = doc
+                        .policies
+                        .estimated_cost_per_run_usd
+                        .or(doc.policies.max_cost_per_run_usd)
+                        .unwrap_or(1.0);
+                    if estimate > cap {
+                        let detail = format!(
+                            "spend estimate: cost-blind harness '{}' reserves ${estimate:.4} > max_cost_per_run_usd ${cap:.2}; unknown spend is never treated as zero",
+                            step.agent.harness
+                        );
+                        return Ok(Some(detail));
+                    }
+                }
                 // When spend is the ONLY cycle guard, an attempt that
                 // reported no cost makes the guard indeterminate: unknown
                 // spend is never treated as zero (the status-row contract),
@@ -1272,7 +1344,35 @@ fn run_step(
     // refused-credential STOP-and-report guardrail; workflow steps are
     // dispatched lanes and receive exactly the same one.
     let prompt = format!("{}\n\n{card}", harness::commission_prompt());
-    let exec = match session.execute(&cmd, Some(&prompt), timeout, None) {
+    let max_cost = doc.policies.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
+    let side_effect_policy = doc
+        .policies
+        .side_effect_policy
+        .as_deref()
+        .unwrap_or("kill");
+    let monitor_needed = max_cost.is_finite() && harness::reports_cost(&step.agent.harness);
+    let mut in_flight = WorkflowInFlightMonitor {
+        ledger,
+        run_id: &run.id,
+        workflow: &run.workflow,
+        harness: &step.agent.harness,
+        max_cost_usd: max_cost,
+        side_effect_policy,
+        latest_stats: AttemptStats::default(),
+        last_recorded_cost: None,
+        breached: false,
+    };
+    let mut monitor_check = |snapshot: &ExecSnapshot<'_>| in_flight.observe(snapshot);
+    let mut exec_monitor = ExecMonitor {
+        poll_interval: Duration::from_millis(100),
+        check: &mut monitor_check,
+    };
+    let exec = match session.execute(
+        &cmd,
+        Some(&prompt),
+        timeout,
+        monitor_needed.then_some(&mut exec_monitor),
+    ) {
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
@@ -1281,6 +1381,20 @@ fn run_step(
     };
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;
     session.write_artifact("stderr.txt", exec.stderr.as_bytes())?;
+    if let Some(reason) = exec.termination_reason.as_deref() {
+        let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
+        let _ = session.release();
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "stopped",
+            None,
+            None,
+            Some(reason),
+            Some(exec.exit_code),
+            &stats,
+        )?;
+        return Ok(StepDisposition::Stopped(reason.to_string()));
+    }
     if exec.timed_out {
         let _ = session.release();
         return fail(
