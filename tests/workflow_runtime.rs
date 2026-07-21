@@ -317,6 +317,12 @@ estimated_cost_per_run_usd = 1.0
         .unwrap()
         .contains("unknown spend is never treated as zero"));
     assert_eq!(view["steps"].as_array().unwrap().len(), 0);
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    assert!(ledger
+        .list_guard_events(100)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "workflow_guard_spend_estimate"));
 }
 
 #[test]
@@ -1921,7 +1927,8 @@ max_cost_per_run_usd = 1.0
     assert_eq!(view["status"]["state"], "stopped", "{view}");
     let detail = view["status"]["detail"].as_str().unwrap();
     assert!(
-        detail.contains("spend guard: observed"),
+        (detail.contains("spend guard: observed") || detail.contains("in-flight cost cap"))
+            && !detail.contains("indeterminate"),
         "must stop on the real spend cap, not indeterminate: {detail}"
     );
     // prep (unmetered, off-cycle) + two metered spins (0.6 + 0.6 > 1.0)

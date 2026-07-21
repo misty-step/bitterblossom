@@ -284,6 +284,9 @@ impl Ledger {
                 "ledger schema version {existing_version} is newer than this bb binary supports ({LEDGER_SCHEMA_VERSION}); roll forward or restore a compatible backup"
             );
         }
+        // Keep additive schema changes and their data backfills atomic. If a
+        // legacy document cannot migrate, reopening sees the original schema.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "runs", "config_source_repo", "TEXT")?;
         ensure_column(&conn, "runs", "config_source_ref", "TEXT")?;
@@ -346,6 +349,7 @@ impl Ledger {
             [],
         )?;
         conn.pragma_update(None, "user_version", LEDGER_SCHEMA_VERSION)?;
+        conn.execute_batch("COMMIT")?;
         Ok(Self { conn })
     }
 

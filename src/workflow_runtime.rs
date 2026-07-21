@@ -1068,11 +1068,8 @@ fn fired_guard(
         Some(f) => Some(f),
         None => {
             if let Some(cap) = doc.policies.max_cost_per_run_usd {
-                // A cost-blind harness has no observable dollar stream. Reserve
-                // the configured estimate (or the conservative default) rather
-                // than treating unknown spend as zero; refuse a step whose
-                // estimate alone would breach the run ceiling.
-                if !harness::reports_cost(&step.agent.harness) {
+                // A cost-blind harness has no observable dollar stream.
+                let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
                     let estimate = doc
                         .policies
                         .estimated_cost_per_run_usd
@@ -1084,58 +1081,58 @@ fn fired_guard(
                             run.workflow
                         );
                     }
-                    if estimate > cap {
-                        let detail = format!(
-                            "spend estimate: cost-blind harness '{}' reserves ${estimate:.4} > max_cost_per_run_usd ${cap:.2}; unknown spend is never treated as zero",
-                            step.agent.harness
-                        );
-                        return Ok(Some(detail));
-                    }
-                }
-                // When spend is the ONLY cycle guard, an attempt that
-                // reported no cost makes the guard indeterminate: unknown
-                // spend is never treated as zero (the status-row contract),
-                // so the cycle stops naming exactly that instead of looping
-                // unmetered. Bounded runs (rounds/elapsed declared, or no
-                // cycle at all) proceed; the cap simply cannot see the
-                // unmetered attempts.
-                let spend_is_only_cycle_guard =
-                    doc.policies.max_rounds.is_none() && doc.policies.max_elapsed_seconds.is_none();
-                // Scoped to steps ON cycles: a validation-admitted blind
-                // entry step off the cycle runs a bounded number of times
-                // and must not make every run of the shape dead on arrival.
-                let unmetered = if spend_is_only_cycle_guard {
-                    let cycle_steps: Vec<&str> = doc
-                        .steps_on_cycles()
-                        .into_iter()
-                        .map(|s| s.name.as_str())
-                        .collect();
-                    ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
-                } else {
-                    0
-                };
-                if unmetered > 0 {
-                    Some((
-                        "workflow_guard_spend_indeterminate",
-                        format!(
-                            "spend guard indeterminate: {unmetered} cycle-step attempt(s) \
-                             reported no cost and max_cost_per_run_usd is the only cycle guard \
-                             — unknown spend is never treated as zero"
-                        ),
-                    ))
-                } else {
-                    let observed = ledger
-                        .workflow_run_status(&run.id)?
-                        .and_then(|s| s.cost_usd)
-                        .unwrap_or(0.0);
-                    (observed > cap).then(|| {
+                    (estimate > cap).then(|| {
                         (
-                            "workflow_guard_spend",
+                            "workflow_guard_spend_estimate",
                             format!(
-                                "spend guard: observed ${observed:.4} of run-group cap ${cap:.2}"
+                                "spend estimate: cost-blind harness '{}' reserves ${estimate:.4} > max_cost_per_run_usd ${cap:.2}; unknown spend is never treated as zero",
+                                step.agent.harness
                             ),
                         )
                     })
+                } else {
+                    None
+                };
+                if estimate_violation.is_some() {
+                    estimate_violation
+                } else {
+                    // A spend-only cycle becomes indeterminate after an
+                    // unmetered attempt. Bounded runs can continue.
+                    let spend_is_only_cycle_guard = doc.policies.max_rounds.is_none()
+                        && doc.policies.max_elapsed_seconds.is_none();
+                    let unmetered = if spend_is_only_cycle_guard {
+                        let cycle_steps: Vec<&str> = doc
+                            .steps_on_cycles()
+                            .into_iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
+                    } else {
+                        0
+                    };
+                    if unmetered > 0 {
+                        Some((
+                            "workflow_guard_spend_indeterminate",
+                            format!(
+                                "spend guard indeterminate: {unmetered} cycle-step attempt(s) \
+                                 reported no cost and max_cost_per_run_usd is the only cycle guard \
+                                 — unknown spend is never treated as zero"
+                            ),
+                        ))
+                    } else {
+                        let observed = ledger
+                            .workflow_run_status(&run.id)?
+                            .and_then(|s| s.cost_usd)
+                            .unwrap_or(0.0);
+                        (observed > cap).then(|| {
+                            (
+                                "workflow_guard_spend",
+                                format!(
+                                    "spend guard: observed ${observed:.4} of run-group cap ${cap:.2}"
+                                ),
+                            )
+                        })
+                    }
                 }
             } else {
                 None

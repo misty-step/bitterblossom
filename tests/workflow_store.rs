@@ -812,6 +812,28 @@ fn workflow_daily_ceiling_denies_and_exposes_ledger_spend() {
 }
 
 #[test]
+fn workflow_run_count_policy_denies_second_same_day_acceptance() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let text = DOC.replace("max_runs_per_day = 20", "max_runs_per_day = 1");
+    let doc = write_doc(root, "run-count.toml", &text);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+
+    let accepted = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(accepted["disposition"], "accepted");
+    let denied = bb(root, &["workflow", "accept", "pr-review", "--json"]);
+    assert_eq!(denied.status.code(), Some(3));
+    let denied: serde_json::Value = serde_json::from_slice(&denied.stdout).unwrap();
+    assert_eq!(denied["disposition"], "denied");
+    assert!(denied["reason"]
+        .as_str()
+        .unwrap()
+        .contains("max_runs_per_day"));
+}
+
+#[test]
 fn plane_daily_budget_counts_workflow_reservations_and_standard_spend() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -992,6 +1014,43 @@ fn active_workflow_spend_counts_observed_cost_before_reservation() {
     assert_eq!(spend["observed_usd"], 1.5, "{spend}");
     assert_eq!(spend["reserved_usd"], 0.0, "{spend}");
     assert_eq!(spend["spend_today_usd"], 1.5, "{spend}");
+}
+
+#[test]
+fn terminal_mixed_metered_and_unpriced_attempts_keep_estimate_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let doc = write_doc(root, "mixed-spend.toml", DOC);
+    bb_ok(root, &["workflow", "create", doc.to_str().unwrap()]);
+    bb_ok(root, &["workflow", "activate", "pr-review"]);
+    let accepted = bb_json(root, &["workflow", "accept", "pr-review", "--json"]);
+    let run_id = accepted["run"]["id"].as_str().unwrap();
+    let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_run_status
+         SET state = 'succeeded', cost_usd = 0.10, updated_at = datetime('now')
+         WHERE run_id = ?1",
+        [run_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workflow_step_runs
+         (id, run_id, step, attempt, agent_json, goal, state, cost_usd,
+          authority_json, started_at)
+         VALUES ('wfs-priced', ?1, 'review', 1, '{}', 'review', 'succeeded',
+                 0.10, '{}', datetime('now')),
+                ('wfs-unpriced', ?1, 'review', 2, '{}', 'review', 'succeeded',
+                 NULL, '{}', datetime('now'))",
+        [run_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(spend["observed_usd"], 0.10, "{spend}");
+    assert_eq!(spend["estimated_usd"], 0.90, "{spend}");
+    assert_eq!(spend["spend_today_usd"], 1.0, "{spend}");
 }
 
 // --- criterion 5: migration fixture -----------------------------------------
@@ -1276,4 +1335,46 @@ fn legacy_workflow_runs_backfill_pinned_estimate_and_status() {
             .state,
         "queued"
     );
+}
+
+#[test]
+fn failed_legacy_backfill_rolls_back_schema_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("invalid-legacy.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, active_revision INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE workflow_revisions (workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL, source TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id, revision));
+             CREATE TABLE workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, trigger_kind TEXT NOT NULL, payload TEXT, dedupe_key TEXT, created_at TEXT NOT NULL);
+             INSERT INTO workflows VALUES ('wf-invalid','invalid','active',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO workflow_revisions VALUES ('wf-invalid',1,'not-json','import',NULL,'2026-01-01T00:00:00Z');
+             INSERT INTO workflow_runs VALUES ('wfr-invalid','wf-invalid',1,'test',NULL,NULL,'2026-01-01T00:00:00Z');",
+        )
+        .unwrap();
+    }
+
+    assert!(Ledger::open(&db).is_err());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let columns = conn
+        .prepare("PRAGMA table_info(workflow_runs)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(!columns.iter().any(|name| name == "estimated_cost_usd"));
+    let status_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'workflow_run_status'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status_table, 0);
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 0);
 }

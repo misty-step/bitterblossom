@@ -1191,6 +1191,17 @@ impl Ledger {
         Ok(rows)
     }
 
+    pub(crate) fn workflow_runs_today_by_id(&self, workflow_id: &str) -> Result<u64> {
+        let day = &now()[..10];
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_runs
+             WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = ?2",
+            params![workflow_id, day],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     /// Read workflow spend by the UTC date on which each step or child cost
     /// occurred. Acceptance date is reservation metadata only and never
     /// substitutes for the occurrence date of realized spend.
@@ -1217,6 +1228,9 @@ impl Ledger {
                             WHERE sr.run_id = r.id AND sr.cost_usd IS NOT NULL),
                     EXISTS (SELECT 1 FROM workflow_step_runs sr
                             WHERE sr.run_id = r.id
+                              AND substr(sr.started_at, 1, 10) = ?2),
+                    EXISTS (SELECT 1 FROM workflow_step_runs sr
+                            WHERE sr.run_id = r.id AND sr.cost_usd IS NULL
                               AND substr(sr.started_at, 1, 10) = ?2)
              FROM workflow_runs r LEFT JOIN workflow_run_status s ON s.run_id = r.id
              WHERE r.workflow_id = ?1",
@@ -1232,6 +1246,7 @@ impl Ledger {
                 r.get::<_, f64>(5)?,
                 r.get::<_, bool>(6)?,
                 r.get::<_, bool>(7)?,
+                r.get::<_, bool>(8)?,
             ))
         })? {
             let (
@@ -1243,6 +1258,7 @@ impl Ledger {
                 child_today,
                 has_evidence,
                 has_attempt_today,
+                has_unpriced_attempt_today,
             ) = row?;
             let estimate = crate::ledger::validate_cost_value(
                 estimate.unwrap_or(DEFAULT_WORKFLOW_COST_ESTIMATE_USD),
@@ -1268,9 +1284,10 @@ impl Ledger {
                 spend.observed_usd += observed;
                 spend.reserved_usd += (estimate - observed).max(0.0);
                 spend.active_runs += 1;
-            } else if has_attempt_today && status_cost.is_none() {
-                // An unresolved parent with known child/step spend is charged
-                // once: the larger of its pinned estimate and observed amount.
+            } else if has_unpriced_attempt_today || (has_attempt_today && status_cost.is_none()) {
+                // A terminal run with any unpriced attempt remains partly
+                // unknown even when another attempt reported parent cost.
+                // Charge observed spend plus the unspent pinned estimate.
                 spend.observed_usd += observed;
                 spend.estimated_usd += (estimate - observed).max(0.0);
                 spend.estimated_runs += 1;

@@ -123,6 +123,17 @@ pub fn workflow_admission_limit(
         }
     }
 
+    let wf = ledger.workflow_by_name(workflow_name)?;
+    if let Some(max) = doc.policies.max_runs_per_day {
+        let today = ledger.workflow_runs_today_by_id(&wf.id)?;
+        if today >= u64::from(max) {
+            return Ok(Some(Violation {
+                kind: "workflow_max_runs_per_day",
+                detail: format!("{today} workflow runs today >= max_runs_per_day {max}"),
+            }));
+        }
+    }
+
     let standard_observed = ledger.standard_cost_today()?.0;
     let workflow_spend = ledger.workflow_spend_today_all()?;
     let plane_projected = standard_observed
@@ -144,7 +155,6 @@ pub fn workflow_admission_limit(
         }
     }
 
-    let wf = ledger.workflow_by_name(workflow_name)?;
     let own = ledger.workflow_spend_today_by_id(&wf.id)?;
     if let Some(ceiling) = doc.policies.max_cost_per_day_usd {
         let projected =
