@@ -3397,7 +3397,7 @@ pub fn workflow_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
     let activation = wf
         .active_revision
         .and_then(|revision| ledger.activation_snapshot(name, revision).ok())
-        .map(|snapshot| serde_json::to_value(snapshot))
+        .map(serde_json::to_value)
         .transpose()?;
     let (snapshot_state, snapshot_error, launch_snapshots) = match wf.active_revision {
         Some(revision) => {
@@ -3429,7 +3429,7 @@ pub fn revision_view(ledger: &Ledger, name: &str, revision: i64) -> Result<serde
     let activation = ledger
         .activation_snapshot(name, revision)
         .ok()
-        .map(|snapshot| serde_json::to_value(snapshot))
+        .map(serde_json::to_value)
         .transpose()?;
 
     Ok(serde_json::json!({

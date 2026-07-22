@@ -1984,7 +1984,7 @@ fn run_step_once(
         &step.name,
         attempt,
         &agent_json,
-        &step.goal(),
+        step.goal(),
         &snapshot.authority,
         &attempt_dir.to_string_lossy(),
     )?;
