@@ -326,44 +326,119 @@ import json
 import os
 import pathlib
 import sys
-import tomllib
+
+# The macOS system Python lacks tomllib. Parse only the scalar fields this
+# read-only drill needs, keeping the parser deliberately smaller than TOML.
+KNOWN = {
+    "dev": ("", "bool"),
+    "allow_local_substrate": ("", "bool"),
+    "db_path": ("", "string"),
+    "bind": ("ingress", "string"),
+    "enabled": ("backup", "bool"),
+    "replica_env": ("backup", "string"),
+    "last_success_path": ("backup", "string"),
+}
+
+def fail(message):
+    raise SystemExit("ops drill config: " + message)
+
+def strip_comment(line):
+    quote = None
+    escaped = False
+    for index, char in enumerate(line):
+        if quote == '"' and escaped:
+            escaped = False
+        elif quote == '"' and char == "\\":
+            escaped = True
+        elif quote and char == quote:
+            quote = None
+        elif not quote and char in ("'", '"'):
+            quote = char
+        elif not quote and char == "#":
+            return line[:index]
+    return line
+
+def parse_value(raw, kind, line_number):
+    if kind == "bool":
+        if raw in ("true", "false"):
+            return raw == "true"
+        fail("line %d has an invalid boolean" % line_number)
+    if kind != "string":
+        fail("line %d has an unsupported value" % line_number)
+    if raw.startswith('"') and raw.endswith('"'):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            fail("line %d has an invalid string" % line_number)
+        if isinstance(value, str):
+            return value
+    elif raw.startswith("'") and raw.endswith("'"):
+        return raw[1:-1]
+    fail("line %d has an invalid string" % line_number)
+
+def parse_config(path):
+    values = {}
+    section = ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        fail("cannot read plane.toml: " + error.__class__.__name__)
+    for line_number, original in enumerate(lines, 1):
+        line = strip_comment(original).strip()
+        if not line:
+            continue
+        if line.startswith("[["):
+            section = None
+            continue
+        if line.startswith("["):
+            if not line.endswith("]") or line.startswith("[["):
+                fail("line %d has a malformed section" % line_number)
+            section = line[1:-1].strip()
+            continue
+        if "=" not in line:
+            continue
+        key, raw = (part.strip() for part in line.split("=", 1))
+        spec = KNOWN.get(key)
+        if spec is None:
+            continue
+        expected_section, kind = spec
+        if section != expected_section:
+            fail("line %d places %s in the wrong section" % (line_number, key))
+        if key in values:
+            fail("line %d repeats %s" % (line_number, key))
+        values[key] = parse_value(raw, kind, line_number)
+    return values
 
 root = pathlib.Path(sys.argv[1]).expanduser().resolve()
-with (root / "plane.toml").open("rb") as handle:
-    doc = tomllib.load(handle)
-raw_db = doc.get("db_path", ".bb/plane.db")
+values = parse_config(root / "plane.toml")
+raw_db = values.get("db_path", ".bb/plane.db")
 db = pathlib.Path(raw_db)
 if not db.is_absolute():
     db = root / db
-backup = doc.get("backup", {}) or {}
-raw_heartbeat = backup.get("last_success_path", ".bb/backup-last-success")
+raw_heartbeat = values.get("last_success_path", ".bb/backup-last-success")
 heartbeat = pathlib.Path(raw_heartbeat)
 if not heartbeat.is_absolute():
     heartbeat = root / heartbeat
-ingress = doc.get("ingress", {}) or {}
-configured_bind = ingress.get("bind")
+configured_bind = values.get("bind")
 override = os.environ.get("BB_INGRESS_BIND", "").strip()
 if configured_bind and override and configured_bind != override:
-    raise SystemExit(
-        f"BB_INGRESS_BIND={override!r} disagrees with [ingress].bind={configured_bind!r}"
-    )
+    fail("BB_INGRESS_BIND disagrees with [ingress].bind")
 bind = override or configured_bind or "127.0.0.1:7093"
-checkout = root.parent
 if root.name != "plane":
-    raise SystemExit(f"local-primary plane must be the checkout's plane/ directory: {root}")
+    fail("local-primary plane must be the checkout's plane/ directory")
 result = {
     "root": str(root),
-    "checkout": str(checkout),
+    "checkout": str(root.parent),
     "db": str(db.resolve()),
     "heartbeat": str(heartbeat.resolve()),
     "bind": bind,
-    "dev": bool(doc.get("dev", False)),
-    "allow_local_substrate": bool(doc.get("allow_local_substrate", False)),
-    "backup_enabled": bool(backup.get("enabled", False)),
-    "replica_env": backup.get("replica_env"),
+    "dev": values.get("dev", False),
+    "allow_local_substrate": values.get("allow_local_substrate", False),
+    "backup_enabled": values.get("enabled", False),
+    "replica_env": values.get("replica_env"),
 }
-pathlib.Path(sys.argv[2]).write_text(json.dumps(result, sort_keys=True))
-print(json.dumps(result, sort_keys=True))
+pathlib.Path(sys.argv[2]).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+print("ok:primary-config")
 PY
 }
 
