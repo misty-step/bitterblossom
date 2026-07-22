@@ -2206,7 +2206,14 @@ fn run_step_once(
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
-            return fail_pre_exec(format!("execute: {e:#}"));
+            let error = format!("execute: {e:#}");
+            if e.downcast_ref::<substrate::NoWorkloadStarted>().is_some() {
+                return fail_pre_exec(error);
+            }
+            // Session::execute may fail after its child or remote workload has
+            // started. A generic adapter error cannot prove no workload ran,
+            // so it is terminal and must never select an ordered fallback.
+            return fail_terminal(error, &AttemptStats::default());
         }
     };
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;

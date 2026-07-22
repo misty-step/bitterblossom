@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use super::{
-    ExecMonitor, ExecResult, ExecSnapshot, ProbeResult, Session, Substrate, WorkspacePlan,
-    CARD_FILENAME,
+    ExecMonitor, ExecResult, ExecSnapshot, NoWorkloadStarted, ProbeResult, Session, Substrate,
+    WorkspacePlan, CARD_FILENAME,
 };
 pub const PIDFILE: &str = "harness.pid";
 
@@ -398,9 +398,9 @@ pub(crate) fn run_with_timeout(
     for (k, v) in envs {
         command.env(k, v);
     }
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("spawn {program}"))?;
+    let mut child = command.spawn().map_err(|error| {
+        anyhow::Error::new(NoWorkloadStarted(format!("spawn {program}: {error}")))
+    })?;
     if let Some(path) = control.pidfile {
         let content = process_identity(child.id())
             .map(|identity| format!("{}\n{identity}\n", child.id()))

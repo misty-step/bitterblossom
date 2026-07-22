@@ -333,7 +333,8 @@ pub struct WorkflowPolicies {
     /// Cycle guard: wall-clock budget for the whole run group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_elapsed_seconds: Option<u64>,
-    /// Maximum concurrent seats admitted to one run group.
+    /// Declared maximum concurrent seats; activation rejects this until
+    /// the runtime has an enforceable admission mechanism.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seats: Option<u32>,
 }
@@ -804,9 +805,8 @@ impl WorkflowDoc {
                 self.name
             );
         }
-        if self.policies.seats == Some(0) {
-            bail!("workflow '{}': policies.seats must be >= 1", self.name);
-        }
+        // Seat declarations remain valid interchange data. Activation and
+        // launch materialization reject them because admission is not enforced.
         for (field, value) in [
             ("max_cost_per_run_usd", self.policies.max_cost_per_run_usd),
             ("max_cost_per_day_usd", self.policies.max_cost_per_day_usd),
@@ -876,6 +876,12 @@ impl WorkflowDoc {
         revision: i64,
     ) -> Result<Vec<LaunchSnapshot>> {
         self.validate()?;
+        if let Some(seats) = self.policies.seats {
+            bail!(
+                "workflow '{}': policies.seats={seats} is unsupported; seat admission is not enforceable",
+                self.name
+            );
+        }
         self.steps
             .iter()
             .enumerate()

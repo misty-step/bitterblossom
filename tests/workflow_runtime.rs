@@ -49,6 +49,15 @@ fn bb(root: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn bb_without_home(root: &Path, args: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bb"));
+    command
+        .env_remove("HOME")
+        .args(["--config", root.to_str().unwrap()])
+        .args(args);
+    command.output().unwrap()
+}
+
 fn bb_ok(root: &Path, args: &[&str]) -> String {
     let output = bb(root, args);
     assert!(
@@ -549,6 +558,71 @@ model = "fallback"
     let detail = selected.detail.as_deref().unwrap();
     assert!(detail.contains("index 1"), "{detail}");
     assert!(detail.contains(fallback_digest), "{detail}");
+}
+
+#[test]
+fn execute_door_error_is_terminal_without_fallback_side_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let primary = write_stub(
+        root,
+        "primary-never-launched.sh",
+        r#"printf primary > primary-side-effect.txt"#,
+    );
+    let fallback = write_stub(
+        root,
+        "fallback-never-launched.sh",
+        r#"printf fallback > fallback-side-effect.txt"#,
+    );
+    let doc = write_doc(
+        root,
+        "execute-door-error.toml",
+        &format!(
+            r#"
+name = "execute-door-error"
+goal = "Do not retry an ambiguous adapter error."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "The adapter fails before exposing a result."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+"#,
+            primary.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "execute-door-error");
+    let run_id = accept_test_run(root, "execute-door-error");
+    let output = bb_without_home(root, &["workflow", "execute", &run_id, "--json"]);
+    assert!(
+        output.status.success(),
+        "terminal workflow failure is reported as JSON: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(
+        view["steps"].as_array().unwrap().len(),
+        1,
+        "generic execute error must not select fallback"
+    );
+    assert_eq!(view["steps"][0]["agent"]["fallback_index"], 0);
+    assert!(!root.join("primary-side-effect.txt").exists());
+    assert!(
+        !root.join("fallback-side-effect.txt").exists(),
+        "fallback was launched after an ambiguous execute error"
+    );
 }
 
 #[test]

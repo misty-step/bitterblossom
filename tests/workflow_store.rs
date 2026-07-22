@@ -148,6 +148,45 @@ seats = 3
 }
 
 #[test]
+fn seats_round_trip_but_activation_refuses_unenforceable_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join(".bb/plane.db");
+    let text = r#"
+name = "seat-refusal"
+goal = "Preserve a declared seat limit without pretending it is enforced."
+[[step]]
+name = "review"
+goal = "Run the review."
+[step.agent]
+name = "cerberus"
+version = 1
+harness = "command"
+model = "stub"
+[policies]
+seats = 3
+"#;
+    let doc = WorkflowDoc::from_toml(text).expect("seat declaration imports");
+    let exported = doc.to_toml().expect("seat declaration exports");
+    let restored = WorkflowDoc::from_toml(&exported).expect("seat declaration reads back");
+    assert_eq!(restored.policies.seats, Some(3));
+
+    let ledger = Ledger::open(&db).unwrap();
+    let (workflow, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
+    let revisions = ledger.workflow_revisions(&workflow.name).unwrap();
+    let stored: WorkflowDoc = WorkflowDoc::from_canonical_json(&revisions[0].document).unwrap();
+    assert_eq!(
+        stored.policies.seats,
+        Some(3),
+        "stored declaration must remain readable"
+    );
+    let error = ledger
+        .activate_workflow(&workflow.name, Some(revision))
+        .expect_err("unenforceable seats must not activate");
+    assert!(error.to_string().contains("policies.seats=3"), "{error:#}");
+    assert!(error.to_string().contains("not enforceable"), "{error:#}");
+}
+
+#[test]
 fn activation_pins_digest_and_catalog_drift_cannot_rewrite_it() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join(".bb/plane.db");
@@ -168,7 +207,6 @@ provider = "openrouter"
 model = "moonshotai/kimi-k2.6"
 
 [policies]
-seats = 2
 max_runs_per_day = 20
 max_cost_per_run_usd = 2.0
 max_cost_per_day_usd = 10.0
@@ -191,7 +229,7 @@ max_rounds = 3
     assert_eq!(pinned.name, "cerberus");
     assert_eq!(pinned.model, "moonshotai/kimi-k2.6");
     assert_eq!(pinned.role.as_deref(), Some("reviewer"));
-    assert_eq!(pinned.seats, Some(2));
+    assert_eq!(pinned.seats, None);
     assert_eq!(pinned.max_runs_per_day, Some(20));
     assert_eq!(pinned.max_cost_per_run_usd, Some(2.0));
     assert_eq!(pinned.max_cost_per_day_usd, Some(10.0));
@@ -247,7 +285,10 @@ skills = ["write"]
         WorkflowDoc::from_toml(&text.replace("skills = [\"write\"]", "skills = [\"review\"]"))
             .unwrap();
     doc.policies.seats = Some(0);
-    let err = doc.validate().unwrap_err().to_string();
+    let err = doc
+        .materialize_launch_snapshots("wf-test", 1)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("policies.seats"), "{err}");
     doc.policies.seats = None;
     doc.policies.concurrency = Some(0);
