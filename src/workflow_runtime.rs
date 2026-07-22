@@ -2014,6 +2014,12 @@ fn run_step_once(
         )))
     };
     let none = AttemptStats::default();
+    if let Some(seats) = snapshot.seats {
+        return fail_terminal(
+            format!("policies.seats={seats} is unsupported; seat admission is not enforceable"),
+            &none,
+        );
+    }
     if let Some(v) = budget::metered_parent_key_violation(
         &snapshot.name,
         &snapshot.harness,

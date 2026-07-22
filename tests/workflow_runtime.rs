@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
 use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
 
 fn write_plane(root: &Path) {
     fs::write(
@@ -618,10 +619,98 @@ model = "fallback"
         "generic execute error must not select fallback"
     );
     assert_eq!(view["steps"][0]["agent"]["fallback_index"], 0);
-    assert!(!root.join("primary-side-effect.txt").exists());
+    for step in view["steps"].as_array().unwrap() {
+        let artifact_dir = Path::new(step["artifact_dir"].as_str().unwrap());
+        assert!(
+            !artifact_dir
+                .join("workspace/primary-side-effect.txt")
+                .exists(),
+            "primary side effect was produced despite the execute-door error"
+        );
+        assert!(
+            !artifact_dir
+                .join("workspace/fallback-side-effect.txt")
+                .exists(),
+            "fallback side effect was produced after an ambiguous execute error"
+        );
+    }
+}
+
+#[test]
+fn legacy_pinned_seats_fail_before_workload_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let primary = write_stub(
+        root,
+        "legacy-seats-primary.sh",
+        r#"printf executed > legacy-seats-ran.txt"#,
+    );
+    let doc = write_doc(
+        root,
+        "legacy-seats.toml",
+        &format!(
+            r#"
+name = "legacy-seats"
+goal = "Reject a legacy snapshot whose seat control cannot be enforced."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Do not execute this unenforceable pinned contract."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+"#,
+            primary.display()
+        ),
+    );
+    create_and_activate(root, &doc, "legacy-seats");
+    let run_id = accept_test_run(root, "legacy-seats");
+
+    // Simulate a valid snapshot written by an older release: preserve the
+    // immutable digest after adding the formerly accepted seats control.
+    let db = root.join(".bb/plane.db");
+    let conn = Connection::open(&db).unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT snapshot_json FROM workflow_step_launch_snapshots LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut snapshot: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    snapshot["seats"] = serde_json::json!(3);
+    snapshot.as_object_mut().unwrap().remove("digest");
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+    );
+    snapshot["digest"] = serde_json::json!(digest);
+    let snapshot_json = serde_json::to_string(&snapshot).unwrap();
+    conn.execute(
+        "UPDATE workflow_step_launch_snapshots SET snapshot_json = ?1, digest = ?2",
+        params![snapshot_json, digest],
+    )
+    .unwrap();
+
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "failed", "{view}");
     assert!(
-        !root.join("fallback-side-effect.txt").exists(),
-        "fallback was launched after an ambiguous execute error"
+        view["status"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("policies.seats=3"),
+        "{view}"
+    );
+    assert_eq!(view["steps"].as_array().unwrap().len(), 1);
+    let artifact_dir = Path::new(view["steps"][0]["artifact_dir"].as_str().unwrap());
+    assert!(
+        !artifact_dir.join("workspace/legacy-seats-ran.txt").exists(),
+        "legacy seats snapshot reached the workload"
     );
 }
 
