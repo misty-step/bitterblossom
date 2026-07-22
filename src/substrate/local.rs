@@ -48,6 +48,12 @@ impl Substrate for LocalSubstrate {
         let Ok(pid) = lines.next().unwrap_or_default().trim().parse::<i32>() else {
             return ProbeResult::Unknown("unparseable pidfile".into());
         };
+        if pid <= 0 {
+            // kill(0, 0)/kill(-n, 0) address process GROUPS: a nonpositive
+            // pid would report some other live group as this attempt being
+            // alive. Same refusal as the sprites/tailnet remote probes.
+            return ProbeResult::Unknown("nonpositive pid in pidfile".into());
+        }
         let identity = lines
             .next()
             .map(str::trim)
@@ -481,6 +487,20 @@ mod tests {
     // Guards OP_SERVICE_ACCOUNT_TOKEN, a process-global env var, against
     // concurrent cargo test threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn probe_rejects_nonpositive_pidfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        for content in ["0\n", "-1\n", "0\nSat Jul 18 09:00:00 2026\n"] {
+            std::fs::write(tmp.path().join(PIDFILE), content).unwrap();
+            match LocalSubstrate.probe("local", tmp.path(), "marker") {
+                ProbeResult::Unknown(reason) => {
+                    assert_eq!(reason, "nonpositive pid in pidfile", "content {content:?}")
+                }
+                other => panic!("nonpositive pid must probe unknown, got {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn workload_env_passes_through_op_service_account_token() {

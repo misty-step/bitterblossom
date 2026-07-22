@@ -106,16 +106,7 @@ impl Substrate for TailnetSubstrate {
         // Unquoted $HOME interpolation (never single-quoted like a path
         // literal) so it expands remotely regardless of the connecting
         // account's home directory.
-        let script = format!(
-            "raw=\"$(cat \"$HOME/.bb-tailnet/{marker}.pid\" 2>/dev/null)\" || exit 3; \
-             pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; \
-             case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; \
-             [ \"$pid\" -gt 0 ] 2>/dev/null || exit 5; \
-             kill -0 \"$pid\" 2>/dev/null || exit 4; \
-             if [ \"$expected\" = \"$raw\" ] || [ -z \"$expected\" ]; then exit 0; fi; \
-             actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; \
-             [ \"$actual\" = \"$expected\" ] && exit 0 || exit 6"
-        );
+        let script = super::identity_pidfile_probe(&format!("\"$HOME/.bb-tailnet/{marker}.pid\""));
         match remote_shell(host, &script, Duration::from_secs(30)) {
             Ok(out) => match out.exit_code {
                 0 => ProbeResult::Alive,
@@ -295,9 +286,10 @@ impl Session for TailnetSession {
             ""
         };
         let script = format!(
-            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho \"$$|$(ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')\" > ~/.bb-tailnet/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
+            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\n{write_pidfile}\nunset GH_TOKEN\n{scrub}{exports}{body}",
             ws = shell_quote(&self.workspace),
-            marker = self.marker,
+            write_pidfile =
+                super::identity_pidfile_write(&format!("~/.bb-tailnet/{}.pid", self.marker)),
         );
         let result = ssh_exec(
             &self.host,
@@ -307,10 +299,7 @@ impl Session for TailnetSession {
             monitor,
         )?;
         if result.timed_out || result.termination_reason.is_some() {
-            let kill = format!(
-                "raw=\"$(cat ~/.bb-tailnet/{}.pid 2>/dev/null)\"; pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; case \"$pid\" in \"\"|*[!0-9]*) exit 0;; esac; [ \"$pid\" -gt 0 ] 2>/dev/null || exit 0; if [ \"$expected\" != \"$raw\" ] && [ -n \"$expected\" ]; then actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; [ \"$actual\" = \"$expected\" ] || exit 0; fi; kill -9 -- \"-$pid\" 2>/dev/null || true",
-                self.marker
-            );
+            let kill = super::identity_pidfile_kill(&format!("~/.bb-tailnet/{}.pid", self.marker));
             let _ = remote_shell(&self.host, &kill, Duration::from_secs(30));
         }
         Ok(result)

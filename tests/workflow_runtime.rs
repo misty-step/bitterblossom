@@ -2366,3 +2366,127 @@ fn denied_workflow_webhook_returns_429() {
     assert_eq!(status, 429, "{body}");
     assert!(body["denied"].is_string(), "{body}");
 }
+
+#[test]
+fn admitted_run_at_max_runs_per_day_executes_instead_of_stopping() {
+    // PR #1013 review blocker: the claim-time admission recheck used to
+    // count the claimed run against its own daily budget, terminally
+    // stopping the only run a max_runs_per_day = 1 workflow ever admits.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "bounded-success.sh", "echo completed");
+    let doc = write_doc(
+        root,
+        "bounded-daily.toml",
+        &format!(
+            r#"
+name = "bounded-daily"
+goal = "The single admitted daily run must execute, not self-stop."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Do the bounded work."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+[policies]
+max_runs_per_day = 1
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "bounded-daily");
+    let run_id = accept_test_run(root, "bounded-daily");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    // The daily budget the run was admitted under is fully consumed for
+    // NEW acceptances.
+    let denied = bb(root, &["workflow", "accept", "bounded-daily", "--json"]);
+    assert!(!denied.status.success(), "{denied:?}");
+    assert!(
+        String::from_utf8_lossy(&denied.stdout).contains("max_runs_per_day"),
+        "{denied:?}"
+    );
+}
+
+#[test]
+fn transient_daily_ceiling_defers_claimed_run_and_keeps_it_queued() {
+    // PR #1013 review blocker: a transient plane-ceiling condition at claim
+    // time used to terminally stop an accepted, reservation-backed run.
+    // Deferral must keep it queued and retryable until the pressure clears.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[ingress]\nbind = \"127.0.0.1:0\"\n[budget]\nmax_cost_per_day_usd = 1.0\n",
+    )
+    .unwrap();
+    let stub = write_stub(root, "deferred-success.sh", "echo completed");
+    let doc = write_doc(
+        root,
+        "deferrable.toml",
+        &format!(
+            r#"
+name = "deferrable"
+goal = "A queued run outlives transient plane-ceiling pressure."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Do the deferrable work."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+[policies]
+estimated_cost_per_run_usd = 0.25
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "deferrable");
+    let run_id = accept_test_run(root, "deferrable");
+
+    // Transient pressure: another actor's standard spend blows the ceiling
+    // between acceptance and the runner claim.
+    let conn = Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute("INSERT INTO runs (id, task, trigger_kind, state, trace_id, created_at, updated_at) VALUES ('std-1', 'standard', 'test', 'running', 'trace', datetime('now'), datetime('now'))", []).unwrap();
+    conn.execute("INSERT INTO attempts (run_id, n, agent_name, agent_version, harness, model, phase, cost_usd, started_at) VALUES ('std-1', 1, 'agent', 1, 'opencode', 'stub', 'executing', 2.0, datetime('now'))", []).unwrap();
+
+    let deferred = bb(root, &["workflow", "execute", &run_id, "--json"]);
+    assert!(!deferred.status.success(), "{deferred:?}");
+    assert!(
+        String::from_utf8_lossy(&deferred.stderr).contains("deferred by admission recheck"),
+        "{}",
+        String::from_utf8_lossy(&deferred.stderr)
+    );
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    let status = ledger.workflow_run_status(&run_id).unwrap().unwrap();
+    assert_eq!(status.state, "queued", "{:?}", status.detail);
+
+    // Same pressure, second claim: defers again without duplicating the
+    // guard event for an unchanged reason.
+    let again = bb(root, &["workflow", "execute", &run_id, "--json"]);
+    assert!(!again.status.success(), "{again:?}");
+    let guard_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM guard_events WHERE kind = 'workflow_admission_recheck_global_daily_ceiling'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(guard_count, 1);
+
+    // Pressure clears: the SAME run executes to success.
+    conn.execute("DELETE FROM attempts WHERE run_id = 'std-1'", [])
+        .unwrap();
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+}

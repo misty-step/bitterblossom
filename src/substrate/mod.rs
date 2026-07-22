@@ -416,6 +416,30 @@ pub const REPORT_FILENAME: &str = "REPORT.json";
 /// never parsed by the substrate or dispatch, just relayed.
 pub const ASK_PACKET_FILENAME: &str = "ASK_PACKET.json";
 
+/// The `pid|lstart` identity pidfile shell fragments shared by the remote
+/// substrates (sprites, tailnet): one writer, one liveness probe, one
+/// group-kill, differing only in where the pidfile lives. Keeping the only
+/// parsers of this format here means a fix can never land in five of six
+/// hand-synced copies.
+///
+/// Probe exit codes: 0 alive (identity match or legacy pid-only file),
+/// 3 no pidfile, 4 dead, 5 malformed/nonpositive pid, 6 identity mismatch.
+pub(crate) fn identity_pidfile_write(pidfile: &str) -> String {
+    format!("echo \"$$|$(ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')\" > {pidfile}")
+}
+
+pub(crate) fn identity_pidfile_probe(pidfile: &str) -> String {
+    format!(
+        "raw=\"$(cat {pidfile} 2>/dev/null)\" || exit 3; pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; [ \"$pid\" -gt 0 ] 2>/dev/null || exit 5; kill -0 \"$pid\" 2>/dev/null || exit 4; if [ \"$expected\" = \"$raw\" ] || [ -z \"$expected\" ]; then exit 0; fi; actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; [ \"$actual\" = \"$expected\" ] && exit 0 || exit 6"
+    )
+}
+
+pub(crate) fn identity_pidfile_kill(pidfile: &str) -> String {
+    format!(
+        "raw=\"$(cat {pidfile} 2>/dev/null)\"; pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; case \"$pid\" in \"\"|*[!0-9]*) exit 0;; esac; [ \"$pid\" -gt 0 ] 2>/dev/null || exit 0; if [ \"$expected\" != \"$raw\" ] && [ -n \"$expected\" ]; then actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; [ \"$actual\" = \"$expected\" ] || exit 0; fi; kill -9 -- \"-$pid\" 2>/dev/null || true"
+    )
+}
+
 pub fn for_task(kind: &str) -> Result<Box<dyn Substrate>> {
     match kind {
         "local" => Ok(Box::new(local::LocalSubstrate)),

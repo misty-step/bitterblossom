@@ -87,6 +87,52 @@ pub fn task_webhook_routes(plane: &Plane) -> Vec<String> {
 pub fn task_webhook_routes_except(plane: &Plane, excluded_task: &str) -> Vec<String> {
     task_webhook_routes_filtered(plane, Some(excluded_task))
 }
+/// Map an HMAC delivery verification to the shared refusal response used by
+/// both webhook doors (task and workflow), so the two can never drift on
+/// auth semantics. `None` means the delivery verified.
+fn hmac_refusal(secret: &str, headers: &[(String, String)], body: &str) -> Option<WebhookResponse> {
+    match verify_delivery_hmac(secret, headers, body) {
+        DeliveryVerification::Valid => None,
+        DeliveryVerification::InvalidSignature => Some(WebhookResponse {
+            status: 401,
+            body: "{\"error\":\"invalid signature\"}".to_string(),
+        }),
+        DeliveryVerification::Stale => Some(WebhookResponse {
+            status: 401,
+            body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
+        }),
+        DeliveryVerification::MalformedTimestamp
+        | DeliveryVerification::IncompleteTimestampedHeaders => Some(WebhookResponse {
+            status: 400,
+            body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
+        }),
+    }
+}
+
+/// Guard-event plus 429 for a reflex ingest refused by queue backpressure —
+/// identical on the storm and plain-ingest paths.
+fn backpressure_refusal(
+    ledger: &Ledger,
+    task: &str,
+    error: &anyhow::Error,
+) -> Result<WebhookResponse> {
+    ledger.record_guard_event(
+        "queue_backpressure",
+        Some(task),
+        &format!("source=webhook {error}"),
+        1,
+    )?;
+    Ok(WebhookResponse {
+        status: 429,
+        body: serde_json::json!({
+            "error": "queue backpressure refused reflex admission",
+            "task": task,
+            "detail": error.to_string(),
+        })
+        .to_string(),
+    })
+}
+
 pub fn handle_webhook(
     plane: &Plane,
     ledger: &mut Ledger,
@@ -127,27 +173,8 @@ pub fn handle_webhook(
             body: format!("{{\"error\":\"secret env '{secret_env}' not set on the plane\"}}"),
         });
     };
-    match verify_delivery_hmac(&secret, headers, body) {
-        DeliveryVerification::Valid => {}
-        DeliveryVerification::InvalidSignature => {
-            return Ok(WebhookResponse {
-                status: 401,
-                body: "{\"error\":\"invalid signature\"}".to_string(),
-            });
-        }
-        DeliveryVerification::Stale => {
-            return Ok(WebhookResponse {
-                status: 401,
-                body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
-            });
-        }
-        DeliveryVerification::MalformedTimestamp
-        | DeliveryVerification::IncompleteTimestampedHeaders => {
-            return Ok(WebhookResponse {
-                status: 400,
-                body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
-            });
-        }
+    if let Some(refusal) = hmac_refusal(&secret, headers, body) {
+        return Ok(refusal);
     }
     if oversized {
         ledger.record_guard_event(
@@ -253,21 +280,7 @@ pub fn handle_webhook(
         ) {
             Ok(outcome) => outcome,
             Err(error) if crate::ledger::is_queue_backpressure(&error) => {
-                ledger.record_guard_event(
-                    "queue_backpressure",
-                    Some(&task.name),
-                    &format!("source=webhook {error}"),
-                    1,
-                )?;
-                return Ok(WebhookResponse {
-                    status: 429,
-                    body: serde_json::json!({
-                        "error": "queue backpressure refused reflex admission",
-                        "task": task.name,
-                        "detail": error.to_string(),
-                    })
-                    .to_string(),
-                });
+                return backpressure_refusal(ledger, &task.name, &error);
             }
             Err(error) => return Err(error),
         }
@@ -282,21 +295,7 @@ pub fn handle_webhook(
         }) {
             Ok(outcome) => outcome,
             Err(error) if crate::ledger::is_queue_backpressure(&error) => {
-                ledger.record_guard_event(
-                    "queue_backpressure",
-                    Some(&task.name),
-                    &format!("source=webhook {error}"),
-                    1,
-                )?;
-                return Ok(WebhookResponse {
-                    status: 429,
-                    body: serde_json::json!({
-                        "error": "queue backpressure refused reflex admission",
-                        "task": task.name,
-                        "detail": error.to_string(),
-                    })
-                    .to_string(),
-                });
+                return backpressure_refusal(ledger, &task.name, &error);
             }
             Err(error) => return Err(error),
         }
@@ -327,27 +326,8 @@ pub fn handle_workflow_webhook(
             body: format!("{{\"error\":\"secret env '{secret_env}' not set on the plane\"}}"),
         });
     };
-    match verify_delivery_hmac(&secret, headers, body) {
-        DeliveryVerification::Valid => {}
-        DeliveryVerification::InvalidSignature => {
-            return Ok(WebhookResponse {
-                status: 401,
-                body: "{\"error\":\"invalid signature\"}".to_string(),
-            });
-        }
-        DeliveryVerification::Stale => {
-            return Ok(WebhookResponse {
-                status: 401,
-                body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
-            });
-        }
-        DeliveryVerification::MalformedTimestamp
-        | DeliveryVerification::IncompleteTimestampedHeaders => {
-            return Ok(WebhookResponse {
-                status: 400,
-                body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
-            });
-        }
+    if let Some(refusal) = hmac_refusal(&secret, headers, body) {
+        return Ok(refusal);
     }
     if serde_json::from_str::<serde_json::Value>(body).is_err() {
         return Ok(WebhookResponse {
