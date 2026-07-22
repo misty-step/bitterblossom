@@ -40,8 +40,8 @@ use crate::ledger::{new_id, now, AttemptStats, Ledger};
 use crate::spec::{AgentSpec, AuthClass, Plane, TaskBudget};
 use crate::substrate::{self, ExecMonitor, ExecSnapshot, WorkspacePlan};
 use crate::workflow::{
-    AcceptOutcome, LaunchSnapshot, StepAgent, WorkflowDoc, WorkflowPolicies, WorkflowStep,
-    ROUTE_DONE,
+    AcceptOutcome, LaunchSnapshot, StepAgent, WorkflowAction, WorkflowDoc, WorkflowPolicies,
+    WorkflowStep, ROUTE_DONE,
 };
 
 /// The completion tool: a branching step's agent writes this file with one
@@ -388,9 +388,8 @@ fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Resul
         .context("verified launch snapshot set is empty")?;
     let steps = snapshots
         .iter()
-        .map(|snapshot| WorkflowStep {
-            name: snapshot.step.clone(),
-            agent: StepAgent {
+        .map(|snapshot| {
+            let composition = StepAgent {
                 name: snapshot.name.clone(),
                 version: snapshot.agent_revision,
                 harness: snapshot.harness.clone(),
@@ -407,16 +406,42 @@ fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Resul
                 fallbacks: snapshot.fallbacks.clone(),
                 secrets: snapshot.secret_refs.clone(),
                 bundle: snapshot.bundle.clone(),
-            },
-            goal: snapshot.step_goal.clone(),
-            host: snapshot.host.clone(),
-            repos: snapshot.repos.clone(),
-            routes: snapshot.routes.clone(),
-            authority: snapshot.authority.clone(),
+            };
+            let action = match snapshot.action.clone() {
+                Some(WorkflowAction::Agent { results, .. }) => WorkflowAction::Agent {
+                    goal: snapshot.step_goal.clone(),
+                    composition,
+                    results,
+                },
+                Some(action) => action,
+                None => WorkflowAction::Agent {
+                    goal: snapshot.step_goal.clone(),
+                    composition,
+                    results: Vec::new(),
+                },
+            };
+            let grant = if snapshot.grant == Default::default() {
+                crate::workflow::GrantSpec {
+                    capabilities: snapshot.authority.iter().cloned().collect(),
+                    ..Default::default()
+                }
+            } else {
+                snapshot.grant.clone()
+            };
+            WorkflowStep {
+                name: snapshot.step.clone(),
+                grant,
+                host: snapshot.host.clone(),
+                repos: snapshot.repos.clone(),
+                routes: snapshot.routes.clone(),
+                authority_order: snapshot.authority.clone(),
+                action,
+            }
         })
         .collect();
     Ok(WorkflowDoc {
         name: workflow.to_string(),
+        grant: first.grant.clone(),
         goal: first.workflow_goal.clone(),
         triggers: Vec::new(),
         steps,
@@ -1811,7 +1836,10 @@ fn commission(
     }
     card.push_str(&format!(
         "# Workflow step commission\n\nWorkflow: {} — {}\nStep: {}\n\n{}\n",
-        doc.name, doc.goal, step.name, step.goal
+        doc.name,
+        doc.goal,
+        step.name,
+        step.goal()
     ));
     card.push_str("\n## Resolved composition (activation snapshot)\n```json\n");
     card.push_str(&serde_json::to_string_pretty(snapshot).expect("snapshot serializes"));
@@ -1838,7 +1866,7 @@ fn commission(
          \"goal\", \"authority\": [...], \"cost_usd\", \"result\"}}]. Your authority grant is \
          {:?}; a child inherits it unless it declares a narrower subset. A child may never \
          broaden it.\n",
-        step.authority
+        step.grant.capabilities
     ));
     card
 }
@@ -1956,7 +1984,7 @@ fn run_step_once(
         &step.name,
         attempt,
         &agent_json,
-        &step.goal,
+        &step.goal(),
         &snapshot.authority,
         &attempt_dir.to_string_lossy(),
     )?;
@@ -2566,15 +2594,17 @@ fn run_step_once(
 /// and `GET /api/workflow-runs/<id>`.
 pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
     let run = ledger.workflow_run(run_id)?;
-    let document: serde_json::Value = serde_json::from_str(
+    let mut document: serde_json::Value = serde_json::from_str(
         &ledger
             .workflow_revision(&run.workflow, run.revision)?
             .document,
     )?;
+    crate::workflow::project_document_for_readback(&mut document);
     let status = ledger.workflow_run_status(run_id)?;
     let events = ledger.workflow_run_events(run_id)?;
     let workflow = ledger.workflow_by_name(&run.workflow)?;
     let launch_snapshots = ledger.launch_snapshots_for_revision(&workflow.id, run.revision)?;
+    let activation = ledger.activation_snapshot(&run.workflow, run.revision).ok();
     let steps = ledger
         .workflow_step_runs(run_id)?
         .into_iter()
@@ -2589,6 +2619,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
         "run": run,
         "document": document,
         "launch_snapshots": launch_snapshots,
+        "activation": activation,
         "status": status,
         "events": events,
         "steps": steps,

@@ -1507,8 +1507,14 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 .map(|revision| ledger.launch_snapshots_for_revision(&workflow.id, revision))
                 .transpose()?
                 .unwrap_or_default();
-            let mut value = serde_json::to_value(workflow)?;
+            let mut value = serde_json::to_value(&workflow)?;
             value["launch_snapshots"] = serde_json::to_value(snapshots)?;
+            value["activation"] = workflow
+                .active_revision
+                .and_then(|revision| ledger.activation_snapshot(name, revision).ok())
+                .map(serde_json::to_value)
+                .transpose()?
+                .unwrap_or(serde_json::Value::Null);
             Ok((200, value))
         }
         "pause" => {

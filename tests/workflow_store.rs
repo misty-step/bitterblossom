@@ -239,7 +239,13 @@ max_rounds = 3
     assert_eq!(pinned.fallback_index, 0);
     assert_eq!(pinned.authority_digest.len(), 64);
     pinned.verify_digest().unwrap();
-    doc.steps[0].agent.model = "moonshotai/kimi-k2.5".into();
+    if let bitterblossom::workflow::WorkflowAction::Agent { composition, .. } =
+        &mut doc.steps[0].action
+    {
+        composition.model = "moonshotai/kimi-k2.5".into();
+    } else {
+        panic!("expected agent action");
+    }
     let (_, revision_two) = ledger
         .revise_workflow("pinned-composition", &doc, "test", None)
         .unwrap();
@@ -465,6 +471,12 @@ fn lifecycle_revise_rollback_and_audit_in_one_store() {
     assert_eq!(active["state"], "active");
     assert!(active["launch_snapshots"].as_array().unwrap()[0]["snapshot"].is_object());
     assert_eq!(active["active_revision"], 1);
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    let first_activation = ledger
+        .workflow_by_name("pr-review")
+        .unwrap()
+        .active_activation_id
+        .unwrap();
 
     // revise: identical document refused, changed document appends revision 2
     let unchanged = bb(root, &["workflow", "revise", "pr-review", doc]);
@@ -501,6 +513,26 @@ fn lifecycle_revise_rollback_and_audit_in_one_store() {
     );
     assert_eq!(rolled["revision"], 3);
     assert_eq!(rolled["workflow"]["active_revision"], 3);
+    let rolled_row = ledger.workflow_by_name("pr-review").unwrap();
+    assert_eq!(rolled_row.state, "active");
+    assert_eq!(rolled_row.active_revision, Some(3));
+    assert_ne!(
+        rolled_row.active_activation_id.as_deref(),
+        Some(first_activation.as_str())
+    );
+    let activation = ledger.activation_snapshot("pr-review", 3).unwrap();
+    activation.verify_digest().unwrap();
+    assert_eq!(
+        activation.activation_id,
+        rolled_row.active_activation_id.clone().unwrap()
+    );
+    assert_eq!(
+        ledger
+            .launch_snapshots_for_revision(&rolled_row.id, 3)
+            .unwrap()
+            .len(),
+        1
+    );
     let diff = bb_json(
         root,
         &[
@@ -836,6 +868,14 @@ fn cli_and_http_create_read_diff_activate_the_same_revisions() {
     let cli_wf = bb_json(root, &["workflow", "show", "pr-review", "--json"]);
     assert_eq!(cli_wf["workflow"]["active_revision"], 2);
     assert_eq!(cli_wf["workflow"]["state"], "active");
+    assert_eq!(
+        activated["activation"]["activation_id"],
+        cli_wf["activation"]["activation_id"]
+    );
+    assert_eq!(
+        activated["activation"]["digest"],
+        cli_wf["activation"]["digest"]
+    );
 
     // accept over HTTP pins revision 2; pause over CLI suppresses HTTP accepts
     let (status, accepted) = http(
