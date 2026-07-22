@@ -580,6 +580,54 @@ model = "fallback"
     assert_eq!(view["steps"][0]["agent"]["fallback_index"], 0);
 }
 
+#[test]
+fn fallback_consumes_round_budget_before_next_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let fallback = write_stub(root, "fallback-budget.sh", r#"printf should-not-run"#);
+    let missing = root.join("missing-primary-budget");
+    let doc = write_doc(
+        root,
+        "fallback-budget.toml",
+        &format!(
+            r#"
+name = "fallback-budget"
+goal = "Bound fallback attempts by the run group."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Stop when the rounds guard is exhausted."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+[policies]
+max_rounds = 1
+"#,
+            missing.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "fallback-budget");
+    let run_id = accept_test_run(root, "fallback-budget");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert_eq!(view["steps"].as_array().unwrap().len(), 1);
+    let events = Ledger::open(&root.join(".bb/plane.db"))
+        .unwrap()
+        .list_guard_events(100)
+        .unwrap();
+    assert!(events.iter().any(|event| event.kind == "workflow_guard_rounds"));
+}
+
 // --- criterion 2: result schemas only where routing needs them ---------------
 
 #[test]

@@ -1511,7 +1511,11 @@ fn execute_claimed(
         }
 
         let snapshot = load_launch_snapshot(ledger, run, &step.name)?;
-        match run_step(plane, ledger, run, &doc, step, &snapshot)? {
+        let disposition = run_step(plane, ledger, run, &doc, step, &snapshot, started)?;
+        if let Some(reason) = post_attempt_spend_guard(ledger, run, &doc)? {
+            break ("stopped", Some(reason), "workflow_run_stopped");
+        }
+        match disposition {
             StepDisposition::PreExecFailed(error) => {
                 break ("failed", Some(error), "workflow_run_failed");
             }
@@ -1838,11 +1842,15 @@ fn run_step(
     doc: &WorkflowDoc,
     step: &WorkflowStep,
     snapshot: &LaunchSnapshot,
+    started: Instant,
 ) -> Result<StepDisposition> {
     for index in 0..=snapshot.fallbacks.len() {
         let resolved = snapshot.resolve_fallback(index)?;
         match run_step_once(plane, ledger, run, doc, step, &resolved)? {
             StepDisposition::PreExecFailed(error) if index < snapshot.fallbacks.len() => {
+                if let Some(reason) = fired_guard(ledger, run, doc, step, started)? {
+                    return Ok(StepDisposition::Stopped(reason));
+                }
                 let next = index + 1;
                 let resolved = snapshot.resolve_fallback(next)?;
                 ledger.record_guard_event(
