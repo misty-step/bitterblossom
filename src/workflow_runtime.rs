@@ -1844,12 +1844,13 @@ fn run_step(
         match run_step_once(plane, ledger, run, doc, step, &resolved)? {
             StepDisposition::PreExecFailed(error) if index < snapshot.fallbacks.len() => {
                 let next = index + 1;
+                let resolved = snapshot.resolve_fallback(next)?;
                 ledger.record_guard_event(
                     "workflow_fallback_selected",
                     Some(&run.workflow),
                     &format!(
-                        "step '{}' launch failed at composition index {index}; selected fallback index {next}: {error}",
-                        step.name
+                        "step '{}' launch failed at composition index {index}; selected fallback index {next} digest {}: {error}",
+                        step.name, resolved.digest
                     ),
                     1,
                 )?;
@@ -2119,7 +2120,7 @@ fn run_step_once(
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
-            return fail_terminal(format!("execute: {e:#}"), &none);
+            return fail_pre_exec(format!("execute: {e:#}"));
         }
     };
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;

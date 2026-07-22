@@ -114,12 +114,15 @@ tool_rules = ["allow:read", "deny:write"]
 context_inputs = ["event.payload", "workflow.goal"]
 
 [[step.agent.fallbacks]]
+harness = "opencode"
+bin = "/usr/bin/opencode"
+args = ["--fallback"]
 provider = "openrouter"
 model = "moonshotai/kimi-k2.5"
 effort = "medium"
 skills = ["review"]
 mcps = ["github"]
-tool_rules = ["allow:read"]
+tool_rules = ["allow:read", "deny:write", "deny:network"]
 context_inputs = ["event.payload"]
 
 [policies]
@@ -260,6 +263,53 @@ context_inputs = ["event.payload"]
     for field in ["effort", "skills", "mcps", "tool_rules", "context_inputs"] {
         assert!(error.contains(field), "missing {field} in {error}");
     }
+}
+
+#[test]
+fn fallback_deny_rules_and_adapter_identity_are_bounded() {
+    let text = r#"
+name = "fallback-contract"
+goal = "Check fallback narrowing."
+[[step]]
+name = "run"
+goal = "Run the bounded fallback."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "/tmp/primary"
+tool_rules = ["allow:read", "deny:write"]
+secrets = ["PRIMARY_SECRET"]
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "/tmp/fallback"
+args = ["--safe"]
+model = "fallback"
+tool_rules = ["allow:read", "deny:write", "deny:network"]
+secrets = []
+"#;
+    let doc = WorkflowDoc::from_toml(text).expect("narrow fallback parses");
+    let snapshots = doc.materialize_launch_snapshots("wf-test", 1).unwrap();
+    assert_eq!(snapshots[0].fallbacks[0].harness.as_deref(), Some("command"));
+    assert_eq!(snapshots[0].fallbacks[0].bin.as_deref(), Some("/tmp/fallback"));
+    assert_eq!(snapshots[0].fallbacks[0].args, vec!["--safe"]);
+    assert_eq!(snapshots[0].fallbacks[0].secrets, Vec::<String>::new());
+
+    let dropped_deny = text.replace(
+        "tool_rules = [\"allow:read\", \"deny:write\", \"deny:network\"]",
+        "tool_rules = [\"allow:read\"]",
+    );
+    let error = WorkflowDoc::from_toml(&dropped_deny).unwrap_err().to_string();
+    assert!(error.contains("dropping deny rule"), "{error}");
+
+    let widened_secret = text.replace("secrets = []", "secrets = [\"OTHER_SECRET\"]");
+    let error = WorkflowDoc::from_toml(&widened_secret).unwrap_err().to_string();
+    assert!(error.contains("widens secret_refs"), "{error}");
+
+    let changed_auth = text.replace("harness = \"command\"\nbin = \"/tmp/fallback\"", "harness = \"claude\"\nbin = \"/tmp/fallback\"");
+    let error = WorkflowDoc::from_toml(&changed_auth).unwrap_err().to_string();
+    assert!(error.contains("authentication authority"), "{error}");
 }
 
 #[test]

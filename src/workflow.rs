@@ -147,6 +147,14 @@ pub struct StepAgent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentFallback {
+    /// Optional adapter identity override. Omitted fields inherit the primary
+    /// adapter; activation validates the resolved identity before persistence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -160,6 +168,9 @@ pub struct AgentFallback {
     pub tool_rules: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_inputs: Vec<String>,
+    /// Credential names may only be removed by a fallback; values are never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
 }
 
 /// Immutable, secret-free executable launch contract accepted for one
@@ -225,6 +236,22 @@ impl LaunchSnapshot {
         Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
     }
 
+    fn adapter_digest_without_self(&self) -> Result<String> {
+        let value = serde_json::json!({
+            "harness": self.harness,
+            "bin": self.bin,
+            "args": self.args,
+            "provider": self.provider,
+            "model": self.model,
+            "effort": self.effort,
+            "skills": self.skills,
+            "mcps": self.mcps,
+            "tool_rules": self.tool_rules,
+            "context_inputs": self.context_inputs,
+        });
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+    }
+
     pub fn verify_digest(&self) -> Result<()> {
         let expected = self.digest_without_self()?;
         if self.digest != expected {
@@ -251,6 +278,9 @@ impl LaunchSnapshot {
         let mut resolved = self.clone();
         if index > 0 {
             let fallback = &self.fallbacks[index - 1];
+            resolved.harness = fallback.harness.clone().unwrap_or_else(|| self.harness.clone());
+            resolved.bin = fallback.bin.clone().or_else(|| self.bin.clone());
+            resolved.args = fallback.args.clone();
             resolved.provider = fallback.provider.clone().or_else(|| self.provider.clone());
             resolved.model = fallback.model.clone();
             resolved.effort = fallback.effort.clone();
@@ -258,6 +288,8 @@ impl LaunchSnapshot {
             resolved.mcps = fallback.mcps.clone();
             resolved.tool_rules = fallback.tool_rules.clone();
             resolved.context_inputs = fallback.context_inputs.clone();
+            resolved.secret_refs = fallback.secrets.clone();
+            resolved.adapter_digest = resolved.adapter_digest_without_self()?;
             resolved.fallback_index = index;
             resolved.digest = resolved.digest_without_self()?;
         }
@@ -349,21 +381,26 @@ fn validate_composition(step: &WorkflowStep, workflow: &str) -> Result<()> {
         if fallback.provider.as_deref().unwrap_or(primary_provider) != primary_provider {
             bail!("workflow '{workflow}': step '{}' fallback {index} changes provider authority", step.name);
         }
+        if let Some(harness) = fallback.harness.as_deref() {
+            if !crate::harness::HARNESSES.contains(&harness) {
+                bail!("workflow '{workflow}': step '{}' fallback {index} harness '{harness}' is unknown", step.name);
+            }
+            if harness_auth_class(harness) != harness_auth_class(&agent.harness) {
+                bail!("workflow '{workflow}': step '{}' fallback {index} changes authentication authority", step.name);
+            }
+        }
+        if fallback.bin.as_deref().is_some_and(|bin| bin.trim().is_empty()) {
+            bail!("workflow '{workflow}': step '{}' fallback {index} bin cannot be empty", step.name);
+        }
         validate_effort(fallback.effort.as_deref(), workflow, &step.name)?;
         if effort_rank(fallback.effort.as_deref()) > effort_rank(agent.effort.as_deref()) {
             bail!("workflow '{workflow}': step '{}' fallback {index} widens effort", step.name);
         }
-        for (label, values, allowed) in [
-            ("skills", &fallback.skills, &agent.skills),
-            ("mcps", &fallback.mcps, &agent.mcps),
-            ("tool_rules", &fallback.tool_rules, &agent.tool_rules),
-            ("context_inputs", &fallback.context_inputs, &agent.context_inputs),
-        ] {
-            validate_values(values, label, workflow, &step.name)?;
-            if values.iter().any(|value| !allowed.contains(value)) {
-                bail!("workflow '{workflow}': step '{}' fallback {index} widens {label}", step.name);
-            }
-        }
+        validate_narrowed_values(&fallback.skills, "skills", &agent.skills, workflow, &step.name, index)?;
+        validate_narrowed_values(&fallback.mcps, "mcps", &agent.mcps, workflow, &step.name, index)?;
+        validate_tool_rules_narrowing(&agent.tool_rules, &fallback.tool_rules, workflow, &step.name, index)?;
+        validate_narrowed_values(&fallback.context_inputs, "context_inputs", &agent.context_inputs, workflow, &step.name, index)?;
+        validate_narrowed_values(&fallback.secrets, "secret_refs", &agent.secrets, workflow, &step.name, index)?;
     }
     Ok(())
 }
@@ -373,6 +410,64 @@ fn validate_values(values: &[String], label: &str, workflow: &str, step: &str) -
         bail!("workflow '{workflow}': step '{step}' has an empty {label} entry");
     }
     Ok(())
+}
+
+fn validate_narrowed_values(
+    values: &[String],
+    label: &str,
+    allowed: &[String],
+    workflow: &str,
+    step: &str,
+    index: usize,
+) -> Result<()> {
+    validate_values(values, label, workflow, step)?;
+    if values.iter().any(|value| !allowed.contains(value)) {
+        bail!("workflow '{workflow}': step '{step}' fallback {index} widens {label}");
+    }
+    Ok(())
+}
+
+fn validate_tool_rules_narrowing(
+    primary: &[String],
+    fallback: &[String],
+    workflow: &str,
+    step: &str,
+    index: usize,
+) -> Result<()> {
+    validate_tool_rules(primary, workflow, step)?;
+    validate_tool_rules(fallback, workflow, step)?;
+    // Allow rules are capabilities: a fallback may remove, never add one.
+    for rule in fallback.iter().filter(|rule| rule.starts_with("allow:")) {
+        if !primary.contains(rule) {
+            bail!("workflow '{workflow}': step '{step}' fallback {index} widens tool_rules");
+        }
+    }
+    // Deny rules are restrictions: a fallback must retain every primary deny
+    // and may add more restrictions.
+    for rule in primary.iter().filter(|rule| rule.starts_with("deny:")) {
+        if !fallback.contains(rule) {
+            bail!("workflow '{workflow}': step '{step}' fallback {index} widens tool_rules by dropping deny rule '{rule}'");
+        }
+    }
+    Ok(())
+}
+
+fn validate_tool_rules(values: &[String], workflow: &str, step: &str) -> Result<()> {
+    for rule in values {
+        let valid = rule.split_once(':').is_some_and(|(kind, value)|
+            matches!(kind, "allow" | "deny") && !value.trim().is_empty());
+        if !valid {
+            bail!("workflow '{workflow}': step '{step}' has unenforceable tool rule '{rule}'");
+        }
+    }
+    Ok(())
+}
+
+fn harness_auth_class(harness: &str) -> &'static str {
+    match harness {
+        "claude" | "codex" => "subscription",
+        _ => "api",
+    }
 }
 
 fn effort_rank(effort: Option<&str>) -> u8 {

@@ -476,6 +476,110 @@ bin = "{}"
     assert!(String::from_utf8_lossy(&rerun.stderr).contains("succeeded"));
 }
 
+#[test]
+fn pre_exec_launch_failure_selects_bounded_fallback_with_snapshot_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let fallback = write_stub(root, "fallback.sh", r#"printf fallback-launch-succeeded"#);
+    let missing = root.join("missing-primary");
+    let doc = write_doc(
+        root,
+        "fallback.toml",
+        &format!(
+            r#"
+name = "fallback-live"
+goal = "Exercise an ordered pre-exec fallback."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Launch the primary and select the fallback only when launch fails."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+args = ["--safe"]
+model = "fallback"
+"#,
+            missing.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "fallback-live");
+    let run_id = accept_test_run(root, "fallback-live");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    assert_eq!(view["status"]["detail"], "fallback-launch-succeeded");
+    let steps = view["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "primary and fallback attempts are both evidence");
+    assert_eq!(steps[0]["state"], "failed");
+    assert_eq!(steps[0]["agent"]["fallback_index"], 0);
+    assert_eq!(steps[1]["state"], "succeeded");
+    assert_eq!(steps[1]["agent"]["fallback_index"], 1);
+    assert_eq!(steps[1]["agent"]["bin"], fallback.display().to_string());
+    assert_ne!(steps[0]["agent"]["digest"], steps[1]["agent"]["digest"]);
+    let fallback_digest = steps[1]["agent"]["digest"].as_str().unwrap();
+    let events = Ledger::open(&root.join(".bb/plane.db"))
+        .unwrap()
+        .list_guard_events(100)
+        .unwrap();
+    let selected = events
+        .iter()
+        .find(|event| event.kind == "workflow_fallback_selected")
+        .expect("fallback selection evidence");
+    let detail = selected.detail.as_deref().unwrap();
+    assert!(detail.contains("index 1"), "{detail}");
+    assert!(detail.contains(fallback_digest), "{detail}");
+}
+
+#[test]
+fn post_launch_failure_does_not_select_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let primary = write_stub(root, "primary-exit.sh", r#"exit 127"#);
+    let fallback = write_stub(root, "fallback-never.sh", r#"printf should-not-run"#);
+    let doc = write_doc(
+        root,
+        "post-launch.toml",
+        &format!(
+            r#"
+name = "post-launch"
+goal = "Keep post-launch failures terminal."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Do not retry after the process starts."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+"#,
+            primary.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "post-launch");
+    let run_id = accept_test_run(root, "post-launch");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(view["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(view["steps"][0]["agent"]["fallback_index"], 0);
+}
+
 // --- criterion 2: result schemas only where routing needs them ---------------
 
 #[test]
