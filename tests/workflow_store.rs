@@ -18,7 +18,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use bitterblossom::ledger::Ledger;
-use bitterblossom::workflow::{AcceptOutcome, WorkflowDoc};
+use bitterblossom::workflow::{AcceptOutcome, LaunchSnapshot, WorkflowDoc};
 
 const DOC: &str = r#"
 name = "pr-review"
@@ -84,6 +84,221 @@ fn write_doc(root: &Path, name: &str, text: &str) -> PathBuf {
     path
 }
 
+#[test]
+fn composition_rich_document_round_trips_canonically() {
+    let text = r#"
+name = "composition-rich"
+goal = "Run a bounded review with a pinned composition."
+
+[[trigger]]
+kind = "webhook"
+route = "composition-rich"
+secret_env = "BB_HOOK_COMPOSITION"
+dedupe_key = "header:X-Request-ID|json:/pull_request/head"
+
+[[step]]
+name = "review"
+goal = "Review the supplied change."
+
+[step.agent]
+name = "cerberus"
+role = "reviewer"
+version = 7
+harness = "opencode"
+provider = "openrouter"
+model = "moonshotai/kimi-k2.6"
+effort = "high"
+skills = ["review", "security"]
+mcps = ["github", "canary"]
+tool_rules = ["allow:read", "deny:write"]
+context_inputs = ["event.payload", "workflow.goal"]
+
+[[step.agent.fallbacks]]
+provider = "openrouter"
+model = "moonshotai/kimi-k2.5"
+effort = "medium"
+skills = ["review"]
+mcps = ["github"]
+tool_rules = ["allow:read"]
+context_inputs = ["event.payload"]
+
+[policies]
+max_cost_per_run_usd = 2.0
+max_rounds = 3
+"#;
+    let doc = WorkflowDoc::from_toml(text).expect("composition declaration parses");
+    let json = doc.canonical_json().expect("canonical JSON");
+    let restored = WorkflowDoc::from_canonical_json(&json).expect("canonical JSON parses");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(value["step"][0].get("launch_snapshot").is_none(), "desired TOML must not carry runtime snapshots");
+    assert_eq!(restored, doc);
+    let toml = restored.to_toml().expect("TOML export");
+    assert_eq!(WorkflowDoc::from_toml(&toml).unwrap(), doc);
+}
+
+#[test]
+fn activation_pins_digest_and_catalog_drift_cannot_rewrite_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join(".bb/plane.db");
+    let text = r#"
+name = "pinned-composition"
+goal = "Run a bounded review."
+
+[[step]]
+name = "review"
+goal = "Review the supplied change."
+
+[step.agent]
+name = "cerberus"
+role = "reviewer"
+version = 7
+harness = "command"
+provider = "openrouter"
+model = "moonshotai/kimi-k2.6"
+
+[policies]
+seats = 2
+max_runs_per_day = 20
+max_cost_per_run_usd = 2.0
+max_cost_per_day_usd = 10.0
+estimated_cost_per_run_usd = 1.25
+side_effect_policy = "quarantine"
+max_rounds = 3
+"#;
+    let mut doc = WorkflowDoc::from_toml(text).unwrap();
+    let ledger = Ledger::open(&db).unwrap();
+    let (workflow, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
+    ledger.activate_workflow("pinned-composition", Some(revision)).unwrap();
+    let first = ledger.launch_snapshots_for_revision(&workflow.id, revision).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].digest.len(), 64);
+    let pinned: LaunchSnapshot = serde_json::from_value(first[0].snapshot.clone()).unwrap();
+    assert_eq!(pinned.name, "cerberus");
+    assert_eq!(pinned.model, "moonshotai/kimi-k2.6");
+    assert_eq!(pinned.role.as_deref(), Some("reviewer"));
+    assert_eq!(pinned.seats, Some(2));
+    assert_eq!(pinned.max_runs_per_day, Some(20));
+    assert_eq!(pinned.max_cost_per_run_usd, Some(2.0));
+    assert_eq!(pinned.max_cost_per_day_usd, Some(10.0));
+    assert_eq!(pinned.estimated_cost_per_run_usd, Some(1.25));
+    assert_eq!(pinned.side_effect_policy.as_deref(), Some("quarantine"));
+    assert_eq!(pinned.max_rounds, Some(3));
+    assert_eq!(pinned.fallback_index, 0);
+    assert_eq!(pinned.authority_digest.len(), 64);
+    pinned.verify_digest().unwrap();
+    doc.steps[0].agent.model = "moonshotai/kimi-k2.5".into();
+    let (_, revision_two) = ledger.revise_workflow("pinned-composition", &doc, "test", None).unwrap();
+    ledger.activate_workflow("pinned-composition", Some(revision_two)).unwrap();
+    let old = ledger.launch_snapshots_for_revision(&workflow.id, revision).unwrap();
+    let new = ledger.launch_snapshots_for_revision(&workflow.id, revision_two).unwrap();
+    assert_eq!(old[0].digest, first[0].digest);
+    assert_ne!(old[0].digest, new[0].digest);
+}
+
+#[test]
+fn fallback_widening_and_unenforceable_controls_are_refused() {
+    let text = r#"
+name = "fallback-refusal"
+goal = "Run a bounded review."
+
+[[step]]
+name = "review"
+goal = "Review the supplied change."
+
+[step.agent]
+name = "cerberus"
+version = 1
+harness = "opencode"
+model = "moonshotai/kimi-k2.6"
+effort = "medium"
+skills = ["review"]
+tool_rules = ["allow:read"]
+
+[[step.agent.fallbacks]]
+model = "moonshotai/kimi-k2.5"
+skills = ["write"]
+"#;
+    let err = WorkflowDoc::from_toml(text).unwrap_err().to_string();
+    assert!(err.contains("widens skills"), "{err}");
+    let mut doc = WorkflowDoc::from_toml(&text.replace("skills = [\"write\"]", "skills = [\"review\"]")).unwrap();
+    doc.policies.seats = Some(0);
+    let err = doc.validate().unwrap_err().to_string();
+    assert!(err.contains("policies.seats"), "{err}");
+    doc.policies.seats = None;
+    doc.policies.concurrency = Some(0);
+    let err = doc.validate().unwrap_err().to_string();
+    assert!(err.contains("policies.concurrency"), "{err}");
+}
+
+#[test]
+fn activation_refuses_unsupported_adapter_controls() {
+    let text = r#"
+name = "unsupported-composition"
+goal = "Reject advisory-only controls."
+
+[[step]]
+name = "review"
+goal = "Review the supplied change."
+
+[step.agent]
+name = "cerberus"
+version = 7
+harness = "opencode"
+model = "moonshotai/kimi-k2.6"
+effort = "high"
+skills = ["review"]
+mcps = ["github"]
+tool_rules = ["allow:read", "deny:write"]
+context_inputs = ["event.payload"]
+"#;
+    let doc = WorkflowDoc::from_toml(text).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&dir.path().join(".bb/plane.db")).unwrap();
+    let (_, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
+    let error = ledger.activate_workflow("unsupported-composition", Some(revision)).unwrap_err().to_string();
+    assert!(error.contains("adapter 'opencode'"), "{error}");
+    for field in ["effort", "skills", "mcps", "tool_rules", "context_inputs"] {
+        assert!(error.contains(field), "missing {field} in {error}");
+    }
+}
+
+#[test]
+fn activation_refuses_invalid_dedupe_and_active_route_collisions() {
+    let invalid = r#"
+name = "bad-dedupe"
+goal = "Reject malformed dedupe expressions."
+
+[[trigger]]
+kind = "webhook"
+route = "bad-dedupe"
+secret_env = "BB_HOOK_BAD_DEDUPE"
+dedupe_key = "header:"
+
+[[step]]
+name = "review"
+goal = "Review the supplied change."
+
+[step.agent]
+name = "cerberus"
+version = 1
+harness = "opencode"
+model = "moonshotai/kimi-k2.6"
+"#;
+    let err = WorkflowDoc::from_toml(invalid).unwrap_err().to_string();
+    assert!(err.contains("invalid trigger dedupe_key"), "{err}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join(".bb/plane.db");
+    let first = WorkflowDoc::from_toml(DOC).unwrap();
+    let mut second = first.clone();
+    second.name = "second-workflow".into();
+    let ledger = Ledger::open(&db).unwrap();
+    ledger.create_workflow(&first, "test", None).unwrap();
+    ledger.activate_workflow("pr-review", None).unwrap();
+    ledger.create_workflow(&second, "test", None).unwrap();
+    let err = ledger.activate_workflow("second-workflow", None).unwrap_err().to_string();
+    assert!(err.contains("already active"), "{err}");
+}
 // --- criterion 1: one database-backed lifecycle API -------------------------
 
 #[test]
@@ -111,6 +326,7 @@ fn lifecycle_revise_rollback_and_audit_in_one_store() {
     // activate (defaults to latest revision)
     let active = bb_json(root, &["workflow", "activate", "pr-review", "--json"]);
     assert_eq!(active["state"], "active");
+    assert!(active["launch_snapshots"].as_array().unwrap()[0]["snapshot"].is_object());
     assert_eq!(active["active_revision"], 1);
 
     // revise: identical document refused, changed document appends revision 2
@@ -475,6 +691,8 @@ fn cli_and_http_create_read_diff_activate_the_same_revisions() {
     );
     assert_eq!(status, 200, "{activated}");
     assert_eq!(activated["active_revision"], 2);
+    assert!(activated["launch_snapshots"].as_array().unwrap()[0]["snapshot"].is_object());
+    assert_eq!(activated["launch_snapshots"][0]["digest"], activated["launch_snapshots"][0]["snapshot"]["digest"]);
     let cli_wf = bb_json(root, &["workflow", "show", "pr-review", "--json"]);
     assert_eq!(cli_wf["workflow"]["active_revision"], 2);
     assert_eq!(cli_wf["workflow"]["state"], "active");

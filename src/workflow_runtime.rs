@@ -39,7 +39,9 @@ use crate::harness;
 use crate::ledger::{new_id, now, AttemptStats, Ledger};
 use crate::spec::{AgentSpec, AuthClass, Plane, TaskBudget};
 use crate::substrate::{self, ExecMonitor, ExecSnapshot, WorkspacePlan};
-use crate::workflow::{AcceptOutcome, StepAgent, WorkflowDoc, WorkflowStep, ROUTE_DONE};
+use crate::workflow::{
+    AcceptOutcome, LaunchSnapshot, StepAgent, WorkflowDoc, WorkflowPolicies, WorkflowStep, ROUTE_DONE,
+};
 
 /// The completion tool: a branching step's agent writes this file with one
 /// declared outcome. Single-route steps need no result schema.
@@ -362,6 +364,92 @@ fn load_document(ledger: &Ledger, workflow: &str, revision: i64) -> Result<Workf
     Ok(doc)
 }
 
+/// Reconstruct the executable workflow solely from verified activation rows.
+/// The desired revision document is deliberately not read on this path.
+fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Result<WorkflowDoc> {
+    let workflow_row = ledger.workflow_by_name(workflow)?;
+    let mut rows = ledger.require_verified_launch_snapshots(&workflow_row.id, revision)?;
+    let mut snapshots = rows
+        .drain(..)
+        .map(|row| {
+            let snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)
+                .with_context(|| format!("launch snapshot for step '{}' is not valid JSON", row.step))?;
+            if snapshot.workflow_id != workflow_row.id || snapshot.revision != revision || snapshot.step != row.step || snapshot.digest != row.digest {
+                bail!("launch snapshot for step '{}' has mismatched workflow, revision, step, or digest", row.step);
+            }
+            snapshot.verify_digest()?;
+            Ok(snapshot)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    snapshots.sort_by_key(|snapshot| snapshot.step_index);
+    let first = snapshots.first().context("verified launch snapshot set is empty")?;
+    let steps = snapshots
+        .iter()
+        .map(|snapshot| WorkflowStep {
+            name: snapshot.step.clone(),
+            agent: StepAgent {
+                name: snapshot.name.clone(),
+                version: snapshot.agent_revision,
+                harness: snapshot.harness.clone(),
+                model: snapshot.model.clone(),
+                role: snapshot.role.clone(),
+                bin: snapshot.bin.clone(),
+                args: snapshot.args.clone(),
+                provider: snapshot.provider.clone(),
+                effort: snapshot.effort.clone(),
+                skills: snapshot.skills.clone(),
+                mcps: snapshot.mcps.clone(),
+                tool_rules: snapshot.tool_rules.clone(),
+                context_inputs: snapshot.context_inputs.clone(),
+                fallbacks: snapshot.fallbacks.clone(),
+                secrets: snapshot.secret_refs.clone(),
+                bundle: snapshot.bundle.clone(),
+            },
+            goal: snapshot.step_goal.clone(),
+            host: snapshot.host.clone(),
+            repos: snapshot.repos.clone(),
+            routes: snapshot.routes.clone(),
+            authority: snapshot.authority.clone(),
+        })
+        .collect();
+    Ok(WorkflowDoc {
+        name: workflow.to_string(),
+        goal: first.workflow_goal.clone(),
+        triggers: Vec::new(),
+        steps,
+        policies: WorkflowPolicies {
+            timeout_minutes: first.timeout_minutes,
+            max_runs_per_day: first.max_runs_per_day,
+            max_cost_per_run_usd: first.max_cost_per_run_usd,
+            max_cost_per_day_usd: first.max_cost_per_day_usd,
+            estimated_cost_per_run_usd: first.estimated_cost_per_run_usd,
+            side_effect_policy: first.side_effect_policy.clone(),
+            concurrency: first.concurrency,
+            substrate: first.substrate.clone(),
+            max_rounds: first.max_rounds,
+            max_elapsed_seconds: first.max_elapsed_seconds,
+            seats: first.seats,
+        },
+    })
+}
+
+/// Load the activation-time launch contract. Runtime never resolves a mutable
+/// Roster/catalog entry or reconstructs a composition from the desired TOML.
+fn load_launch_snapshot(ledger: &Ledger, run: &crate::workflow::WorkflowRunRow, step: &str) -> Result<LaunchSnapshot> {
+    let workflow = ledger.workflow_by_name(&run.workflow)?;
+    let row = ledger
+        .require_verified_launch_snapshots(&workflow.id, run.revision)?
+        .into_iter()
+        .find(|row| row.step == step)
+        .with_context(|| format!("workflow '{}' revision {} has no launch snapshot for step '{}'; activate the revision before execution", run.workflow, run.revision, step))?;
+    let snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)
+        .with_context(|| format!("launch snapshot for step '{step}' is not valid JSON"))?;
+    if snapshot.workflow_id != workflow.id || snapshot.revision != run.revision || snapshot.step != step || row.digest != snapshot.digest {
+        bail!("launch snapshot for step '{step}' has mismatched workflow, revision, step, or digest");
+    }
+    snapshot.verify_digest()?;
+    Ok(snapshot)
+}
 // --- run-group state --------------------------------------------------------
 
 pub const RUN_STATES: &[&str] = &[
@@ -1384,7 +1472,7 @@ fn execute_claimed(
     run: &crate::workflow::WorkflowRunRow,
 ) -> Result<serde_json::Value> {
     let run_id = run.id.as_str();
-    let doc = load_document(ledger, &run.workflow, run.revision)?;
+    let doc = load_pinned_document(ledger, &run.workflow, run.revision)?;
     let started = Instant::now();
 
     let mut current = doc.steps[0].name.clone();
@@ -1419,7 +1507,8 @@ fn execute_claimed(
             break ("stopped", Some(guard.clone()), "workflow_run_stopped");
         }
 
-        match run_step(plane, ledger, run, &doc, step)? {
+        let snapshot = load_launch_snapshot(ledger, run, &step.name)?;
+        match run_step(plane, ledger, run, &doc, step, &snapshot)? {
             StepDisposition::Failed(error) => {
                 break ("failed", Some(error), "workflow_run_failed");
             }
@@ -1595,30 +1684,29 @@ fn fired_guard(
     Ok(Some(detail))
 }
 
-fn agent_spec_from(agent: &StepAgent) -> AgentSpec {
+fn agent_spec_from(snapshot: &LaunchSnapshot) -> AgentSpec {
     AgentSpec {
-        version: agent.version,
-        harness: agent.harness.clone(),
-        model: agent.model.clone(),
-        role: None,
-        skills: Vec::new(),
-        provider: agent.provider.clone(),
+        version: snapshot.agent_revision,
+        harness: snapshot.harness.clone(),
+        model: snapshot.model.clone(),
+        role: snapshot.role.clone(),
+        skills: snapshot.skills.clone(),
+        provider: snapshot.provider.clone(),
         auth: None,
-        bin: agent.bin.clone(),
-        args: agent.args.clone(),
-        secrets: agent.secrets.clone(),
+        bin: snapshot.bin.clone(),
+        args: snapshot.args.clone(),
+        secrets: snapshot.secret_refs.clone(),
         checkout_secrets: Vec::new(),
         optional_secrets: Vec::new(),
         policy: Default::default(),
         roster: None,
     }
 }
-
 /// Roster v0.2 resolved bundle consumption: the bundle's AGENTS.md joins the
 /// commission and its digest is recorded as provenance. A declared-but-
 /// missing bundle fails honestly instead of launching a different agent.
-fn load_bundle(agent: &StepAgent) -> Result<Option<(String, String)>> {
-    let Some(bundle) = &agent.bundle else {
+fn load_bundle(snapshot: &LaunchSnapshot) -> Result<Option<(String, String)>> {
+    let Some(bundle) = &snapshot.bundle else {
         return Ok(None);
     };
     let path = PathBuf::from(bundle).join("AGENTS.md");
@@ -1626,14 +1714,21 @@ fn load_bundle(agent: &StepAgent) -> Result<Option<(String, String)>> {
         .with_context(|| format!("roster bundle AGENTS.md at {}", path.display()))?;
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+    if snapshot.bundle_digest.as_deref() != Some(digest.as_str()) {
+        bail!(
+            "roster bundle digest changed for agent {}: expected {}, found {}",
+            snapshot.name,
+            snapshot.bundle_digest.as_deref().unwrap_or("-"),
+            digest,
+        );
+    }
     Ok(Some((text, digest)))
 }
-
 /// The step commission: workflow + step goals plus the mechanical completion
 /// contract projected from config (declared outcomes, authority labels).
 /// Projection, not judgment — every semantic token here comes from the
 /// pinned document.
-fn commission(doc: &WorkflowDoc, step: &WorkflowStep, bundle_agents_md: Option<&str>) -> String {
+fn commission(doc: &WorkflowDoc, step: &WorkflowStep, snapshot: &LaunchSnapshot, bundle_agents_md: Option<&str>) -> String {
     let mut card = String::new();
     if let Some(agents_md) = bundle_agents_md {
         card.push_str(agents_md.trim_end());
@@ -1643,6 +1738,9 @@ fn commission(doc: &WorkflowDoc, step: &WorkflowStep, bundle_agents_md: Option<&
         "# Workflow step commission\n\nWorkflow: {} — {}\nStep: {}\n\n{}\n",
         doc.name, doc.goal, step.name, step.goal
     ));
+    card.push_str("\n## Resolved composition (activation snapshot)\n```json\n");
+    card.push_str(&serde_json::to_string_pretty(snapshot).expect("snapshot serializes"));
+    card.push_str("\n```\n");
     card.push_str("\n## Completion contract\n");
     if step.routes.len() >= 2 {
         let outcomes: Vec<&str> = step.routes.keys().map(String::as_str).collect();
@@ -1733,6 +1831,7 @@ fn run_step(
     run: &crate::workflow::WorkflowRunRow,
     doc: &WorkflowDoc,
     step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
 ) -> Result<StepDisposition> {
     let attempt = ledger.next_workflow_attempt(&run.id)?;
     let attempt_dir = plane
@@ -1741,14 +1840,14 @@ fn run_step(
         .join(&run.id)
         .join(format!("attempt-{attempt}-{}", step.name));
     std::fs::create_dir_all(&attempt_dir)?;
-    let agent_json = serde_json::to_string(&step.agent)?;
+    let agent_json = serde_json::to_string(snapshot)?;
     let step_run_id = ledger.create_workflow_step_run(
         &run.id,
         &step.name,
         attempt,
         &agent_json,
         &step.goal,
-        &step.authority,
+        &snapshot.authority,
         &attempt_dir.to_string_lossy(),
     )?;
     ledger.set_workflow_run_current_step(&run.id, &step.name)?;
@@ -1796,11 +1895,11 @@ fn run_step(
         )))
     };
 
-    let bundle = match load_bundle(&step.agent) {
+    let bundle = match load_bundle(snapshot) {
         Ok(b) => b,
         Err(e) => return fail(format!("{e:#}"), &none),
     };
-    let agent = agent_spec_from(&step.agent);
+    let agent = agent_spec_from(snapshot);
     let hermetic = match agent.auth_class() {
         Ok(AuthClass::Api) => true,
         Ok(AuthClass::Subscription) => false,
@@ -1819,7 +1918,7 @@ fn run_step(
         Err(e) => return fail(format!("build_command: {e:#}"), &none),
     };
     let mut secrets = Vec::new();
-    for name in &step.agent.secrets {
+    for name in &snapshot.secret_refs {
         match std::env::var(name) {
             Ok(value) => secrets.push((name.clone(), value)),
             Err(_) => return fail(format!("secret env var '{name}' not set"), &none),
@@ -1882,7 +1981,7 @@ fn run_step(
         Err(e) => return fail(format!("acquire: {e:#}"), &none),
     };
 
-    let card = commission(doc, step, bundle.as_ref().map(|(text, _)| text.as_str()));
+    let card = commission(doc, step, snapshot, bundle.as_ref().map(|(text, _)| text.as_str()));
     let run_context = serde_json::json!({
         "workflow_run_id": run.id,
         "workflow": run.workflow,
@@ -1890,8 +1989,10 @@ fn run_step(
         "step": step.name,
         "attempt": attempt,
         "trigger": { "kind": run.trigger_kind, "dedupe_key": run.dedupe_key },
-        "agent": &step.agent,
-        "authority": &step.authority,
+        "agent": snapshot,
+        "launch_snapshot_digest": snapshot.digest,
+        "authority": &snapshot.authority,
+        "authority_digest": snapshot.authority_digest,
         "bundle_agents_md_sha256": bundle.as_ref().map(|(_, digest)| digest.clone()),
     })
     .to_string();
@@ -2126,14 +2227,14 @@ fn run_step(
                 }
             }
             let (authority, inherited) = match &decl.authority {
-                None => (step.authority.clone(), true),
+                None => (snapshot.authority.clone(), true),
                 Some(declared) => {
-                    if let Some(excess) = declared.iter().find(|a| !step.authority.contains(a)) {
+                    if let Some(excess) = declared.iter().find(|a| !snapshot.authority.contains(a)) {
                         return fail(
                             format!(
                                 "child agent '{}' declares authority {excess:?} beyond its \
                                  parent step grant {:?}; children inherit or narrow, never broaden",
-                                decl.name, step.authority
+                                decl.name, snapshot.authority
                             ),
                             &parsed.stats,
                         );
@@ -2309,6 +2410,8 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
     )?;
     let status = ledger.workflow_run_status(run_id)?;
     let events = ledger.workflow_run_events(run_id)?;
+    let workflow = ledger.workflow_by_name(&run.workflow)?;
+    let launch_snapshots = ledger.launch_snapshots_for_revision(&workflow.id, run.revision)?;
     let steps = ledger
         .workflow_step_runs(run_id)?
         .into_iter()
@@ -2322,6 +2425,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
     Ok(serde_json::json!({
         "run": run,
         "document": document,
+        "launch_snapshots": launch_snapshots,
         "status": status,
         "events": events,
         "steps": steps,

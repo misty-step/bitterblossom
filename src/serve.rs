@@ -1490,15 +1490,26 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
             ))
         }
         "activate" => {
-            let revision = args.get("revision").and_then(|v| v.as_i64());
-            Ok((
-                200,
-                serde_json::to_value(ledger.activate_workflow_with_reserved_routes(
-                    name,
-                    revision,
-                    &ingress::task_webhook_routes(plane),
-                )?)?,
-            ))
+            let revision = match args.get("revision") {
+                None => None,
+                Some(serde_json::Value::Number(value)) => {
+                    Some(value.as_i64().context("revision must be an integer")?)
+                }
+                Some(_) => bail!("revision must be an integer"),
+            };
+            let workflow = ledger.activate_workflow_with_reserved_routes(
+                name,
+                revision,
+                &ingress::task_webhook_routes(plane),
+            )?;
+            let snapshots = workflow
+                .active_revision
+                .map(|revision| ledger.launch_snapshots_for_revision(&workflow.id, revision))
+                .transpose()?
+                .unwrap_or_default();
+            let mut value = serde_json::to_value(workflow)?;
+            value["launch_snapshots"] = serde_json::to_value(snapshots)?;
+            Ok((200, value))
         }
         "pause" => {
             let reason = args

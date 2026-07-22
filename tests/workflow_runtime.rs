@@ -450,6 +450,10 @@ bin = "{}"
     assert_eq!(view["status"]["detail"], "applied the fix and verified");
     let steps = view["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2);
+    assert_eq!(view["launch_snapshots"].as_array().unwrap().len(), 2);
+    assert!(view["launch_snapshots"][0]["snapshot"].is_object(), "snapshot readback is structured, not opaque JSON text");
+    assert_eq!(view["launch_snapshots"][0]["snapshot"]["fallback_index"], 0);
+    assert_eq!(view["launch_snapshots"][0]["digest"], view["launch_snapshots"][0]["snapshot"]["digest"]);
     assert_eq!(steps[0]["step"], "triage");
     assert_eq!(steps[0]["attempt"], 1);
     assert_eq!(steps[0]["state"], "succeeded");
@@ -2196,11 +2200,11 @@ substrate = "sprites"
     assert!(stderr.contains("host"), "{stderr}");
 }
 
-/// Additive-fields contract: a pinned snapshot stored BEFORE host/repos
-/// existed (no such keys in its JSON) still validates and executes
-/// unchanged on the substrate it declared.
+/// A legacy revision without a launch snapshot is historical but not executable.
+/// Resume and rollback refuse it; explicit activation is the only reactivation
+/// path and materializes a verified snapshot without rewriting source bytes.
 #[test]
-fn pre_host_field_pinned_snapshot_stays_valid_and_executes() {
+fn legacy_missing_snapshot_requires_explicit_reactivation() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     write_plane(root);
@@ -2226,26 +2230,52 @@ bin = "{}"
         ),
     );
     create_and_activate(root, &seed, "elder");
-    // a snapshot exactly as the pre-host-field binary stored it: no host,
-    // no repos keys anywhere
     let old_doc = format!(
         r#"{{"name":"elder","goal":"Pre-host-field snapshot.","step":[{{"name":"work","agent":{{"name":"stub","version":1,"harness":"command","model":"stub","bin":"{}"}},"goal":"Do the work."}}]}}"#,
         stub.display()
     );
     let rev = insert_prerule_revision(root, "elder", &old_doc);
+    let original_bytes = old_doc.clone();
+    let run_id = "wfr-legacy-missing";
     {
         let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+        let wf_id: String = conn.query_row("SELECT id FROM workflows WHERE name = 'elder'", [], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE workflows SET active_revision = ?1, state = 'active' WHERE name = 'elder'", [rev]).unwrap();
         conn.execute(
-            "UPDATE workflows SET active_revision = ?1 WHERE name = 'elder'",
-            [rev],
-        )
-        .unwrap();
+            "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, created_at) VALUES (?1, ?2, ?3, 'test', NULL, NULL, '2026-01-01T00:00:00Z')",
+            rusqlite::params![run_id, wf_id, rev],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workflow_run_status (run_id, state, updated_at) VALUES (?1, 'queued', '2026-01-01T00:00:00Z')",
+            [run_id],
+        ).unwrap();
     }
+    let refused = bb(root, &["workflow", "execute", run_id, "--json"]);
+    assert!(!refused.status.success(), "legacy execution unexpectedly launched");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("activate the revision"), "{stderr}");
+    assert!(stderr.contains("launch snapshot"), "{stderr}");
+
+    bb_ok(root, &["workflow", "pause", "elder"]);
+    let refused = bb(root, &["workflow", "resume", "elder"]);
+    assert!(!refused.status.success(), "resume silently accepted a legacy revision");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("reactivation"));
+    let refused = bb(root, &["workflow", "rollback", "elder", "--to", &rev.to_string()]);
+    assert!(!refused.status.success(), "rollback synthesized a legacy snapshot");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("verified launch snapshot"));
+
+    let activated = bb_json(root, &["workflow", "activate", "elder", "--revision", &rev.to_string(), "--json"]);
+    assert_eq!(activated["state"], "active", "{activated}");
+    assert_eq!(activated["launch_snapshots"].as_array().unwrap().len(), 1);
+    let after_bytes: String = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap()
+        .query_row("SELECT document FROM workflow_revisions WHERE workflow_id = (SELECT id FROM workflows WHERE name = 'elder') AND revision = ?1", [rev], |r| r.get(0)).unwrap();
+    assert_eq!(after_bytes, original_bytes, "reactivation rewrote immutable legacy document bytes");
     let run_id = accept_test_run(root, "elder");
     let view = execute(root, &run_id);
     assert_eq!(view["status"]["state"], "succeeded", "{view}");
     assert_eq!(view["status"]["detail"], "still valid");
 }
+
 
 #[test]
 fn terminal_child_cost_is_checked_before_success() {
