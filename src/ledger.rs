@@ -366,6 +366,12 @@ impl Ledger {
         // migrate additively; the partial unique index must be created after
         // the column exists, so it lives here rather than in schema.sql.
         ensure_column(&conn, "workflow_runs", "dedupe_key", "TEXT")?;
+        ensure_column(&conn, "workflow_runs", "activation_id", "TEXT")?;
+        conn.execute(
+            "UPDATE workflow_runs SET activation_id = 'legacy-' || id WHERE activation_id IS NULL",
+            [],
+        )?;
+        ensure_column(&conn, "workflows", "active_activation_id", "TEXT")?;
         // Pin the conservative reservation on every accepted workflow run so
         // later policy revisions never revalue queued/running capacity.
         let had_workflow_estimate = column_exists(&conn, "workflow_runs", "estimated_cost_usd")?;

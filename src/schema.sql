@@ -232,6 +232,7 @@ CREATE TABLE IF NOT EXISTS workflows (
   name TEXT NOT NULL UNIQUE,
   state TEXT NOT NULL,             -- draft | active | paused | archived
   active_revision INTEGER,         -- NULL until first activation
+  active_activation_id TEXT,       -- immutable typed activation identity
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -265,6 +266,25 @@ CREATE TABLE IF NOT EXISTS workflow_step_launch_snapshots (
 CREATE INDEX IF NOT EXISTS workflow_step_launch_snapshots_revision
   ON workflow_step_launch_snapshots(workflow_id, revision);
 
+-- One immutable typed activation per workflow revision. The compiled payload
+-- pins the document, composition, grants, adapter catalog, and capabilities.
+CREATE TABLE IF NOT EXISTS workflow_activations (
+  activation_id TEXT PRIMARY KEY,
+  workflow_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  compiled_json TEXT NOT NULL,
+  compiled_digest TEXT NOT NULL,
+  preflight_json TEXT NOT NULL,
+  activated_by_principal TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (workflow_id, revision),
+  FOREIGN KEY (workflow_id, revision)
+    REFERENCES workflow_revisions(workflow_id, revision)
+);
+CREATE INDEX IF NOT EXISTS workflow_activations_workflow
+  ON workflow_activations(workflow_id, revision);
+
+
 CREATE TABLE IF NOT EXISTS workflow_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workflow_id TEXT NOT NULL REFERENCES workflows(id),
@@ -286,6 +306,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL REFERENCES workflows(id),
   revision INTEGER NOT NULL,
+  activation_id TEXT,           -- immutable typed activation identity; legacy rows are backfilled
   trigger_kind TEXT NOT NULL,
   payload TEXT,
   dedupe_key TEXT,

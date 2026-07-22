@@ -1864,6 +1864,12 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                     .transpose()?
                     .unwrap_or_default();
                 value["launch_snapshots"] = serde_json::to_value(snapshots)?;
+                value["activation"] = wf
+                    .active_revision
+                    .and_then(|revision| ledger.activation_snapshot(&name, revision).ok())
+                    .map(serde_json::to_value)
+                    .transpose()?
+                    .unwrap_or(serde_json::Value::Null);
                 println!("{}", serde_json::to_string_pretty(&value)?);
             } else {
                 print_workflow(&wf, false)?;

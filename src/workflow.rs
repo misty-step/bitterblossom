@@ -16,7 +16,7 @@
 //! What a workflow's goal means, and what its agents do, stays outside the
 //! spine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -51,6 +51,8 @@ fn lifecycle_allowed(from: &str, to: &str) -> bool {
 pub struct WorkflowDoc {
     pub name: String,
     pub goal: String,
+    #[serde(default, skip_serializing_if = "GrantSpec::is_empty")]
+    pub grant: GrantSpec,
     #[serde(default, rename = "trigger", skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<WorkflowTrigger>,
     #[serde(rename = "step")]
@@ -77,40 +79,347 @@ pub struct WorkflowTrigger {
 /// The agent binding is a materialized snapshot (name, version, harness,
 /// model), not a reference to mutable config: a revision must stay
 /// launch-meaningful even after agent files change or disappear.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A typed grant request/ceiling. Empty sets mean "not specified" and are
+/// resolved by intersection with the narrower catalog and composition grants.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowStep {
-    pub name: String,
-    pub agent: StepAgent,
-    pub goal: String,
-    /// Substrate execution target for this step's attempts, with task-land
-    /// `workspace.host` semantics: required when `policies.substrate` needs
-    /// a real host (sprites/tailnet), ignored by the local substrate.
-    /// Absent on a local/dev plane behaves exactly as before this field
-    /// existed. Optional and additive: pre-host pinned snapshots stay valid.
+pub struct GrantSpec {
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub operations: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub capabilities: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub repositories: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_prefixes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    /// Repositories the substrate materializes into the step workspace
-    /// before execution — the same `RepoSpec` shape and semantics as
-    /// task-land `workspace.repos` (url, ref, optional pinned commit,
-    /// optional lock-file blob pins).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub repos: Vec<crate::spec::RepoSpec>,
-    /// Outcome -> next step name, or "done". Empty means: successful
-    /// completion of this terminal step implies `completed`. Two or more
-    /// routes make the step *branching*: its agent must supply exactly one
-    /// of these declared outcomes through the completion tool
-    /// (`OUTCOME.json`); the plane never infers an outcome from prose.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub routes: BTreeMap<String, String>,
-    /// Opaque authority grant labels this step runs under. Mechanism only:
-    /// the plane records them and enforces that dynamic child agents
-    /// inherit or narrow (subset) — it never interprets what a label means.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub authority: Vec<String>,
+    pub powder_scope: Option<String>,
+}
+
+impl GrantSpec {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    fn intersect_set(
+        left: &BTreeSet<String>,
+        right: &BTreeSet<String>,
+        field: &str,
+    ) -> Result<BTreeSet<String>> {
+        if left.is_empty() {
+            return Ok(right.clone());
+        }
+        if right.is_empty() {
+            return Ok(left.clone());
+        }
+        let intersection: BTreeSet<String> = left.intersection(right).cloned().collect();
+        if intersection.is_empty() {
+            bail!("grant {field} intersection is empty");
+        }
+        Ok(intersection)
+    }
+
+    fn intersect_prefixes(left: &[String], right: &[String]) -> Result<Vec<String>> {
+        if left.is_empty() {
+            return Ok(right.to_vec());
+        }
+        if right.is_empty() {
+            return Ok(left.to_vec());
+        }
+        let mut intersection = BTreeSet::new();
+        for left_prefix in left {
+            for right_prefix in right {
+                if left_prefix.starts_with(right_prefix) {
+                    intersection.insert(left_prefix.clone());
+                } else if right_prefix.starts_with(left_prefix) {
+                    intersection.insert(right_prefix.clone());
+                }
+            }
+        }
+        if intersection.is_empty() {
+            bail!("grant branch_prefixes intersection is empty");
+        }
+        Ok(intersection.into_iter().collect())
+    }
+
+    fn intersect(&self, other: &Self) -> Result<Self> {
+        let powder_scope = match (&self.powder_scope, &other.powder_scope) {
+            (Some(left), Some(right)) if left != right => {
+                bail!("grant powder_scope intersection is empty")
+            }
+            (Some(left), _) => Some(left.clone()),
+            (_, Some(right)) => Some(right.clone()),
+            _ => None,
+        };
+        Ok(Self {
+            operations: Self::intersect_set(&self.operations, &other.operations, "operations")?,
+            capabilities: Self::intersect_set(
+                &self.capabilities,
+                &other.capabilities,
+                "capabilities",
+            )?,
+            repositories: Self::intersect_set(
+                &self.repositories,
+                &other.repositories,
+                "repositories",
+            )?,
+            branch_prefixes: Self::intersect_prefixes(
+                &self.branch_prefixes,
+                &other.branch_prefixes,
+            )?,
+            powder_scope,
+        })
+    }
+
+    fn contains(&self, requested: &Self) -> bool {
+        (self.operations.is_empty()
+            || requested.operations.is_empty()
+            || requested.operations.is_subset(&self.operations))
+            && (self.capabilities.is_empty()
+                || requested.capabilities.is_empty()
+                || requested.capabilities.is_subset(&self.capabilities))
+            && (self.repositories.is_empty()
+                || requested.repositories.is_empty()
+                || requested.repositories.is_subset(&self.repositories))
+            && (self.branch_prefixes.is_empty()
+                || requested.branch_prefixes.is_empty()
+                || requested.branch_prefixes.iter().all(|requested_prefix| {
+                    self.branch_prefixes
+                        .iter()
+                        .any(|catalog_prefix| requested_prefix.starts_with(catalog_prefix))
+                }))
+            && (self.powder_scope.is_none()
+                || requested.powder_scope.is_none()
+                || requested.powder_scope == self.powder_scope)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum TypedBinding {
+    String(String),
+    Integer(i64),
+    Boolean(bool),
+    Json(serde_json::Value),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectSpec {
+    pub adapter: String,
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, TypedBinding>,
+    #[serde(default, skip_serializing_if = "GrantSpec::is_empty")]
+    pub grant: GrantSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalSpec {
+    pub principal: String,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "GrantSpec::is_empty")]
+    pub grant: GrantSpec,
+}
+
+/// Closed action vocabulary. The enum is flattened into one `WorkflowStep`;
+/// there is deliberately no parallel state machine or adapter runtime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorkflowAction {
+    Agent {
+        goal: String,
+        composition: CompositionSpec,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        results: Vec<String>,
+    },
+    Effect {
+        effect: EffectSpec,
+    },
+    Approval {
+        approval: ApprovalSpec,
+    },
+}
+
+/// The existing composition contract remains the agent binding used by the
+/// typed Agent action. The alias keeps runtime/readback code source-compatible
+/// while the declaration surface is now action-tagged.
+pub type CompositionSpec = StepAgent;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowStep {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "GrantSpec::is_empty")]
+    pub grant: GrantSpec,
+    /// Stable display/evidence order for migrated capability labels; grant
+    /// enforcement itself uses the typed set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) authority_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<crate::spec::RepoSpec>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub routes: BTreeMap<String, String>,
+    #[serde(flatten)]
+    pub action: WorkflowAction,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowStepWire {
+    name: String,
+    #[serde(default)]
+    grant: GrantSpec,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    repos: Vec<crate::spec::RepoSpec>,
+    #[serde(default)]
+    routes: BTreeMap<String, String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    goal: Option<String>,
+    #[serde(default)]
+    composition: Option<CompositionSpec>,
+    #[serde(default)]
+    results: Vec<String>,
+    #[serde(default)]
+    effect: Option<EffectSpec>,
+    #[serde(default)]
+    approval: Option<ApprovalSpec>,
+    /// Pre-typed PR #1015 declaration. It is imported into Agent rather than
+    /// retained as an opaque authority path.
+    #[serde(default)]
+    agent: Option<CompositionSpec>,
+    #[serde(default)]
+    authority: Vec<String>,
+    #[serde(default)]
+    authority_order: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for WorkflowStep {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = WorkflowStepWire::deserialize(deserializer)?;
+        let mut grant = wire.grant;
+        let authority_order = if wire.authority_order.is_empty() {
+            wire.authority.clone()
+        } else {
+            wire.authority_order.clone()
+        };
+        if !wire.authority.is_empty() {
+            if !grant.capabilities.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "step authority is opaque; use grant.capabilities",
+                ));
+            }
+            grant.capabilities = wire.authority.into_iter().collect();
+        }
+        let action = match wire.kind.as_deref() {
+            Some("agent") => WorkflowAction::Agent {
+                goal: wire
+                    .goal
+                    .ok_or_else(|| serde::de::Error::custom("agent action requires goal"))?,
+                composition: wire
+                    .composition
+                    .ok_or_else(|| serde::de::Error::custom("agent action requires composition"))?,
+                results: wire.results,
+            },
+            Some("effect") => WorkflowAction::Effect {
+                effect: wire.effect.ok_or_else(|| {
+                    serde::de::Error::custom("effect action requires effect binding")
+                })?,
+            },
+            Some("approval") => WorkflowAction::Approval {
+                approval: wire.approval.ok_or_else(|| {
+                    serde::de::Error::custom("approval action requires approval binding")
+                })?,
+            },
+            Some(other) => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown workflow action kind '{other}' (known: agent, effect, approval)"
+                )))
+            }
+            None if wire.agent.is_some() => WorkflowAction::Agent {
+                goal: wire
+                    .goal
+                    .ok_or_else(|| serde::de::Error::custom("legacy agent step requires goal"))?,
+                composition: wire.agent.expect("checked above"),
+                results: wire.results,
+            },
+            None => {
+                return Err(serde::de::Error::custom(
+                    "workflow step requires tagged action kind",
+                ))
+            }
+        };
+        Ok(Self {
+            name: wire.name,
+            grant,
+            authority_order,
+            host: wire.host,
+            repos: wire.repos,
+            routes: wire.routes,
+            action,
+        })
+    }
+}
+
+impl WorkflowStep {
+    pub fn agent(&self) -> Option<&StepAgent> {
+        match &self.action {
+            WorkflowAction::Agent { composition, .. } => Some(composition),
+            _ => None,
+        }
+    }
+
+    pub fn agent_mut(&mut self) -> Option<&mut StepAgent> {
+        match &mut self.action {
+            WorkflowAction::Agent { composition, .. } => Some(composition),
+            _ => None,
+        }
+    }
+
+    pub fn goal(&self) -> &str {
+        match &self.action {
+            WorkflowAction::Agent { goal, .. } => goal.as_str(),
+            _ => "",
+        }
+    }
+
+    pub fn action_kind(&self) -> &'static str {
+        match self.action {
+            WorkflowAction::Agent { .. } => "agent",
+            WorkflowAction::Effect { .. } => "effect",
+            WorkflowAction::Approval { .. } => "approval",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepAgent {
     pub name: String,
@@ -173,6 +482,17 @@ pub struct AgentFallback {
     pub secrets: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterDescriptor {
+    pub adapter: String,
+    pub version: u32,
+    pub operation: String,
+    pub enforcement: String,
+    pub capabilities: BTreeSet<String>,
+    pub digest: String,
+}
+
 /// Immutable, secret-free executable launch contract accepted for one
 /// workflow step. It is persisted separately from the desired document; a
 /// desired revision never carries this field. Paths and names are references,
@@ -180,6 +500,14 @@ pub struct AgentFallback {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchSnapshot {
+    #[serde(default)]
+    pub action_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<WorkflowAction>,
+    #[serde(default)]
+    pub grant: GrantSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterDescriptor>,
     pub workflow_id: String,
     pub revision: i64,
     pub step: String,
@@ -300,6 +628,106 @@ impl LaunchSnapshot {
     }
 }
 
+pub const EFFECT_ADAPTER_CATALOG_REVISION: &str = "effects-v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledAction {
+    pub step: String,
+    pub kind: String,
+    pub grant: GrantSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterDescriptor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, TypedBinding>,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledWorkflow {
+    pub steps: Vec<CompiledAction>,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationEvidence {
+    pub checks: Vec<String>,
+    pub secret_free: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationPlan {
+    pub activation_id: String,
+    pub workflow_id: String,
+    pub revision: i64,
+    pub document_digest: String,
+    pub compiled: CompiledWorkflow,
+    pub launch_snapshots: Vec<LaunchSnapshot>,
+    pub adapter_catalog_revision: String,
+    pub composition_digests: Vec<String>,
+    pub capability_digests: Vec<String>,
+    pub preflight: ActivationEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationSnapshot {
+    pub activation_id: String,
+    pub workflow_id: String,
+    pub revision: i64,
+    pub document_digest: String,
+    pub compiled: CompiledWorkflow,
+    pub composition_digests: Vec<String>,
+    pub capability_digests: Vec<String>,
+    pub adapter_catalog_revision: String,
+    pub preflight: ActivationEvidence,
+    pub digest: String,
+}
+
+impl ActivationSnapshot {
+    fn from_plan(plan: &ActivationPlan) -> Result<Self> {
+        let mut snapshot = Self {
+            activation_id: plan.activation_id.clone(),
+            workflow_id: plan.workflow_id.clone(),
+            revision: plan.revision,
+            document_digest: plan.document_digest.clone(),
+            compiled: plan.compiled.clone(),
+            composition_digests: plan.composition_digests.clone(),
+            capability_digests: plan.capability_digests.clone(),
+            adapter_catalog_revision: plan.adapter_catalog_revision.clone(),
+            preflight: plan.preflight.clone(),
+            digest: String::new(),
+        };
+        let mut value = serde_json::to_value(&snapshot)?;
+        value
+            .as_object_mut()
+            .expect("activation snapshot object")
+            .remove("digest");
+        snapshot.digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?));
+        Ok(snapshot)
+    }
+
+    pub fn verify_digest(&self) -> Result<()> {
+        let mut value = serde_json::to_value(self)?;
+        value
+            .as_object_mut()
+            .expect("activation snapshot object")
+            .remove("digest");
+        let expected = format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?));
+        if self.digest != expected {
+            bail!(
+                "activation snapshot digest mismatch: stored {}, recomputed {}",
+                self.digest,
+                expected
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowPolicies {
@@ -352,7 +780,9 @@ impl WorkflowPolicies {
 }
 
 fn validate_composition(step: &WorkflowStep, workflow: &str) -> Result<()> {
-    let agent = &step.agent;
+    let agent = step
+        .agent()
+        .context("agent action required for composition validation")?;
     if agent.model.trim().is_empty() {
         bail!(
             "workflow '{workflow}': step '{}' agent model is required",
@@ -561,28 +991,275 @@ fn validate_effort(effort: Option<&str>, workflow: &str, step: &str) -> Result<(
     }
     Ok(())
 }
+fn validate_grant_spec(label: &str, grant: &GrantSpec) -> Result<()> {
+    for (field, values) in [
+        ("operations", &grant.operations),
+        ("capabilities", &grant.capabilities),
+        ("repositories", &grant.repositories),
+    ] {
+        if values
+            .iter()
+            .any(|value| value.trim().is_empty() || value.chars().any(char::is_whitespace))
+        {
+            bail!("{label}.{field} contains a malformed entry");
+        }
+    }
+    if grant.branch_prefixes.iter().any(|prefix| {
+        prefix.trim().is_empty() || matches!(prefix.as_str(), "main" | "master" | "default")
+    }) {
+        bail!("{label}.branch_prefixes contains a default or malformed branch");
+    }
+    if grant
+        .powder_scope
+        .as_deref()
+        .is_some_and(|scope| scope.trim().is_empty() || scope.contains("$") || scope.contains("="))
+    {
+        bail!("{label}.powder_scope is malformed or carries secret environment data");
+    }
+    Ok(())
+}
+
+fn validate_effect_spec(doc: &WorkflowDoc, step: &WorkflowStep, effect: &EffectSpec) -> Result<()> {
+    validate_grant_spec(
+        &format!("workflow step '{}' effect.grant", step.name),
+        &effect.grant,
+    )?;
+    if effect.adapter.trim().is_empty() || effect.operation.trim().is_empty() {
+        bail!(
+            "workflow '{}': step '{}' effect adapter and operation are required",
+            doc.name,
+            step.name
+        );
+    }
+    if matches!(effect.adapter.as_str(), "shell" | "plugin")
+        || effect.adapter.contains("shell")
+        || effect.adapter.contains("plugin")
+    {
+        bail!(
+            "workflow '{}': step '{}' effect adapter '{}' is a shell/plugin authority",
+            doc.name,
+            step.name,
+            effect.adapter
+        );
+    }
+    if effect.plugin.is_some()
+        || effect
+            .bindings
+            .keys()
+            .any(|key| matches!(key.as_str(), "command" | "plugin" | "bin" | "secret_env"))
+    {
+        bail!(
+            "workflow '{}': step '{}' effect binding declares shell/plugin authority",
+            doc.name,
+            step.name
+        );
+    }
+    if effect.secret_env.is_some() {
+        bail!(
+            "workflow '{}': step '{}' effect binding cannot declare secret_env",
+            doc.name,
+            step.name
+        );
+    }
+    if effect.enforcement.as_deref() != Some("enforced") {
+        bail!(
+            "workflow '{}': step '{}' effect '{}' has unsupported enforcement (required: enforced)",
+            doc.name,
+            step.name,
+            effect.operation
+        );
+    }
+    if effect
+        .branch
+        .as_deref()
+        .is_some_and(|branch| matches!(branch, "main" | "master" | "default"))
+    {
+        bail!(
+            "workflow '{}': step '{}' effect cannot target the default branch",
+            doc.name,
+            step.name
+        );
+    }
+    if effect.bindings.keys().any(|key| {
+        key.to_ascii_lowercase().contains("secret") || key.to_ascii_lowercase().contains("env")
+    }) {
+        bail!(
+            "workflow '{}': step '{}' effect binding cannot carry secret environment values",
+            doc.name,
+            step.name
+        );
+    }
+    if effect
+        .repository
+        .as_deref()
+        .is_some_and(|repo| repo.trim().is_empty())
+    {
+        bail!(
+            "workflow '{}': step '{}' effect repository binding is malformed",
+            doc.name,
+            step.name
+        );
+    }
+    Ok(())
+}
+
+fn validate_approval_spec(
+    doc: &WorkflowDoc,
+    step: &WorkflowStep,
+    approval: &ApprovalSpec,
+) -> Result<()> {
+    validate_grant_spec(
+        &format!("workflow step '{}' approval.grant", step.name),
+        &approval.grant,
+    )?;
+    if approval.principal.trim().is_empty() || approval.question.trim().is_empty() {
+        bail!(
+            "workflow '{}': step '{}' approval requires principal and question",
+            doc.name,
+            step.name
+        );
+    }
+    if approval.principal.eq_ignore_ascii_case("agent") {
+        bail!(
+            "workflow '{}': step '{}' approval principal cannot be the agent",
+            doc.name,
+            step.name
+        );
+    }
+    if approval.timeout_seconds == Some(0) {
+        bail!(
+            "workflow '{}': step '{}' approval timeout must be positive",
+            doc.name,
+            step.name
+        );
+    }
+    Ok(())
+}
+
+fn adapter_descriptor(effect: &EffectSpec) -> Result<AdapterDescriptor> {
+    let operations = match effect.adapter.as_str() {
+        "powder" => ["claim", "work_log", "read"].as_slice(),
+        "git" => ["branch", "read"].as_slice(),
+        "github" => ["review", "read"].as_slice(),
+        "canary" => ["annotate", "read"].as_slice(),
+        other => bail!("unknown effect adapter '{other}' (known: powder, git, github, canary)"),
+    };
+    if !operations.contains(&effect.operation.as_str()) {
+        bail!(
+            "effect adapter '{}' does not support operation '{}'",
+            effect.adapter,
+            effect.operation
+        );
+    }
+    let capabilities = [
+        format!("effect:{}", effect.adapter),
+        format!("operation:{}", effect.operation),
+    ]
+    .into_iter()
+    .collect();
+    let mut descriptor = AdapterDescriptor {
+        adapter: effect.adapter.clone(),
+        version: 1,
+        operation: effect.operation.clone(),
+        enforcement: "enforced".to_string(),
+        capabilities,
+        digest: String::new(),
+    };
+    let value = serde_json::to_vec(
+        &serde_json::json!({"adapter": descriptor.adapter, "version": descriptor.version, "operation": descriptor.operation, "enforcement": descriptor.enforcement, "capabilities": descriptor.capabilities}),
+    )?;
+    descriptor.digest = format!("{:x}", Sha256::digest(value));
+    Ok(descriptor)
+}
+
+fn compile_action(doc: &WorkflowDoc, step: &WorkflowStep) -> Result<CompiledAction> {
+    let mut adapter = None;
+    let mut bindings = BTreeMap::new();
+    let grant = match &step.action {
+        WorkflowAction::Agent { .. } => doc.grant.intersect(&step.grant)?,
+        WorkflowAction::Approval { approval } => doc
+            .grant
+            .intersect(&step.grant)?
+            .intersect(&approval.grant)?,
+        WorkflowAction::Effect { effect } => {
+            let descriptor = adapter_descriptor(effect)?;
+            let mut effect_request = effect.grant.clone();
+            if let Some(repository) = &effect.repository {
+                effect_request.repositories.insert(repository.clone());
+            }
+            if let Some(branch) = &effect.branch {
+                effect_request.branch_prefixes.push(branch.clone());
+            }
+            let operation = GrantSpec {
+                operations: [effect.operation.clone()].into_iter().collect(),
+                ..GrantSpec::default()
+            };
+            let requested = doc
+                .grant
+                .intersect(&step.grant)?
+                .intersect(&effect_request)?
+                .intersect(&operation)?;
+            let catalog = GrantSpec {
+                operations: operation.operations.clone(),
+                capabilities: descriptor.capabilities.clone(),
+                ..GrantSpec::default()
+            };
+            if !catalog.contains(&requested) {
+                bail!(
+                    "workflow '{}': effect step '{}' widens the adapter grant",
+                    doc.name,
+                    step.name
+                );
+            }
+            adapter = Some(descriptor);
+            bindings = effect.bindings.clone();
+            requested.intersect(&catalog)?
+        }
+    };
+    if grant.operations.is_empty() && matches!(step.action, WorkflowAction::Effect { .. }) {
+        bail!(
+            "workflow '{}': effect step '{}' has no permitted operation",
+            doc.name,
+            step.name
+        );
+    }
+    let kind = step.action_kind().to_string();
+    let mut value = serde_json::json!({"step": step.name, "kind": kind, "grant": grant, "adapter": adapter, "bindings": bindings});
+    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?));
+    value["digest"] = serde_json::Value::String(digest.clone());
+    Ok(CompiledAction {
+        step: step.name.clone(),
+        kind,
+        grant,
+        adapter,
+        bindings,
+        digest,
+    })
+}
+
 impl WorkflowDoc {
     /// Rich composition is admitted only when the adapter has a verified
     /// native enforcement path. Prompt projection is not enforcement.
     pub(crate) fn validate_adapter_capabilities(&self) -> Result<()> {
         for step in &self.steps {
+            let Some(agent) = step.agent() else { continue };
             let mut unsupported = Vec::new();
-            if step.agent.effort.is_some() {
+            if agent.effort.is_some() {
                 unsupported.push("effort");
             }
-            if !step.agent.skills.is_empty() {
+            if !agent.skills.is_empty() {
                 unsupported.push("skills");
             }
-            if !step.agent.mcps.is_empty() {
+            if !agent.mcps.is_empty() {
                 unsupported.push("mcps");
             }
-            if !step.agent.tool_rules.is_empty() {
+            if !agent.tool_rules.is_empty() {
                 unsupported.push("tool_rules");
             }
-            if !step.agent.context_inputs.is_empty() {
+            if !agent.context_inputs.is_empty() {
                 unsupported.push("context_inputs");
             }
-            for (index, fallback) in step.agent.fallbacks.iter().enumerate() {
+            for fallback in &agent.fallbacks {
                 if fallback.effort.is_some() {
                     unsupported.push("fallbacks.effort");
                 }
@@ -598,10 +1275,9 @@ impl WorkflowDoc {
                 if !fallback.context_inputs.is_empty() {
                     unsupported.push("fallbacks.context_inputs");
                 }
-                let _ = index;
             }
             if !unsupported.is_empty() {
-                bail!("adapter '{}' cannot enforce unsupported fields before launch for step '{}': {}", step.agent.harness, step.name, unsupported.join(", "));
+                bail!("adapter '{}' cannot enforce unsupported fields before launch for step '{}': {}", agent.harness, step.name, unsupported.join(", "));
             }
         }
         Ok(())
@@ -628,6 +1304,7 @@ impl WorkflowDoc {
         if self.goal.trim().is_empty() {
             bail!("workflow '{}': goal is required", self.name);
         }
+        validate_grant_spec("workflow grant", &self.grant)?;
         for (field, value) in [
             ("max_cost_per_run_usd", self.policies.max_cost_per_run_usd),
             ("max_cost_per_day_usd", self.policies.max_cost_per_day_usd),
@@ -703,33 +1380,44 @@ impl WorkflowDoc {
                     step.name
                 );
             }
-            if step.goal.trim().is_empty() {
-                bail!(
-                    "workflow '{}': step '{}' goal is required",
-                    self.name,
-                    step.name
-                );
+            validate_grant_spec(&format!("workflow step '{}' grant", step.name), &step.grant)?;
+            match &step.action {
+                WorkflowAction::Agent {
+                    goal, composition, ..
+                } => {
+                    if goal.trim().is_empty() {
+                        bail!(
+                            "workflow '{}' : step '{}' goal is required",
+                            self.name,
+                            step.name
+                        );
+                    }
+                    if composition.name.trim().is_empty()
+                        || composition.harness.trim().is_empty()
+                        || composition.version == 0
+                    {
+                        bail!(
+                            "workflow '{}' : step '{}' agent needs name, version >= 1, harness",
+                            self.name,
+                            step.name
+                        );
+                    }
+                    if !crate::harness::HARNESSES.contains(&composition.harness.as_str()) {
+                        bail!(
+                            "workflow '{}' : step '{}' agent harness '{}' is unknown (known: {})",
+                            self.name,
+                            step.name,
+                            composition.harness,
+                            crate::harness::HARNESSES.join(", ")
+                        );
+                    }
+                    validate_composition(step, &self.name)?;
+                }
+                WorkflowAction::Effect { effect } => validate_effect_spec(self, step, effect)?,
+                WorkflowAction::Approval { approval } => {
+                    validate_approval_spec(self, step, approval)?
+                }
             }
-            if step.agent.name.trim().is_empty()
-                || step.agent.harness.trim().is_empty()
-                || step.agent.version == 0
-            {
-                bail!(
-                    "workflow '{}': step '{}' agent needs name, version >= 1, harness",
-                    self.name,
-                    step.name
-                );
-            }
-            if !crate::harness::HARNESSES.contains(&step.agent.harness.as_str()) {
-                bail!(
-                    "workflow '{}': step '{}' agent harness '{}' is unknown (known: {})",
-                    self.name,
-                    step.name,
-                    step.agent.harness,
-                    crate::harness::HARNESSES.join(", ")
-                );
-            }
-            validate_composition(step, &self.name)?;
         }
         if let Some(substrate) = self.policies.substrate.as_deref() {
             crate::substrate::for_task(substrate)
@@ -851,20 +1539,34 @@ impl WorkflowDoc {
             // reports cost_usd — on a cost-blind harness the cap would be a
             // silent no-op (NULL cost is never laundered into zero spend).
             for step in self.steps_on_cycles() {
-                if !crate::harness::reports_cost(&step.agent.harness) {
-                    bail!(
+                if let Some(agent) = step.agent() {
+                    if !crate::harness::reports_cost(&agent.harness) {
+                        bail!(
                         "workflow '{}': max_cost_per_run_usd is the only cycle guard, but step \
                          '{}' on a cycle runs cost-blind harness '{}' (no guaranteed cost_usd — \
                          the cap could never fire); declare policies.max_rounds or \
                          policies.max_elapsed_seconds, or use a cost-reporting harness",
                         self.name,
                         step.name,
-                        step.agent.harness
+                        agent.harness
                     );
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    pub fn compile_actions(&self) -> Result<CompiledWorkflow> {
+        self.validate()?;
+        let steps = self
+            .steps
+            .iter()
+            .map(|step| compile_action(self, step))
+            .collect::<Result<Vec<_>>>()?;
+        let value = serde_json::to_vec(&steps)?;
+        let digest = format!("{:x}", Sha256::digest(&value));
+        Ok(CompiledWorkflow { steps, digest })
     }
 
     /// Materialize one immutable executable launch contract per step. The
@@ -874,6 +1576,16 @@ impl WorkflowDoc {
         &self,
         workflow_id: &str,
         revision: i64,
+    ) -> Result<Vec<LaunchSnapshot>> {
+        let compiled = self.compile_actions()?;
+        self.materialize_launch_snapshots_from_compiled(workflow_id, revision, &compiled)
+    }
+
+    fn materialize_launch_snapshots_from_compiled(
+        &self,
+        workflow_id: &str,
+        revision: i64,
+        compiled: &CompiledWorkflow,
     ) -> Result<Vec<LaunchSnapshot>> {
         self.validate()?;
         if let Some(seats) = self.policies.seats {
@@ -886,11 +1598,23 @@ impl WorkflowDoc {
             .iter()
             .enumerate()
             .map(|(step_index, step)| {
+                let compiled_action = compiled
+                    .steps
+                    .get(step_index)
+                    .with_context(|| format!("compiled action missing step '{}'", step.name))?;
+                if compiled_action.step != step.name {
+                    bail!(
+                        "compiled action step mismatch: expected '{}', found '{}'",
+                        step.name,
+                        compiled_action.step
+                    );
+                }
                 self.materialize_step_launch_snapshot(
                     workflow_id,
                     revision,
                     step_index as u32,
                     step,
+                    compiled_action,
                 )
             })
             .collect()
@@ -902,11 +1626,11 @@ impl WorkflowDoc {
         revision: i64,
         step_index: u32,
         step: &WorkflowStep,
+        compiled: &CompiledAction,
     ) -> Result<LaunchSnapshot> {
-        let bundle_digest = step
-            .agent
-            .bundle
-            .as_deref()
+        let agent = step.agent();
+        let bundle_digest = agent
+            .and_then(|agent| agent.bundle.as_deref())
             .map(|bundle| {
                 let path = std::path::Path::new(bundle).join("AGENTS.md");
                 let content = std::fs::read(&path)
@@ -914,51 +1638,66 @@ impl WorkflowDoc {
                 Ok::<_, anyhow::Error>(format!("{:x}", Sha256::digest(content)))
             })
             .transpose()?;
-        let adapter_bytes = serde_json::to_vec(&serde_json::json!({
-            "harness": step.agent.harness,
-            "bin": step.agent.bin,
-            "args": step.agent.args,
-            "provider": step.agent.provider,
-            "model": step.agent.model,
-            "effort": step.agent.effort,
-            "skills": step.agent.skills,
-            "mcps": step.agent.mcps,
-            "tool_rules": step.agent.tool_rules,
-            "context_inputs": step.agent.context_inputs,
-        }))?;
-        let authority_digest =
-            format!("{:x}", Sha256::digest(serde_json::to_vec(&step.authority)?));
+        let adapter_bytes = serde_json::to_vec(&step.action)?;
+        let mut authority = if step.authority_order.is_empty() {
+            compiled
+                .grant
+                .capabilities
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            step.authority_order
+                .iter()
+                .filter(|capability| compiled.grant.capabilities.contains(*capability))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for capability in &compiled.grant.capabilities {
+            if !authority.iter().any(|existing| existing == capability) {
+                authority.push(capability.clone());
+            }
+        }
+        let authority_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&authority)?));
         let mut snapshot = LaunchSnapshot {
+            action_kind: step.action_kind().to_string(),
+            action: Some(step.action.clone()),
+            grant: compiled.grant.clone(),
+            adapter: compiled.adapter.clone(),
             workflow_id: workflow_id.to_string(),
             revision,
             step: step.name.clone(),
             step_index,
             workflow_goal: self.goal.clone(),
-            step_goal: step.goal.clone(),
+            step_goal: step.goal().to_string(),
             host: step.host.clone(),
             repos: step.repos.clone(),
             routes: step.routes.clone(),
             substrate: self.policies.substrate.clone(),
             timeout_minutes: self.policies.timeout_minutes,
-            name: step.agent.name.clone(),
-            role: step.agent.role.clone(),
-            agent_revision: step.agent.version,
-            harness: step.agent.harness.clone(),
-            bin: step.agent.bin.clone(),
-            args: step.agent.args.clone(),
+            name: agent
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| step.name.clone()),
+            role: agent.and_then(|a| a.role.clone()),
+            agent_revision: agent.map(|a| a.version).unwrap_or(1),
+            harness: agent
+                .map(|a| a.harness.clone())
+                .unwrap_or_else(|| step.action_kind().to_string()),
+            bin: agent.and_then(|a| a.bin.clone()),
+            args: agent.map(|a| a.args.clone()).unwrap_or_default(),
             adapter_digest: format!("{:x}", Sha256::digest(adapter_bytes)),
-            bundle: step.agent.bundle.clone(),
+            bundle: agent.and_then(|a| a.bundle.clone()),
             bundle_digest,
-            provider: step.agent.provider.clone(),
-            model: step.agent.model.clone(),
-            effort: step.agent.effort.clone(),
-            skills: step.agent.skills.clone(),
-            mcps: step.agent.mcps.clone(),
-            tool_rules: step.agent.tool_rules.clone(),
-            context_inputs: step.agent.context_inputs.clone(),
-            authority: step.authority.clone(),
+            provider: agent.and_then(|a| a.provider.clone()),
+            model: agent.map(|a| a.model.clone()).unwrap_or_default(),
+            effort: agent.and_then(|a| a.effort.clone()),
+            skills: agent.map(|a| a.skills.clone()).unwrap_or_default(),
+            mcps: agent.map(|a| a.mcps.clone()).unwrap_or_default(),
+            tool_rules: agent.map(|a| a.tool_rules.clone()).unwrap_or_default(),
+            context_inputs: agent.map(|a| a.context_inputs.clone()).unwrap_or_default(),
+            authority,
             authority_digest,
-            secret_refs: step.agent.secrets.clone(),
+            secret_refs: agent.map(|a| a.secrets.clone()).unwrap_or_default(),
             seats: self.policies.seats,
             max_runs_per_day: self.policies.max_runs_per_day,
             max_cost_per_run_usd: self.policies.max_cost_per_run_usd,
@@ -968,7 +1707,7 @@ impl WorkflowDoc {
             max_rounds: self.policies.max_rounds,
             max_elapsed_seconds: self.policies.max_elapsed_seconds,
             concurrency: self.policies.concurrency,
-            fallbacks: step.agent.fallbacks.clone(),
+            fallbacks: agent.map(|a| a.fallbacks.clone()).unwrap_or_default(),
             fallback_index: 0,
             digest: String::new(),
         };
@@ -1215,32 +1954,43 @@ impl WorkflowDoc {
         let doc = Self {
             name: task.name.clone(),
             goal: task.card.trim().to_string(),
+            grant: GrantSpec {
+                capabilities: task.agent.policy.authority.clone().into_iter().collect(),
+                ..GrantSpec::default()
+            },
             triggers,
             steps: vec![WorkflowStep {
                 name: "execute".into(),
-                agent: StepAgent {
-                    name: task.agent_name.clone(),
-                    version: task.agent.version,
-                    harness: task.agent.harness.clone(),
-                    model: task.agent.model.clone(),
-                    role: task.agent.role.clone(),
-                    bin: task.agent.bin.clone(),
-                    args: task.agent.args.clone(),
-                    provider: task.agent.provider.clone(),
-                    effort: None,
-                    skills: task.agent.skills.clone(),
-                    mcps: Vec::new(),
-                    tool_rules: Vec::new(),
-                    context_inputs: Vec::new(),
-                    fallbacks: Vec::new(),
-                    secrets: task.agent.secrets.clone(),
-                    bundle: None,
+                grant: GrantSpec {
+                    capabilities: task.agent.policy.authority.clone().into_iter().collect(),
+                    ..GrantSpec::default()
                 },
-                goal: task.card.trim().to_string(),
+                action: WorkflowAction::Agent {
+                    goal: task.card.trim().to_string(),
+                    composition: StepAgent {
+                        name: task.agent_name.clone(),
+                        version: task.agent.version,
+                        harness: task.agent.harness.clone(),
+                        model: task.agent.model.clone(),
+                        role: task.agent.role.clone(),
+                        bin: task.agent.bin.clone(),
+                        args: task.agent.args.clone(),
+                        provider: task.agent.provider.clone(),
+                        effort: None,
+                        skills: task.agent.skills.clone(),
+                        mcps: Vec::new(),
+                        tool_rules: Vec::new(),
+                        context_inputs: Vec::new(),
+                        fallbacks: Vec::new(),
+                        secrets: task.agent.secrets.clone(),
+                        bundle: None,
+                    },
+                    results: Vec::new(),
+                },
                 host: task.spec.workspace.host.clone(),
                 repos: task.spec.workspace.repos.clone(),
                 routes: BTreeMap::new(),
-                authority: task.agent.policy.authority.clone().into_iter().collect(),
+                authority_order: Vec::new(),
             }],
             policies: WorkflowPolicies {
                 timeout_minutes: task.spec.budget.timeout_minutes,
@@ -1267,8 +2017,20 @@ pub struct WorkflowRow {
     pub name: String,
     pub state: String,
     pub active_revision: Option<i64>,
+    pub active_activation_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkflowActivationRow {
+    pub activation_id: String,
+    pub workflow_id: String,
+    pub revision: i64,
+    pub snapshot: ActivationSnapshot,
+    pub digest: String,
+    pub activated_by_principal: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1324,6 +2086,7 @@ pub struct WorkflowRunRow {
     pub workflow_id: String,
     pub workflow: String,
     pub revision: i64,
+    pub activation_id: String,
     pub trigger_kind: String,
     pub payload: Option<String>,
     pub dedupe_key: Option<String>,
@@ -1366,10 +2129,11 @@ pub enum ImportOutcome {
 }
 
 const WORKFLOW_SELECT: &str =
-    "SELECT id, name, state, active_revision, created_at, updated_at FROM workflows";
+    "SELECT id, name, state, active_revision, active_activation_id, created_at, updated_at FROM workflows";
 const REVISION_SELECT: &str =
     "SELECT workflow_id, revision, document, source, note, created_at FROM workflow_revisions";
-const WORKFLOW_RUN_SELECT: &str = "SELECT r.id, r.workflow_id, w.name, r.revision, \
+const WORKFLOW_RUN_SELECT: &str =
+    "SELECT r.id, r.workflow_id, w.name, r.revision, r.activation_id, \
      r.trigger_kind, r.payload, r.dedupe_key, r.estimated_cost_usd, r.created_at \
      FROM workflow_runs r JOIN workflows w ON w.id = r.workflow_id";
 
@@ -1379,8 +2143,9 @@ fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRow> {
         name: r.get(1)?,
         state: r.get(2)?,
         active_revision: r.get(3)?,
-        created_at: r.get(4)?,
-        updated_at: r.get(5)?,
+        active_activation_id: r.get(4)?,
+        created_at: r.get(5)?,
+        updated_at: r.get(6)?,
     })
 }
 
@@ -1412,19 +2177,60 @@ fn row_to_launch_snapshot(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowLau
     })
 }
 fn row_to_workflow_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRunRow> {
+    let id: String = r.get(0)?;
+    let activation_id = r
+        .get::<_, Option<String>>(4)?
+        .unwrap_or_else(|| format!("legacy-{id}"));
     Ok(WorkflowRunRow {
-        id: r.get(0)?,
+        id,
         workflow_id: r.get(1)?,
         workflow: r.get(2)?,
         revision: r.get(3)?,
-        trigger_kind: r.get(4)?,
-        payload: r.get(5)?,
-        dedupe_key: r.get(6)?,
-        estimated_cost_usd: r.get(7)?,
-        created_at: r.get(8)?,
+        activation_id,
+        trigger_kind: r.get(5)?,
+        payload: r.get(6)?,
+        dedupe_key: r.get(7)?,
+        estimated_cost_usd: r.get(8)?,
+        created_at: r.get(9)?,
     })
 }
 
+/// Load and verify the immutable activation pinned by one accepted run.
+/// Execution and readback refuse a run whose identity no longer names that
+/// activation, rather than silently projecting a different revision.
+pub(crate) fn verified_activation_for_run(
+    ledger: &Ledger,
+    run: &WorkflowRunRow,
+) -> Result<ActivationSnapshot> {
+    let activation = ledger
+        .activation_snapshot(&run.workflow, run.revision)
+        .with_context(|| {
+            format!(
+                "workflow run '{}' has no verified activation for workflow '{}' revision {}",
+                run.id, run.workflow, run.revision
+            )
+        })?;
+    activation.verify_digest()?;
+    if activation.workflow_id != run.workflow_id || activation.revision != run.revision {
+        bail!(
+            "workflow run '{}' activation snapshot identity mismatch: expected workflow {} revision {}, found workflow {} revision {}",
+            run.id,
+            run.workflow_id,
+            run.revision,
+            activation.workflow_id,
+            activation.revision
+        );
+    }
+    if activation.activation_id != run.activation_id {
+        bail!(
+            "workflow run '{}' activation_id mismatch: run has {}, loaded activation has {}",
+            run.id,
+            run.activation_id,
+            activation.activation_id
+        );
+    }
+    Ok(activation)
+}
 impl Ledger {
     /// Run `body` inside one immediate (write-locking) transaction so
     /// concurrent revisions/activations serialize instead of interleaving.
@@ -1474,72 +2280,197 @@ impl Ledger {
         Ok(next)
     }
 
-    fn persist_launch_snapshots(
+    /// Build a typed activation plan from one immutable stored revision.
+    /// The same derivation is used at commit time so callers cannot smuggle a
+    /// different compiled grant, adapter, or launch snapshot into activation.
+    fn activation_plan_for_revision(
+        &self,
+        workflow: &WorkflowRow,
+        row: &WorkflowRevisionRow,
+    ) -> Result<ActivationPlan> {
+        let document_digest = format!("{:x}", Sha256::digest(row.document.as_bytes()));
+        let document = WorkflowDoc::from_canonical_json(&row.document).with_context(|| {
+            format!(
+                "workflow '{}' revision {} is not valid JSON",
+                workflow.name, row.revision
+            )
+        })?;
+        document.validate()?;
+        document.validate_adapter_capabilities()?;
+        let compiled = document.compile_actions()?;
+        let launch_snapshots = document.materialize_launch_snapshots_from_compiled(
+            &workflow.id,
+            row.revision,
+            &compiled,
+        )?;
+        let composition_digests = launch_snapshots
+            .iter()
+            .map(|snapshot| snapshot.adapter_digest.clone())
+            .collect::<Vec<_>>();
+        let capability_digests = compiled
+            .steps
+            .iter()
+            .map(|step| {
+                format!(
+                    "{:x}",
+                    Sha256::digest(serde_json::to_vec(&step.grant).expect("grant serialization"))
+                )
+            })
+            .collect::<Vec<_>>();
+        let activation_seed = format!(
+            "{}:{}:{}:{}",
+            workflow.id, row.revision, document_digest, compiled.digest
+        );
+        let activation_id = format!("act-{:x}", Sha256::digest(activation_seed.as_bytes()));
+        Ok(ActivationPlan {
+            activation_id,
+            workflow_id: workflow.id.clone(),
+            revision: row.revision,
+            document_digest,
+            compiled,
+            launch_snapshots,
+            adapter_catalog_revision: EFFECT_ADAPTER_CATALOG_REVISION.to_string(),
+            composition_digests,
+            capability_digests,
+            preflight: ActivationEvidence {
+                checks: vec![
+                    "document".into(),
+                    "composition".into(),
+                    "grants".into(),
+                    "adapter_catalog".into(),
+                    "capabilities".into(),
+                ],
+                secret_free: true,
+            },
+        })
+    }
+
+    /// Plan a typed activation without writing state. The plan contains only
+    /// secret-free composition, grant, catalog, capability, and preflight
+    /// digests; callers may review it before the atomic commit.
+    pub fn plan_activation(&self, name: &str, revision: Option<i64>) -> Result<ActivationPlan> {
+        let workflow = self.workflow_by_name(name)?;
+        let row = match revision {
+            Some(revision) => self.workflow_revision_row(&workflow.id, revision)?,
+            None => self.latest_workflow_revision(&workflow.id)?,
+        };
+        self.activation_plan_for_revision(&workflow, &row)
+    }
+
+    pub fn activation_snapshot(&self, name: &str, revision: i64) -> Result<ActivationSnapshot> {
+        let workflow = self.workflow_by_name(name)?;
+        let row: String = self.conn.query_row("SELECT compiled_json FROM workflow_activations WHERE workflow_id = ?1 AND revision = ?2", params![workflow.id, revision], |r| r.get(0)).context("activation snapshot is missing; activate the revision")?;
+        let snapshot: ActivationSnapshot = serde_json::from_str(&row)?;
+        snapshot.verify_digest()?;
+        Ok(snapshot)
+    }
+
+    pub fn activate_plan(&self, plan: &ActivationPlan) -> Result<WorkflowRow> {
+        self.activate_plan_with_reserved_routes(plan, &[])
+    }
+
+    fn activate_plan_with_reserved_routes(
+        &self,
+        plan: &ActivationPlan,
+        reserved_routes: &[String],
+    ) -> Result<WorkflowRow> {
+        self.workflow_tx(|| {
+            let workflow = self.workflow(&plan.workflow_id)?;
+            if !lifecycle_allowed(&workflow.state, "active") {
+                bail!(
+                    "workflow '{}' is {}; cannot activate",
+                    workflow.name,
+                    workflow.state
+                );
+            }
+            self.activate_plan_in_transaction(plan, reserved_routes, "active")
+        })
+    }
+
+    fn activate_plan_in_transaction(
+        &self,
+        plan: &ActivationPlan,
+        reserved_routes: &[String],
+        target_state: &str,
+    ) -> Result<WorkflowRow> {
+        let workflow = self.workflow(&plan.workflow_id)?;
+        let row = self.workflow_revision_row(&plan.workflow_id, plan.revision)?;
+        let document_digest = format!("{:x}", Sha256::digest(row.document.as_bytes()));
+        if document_digest != plan.document_digest {
+            bail!("activation plan document digest changed; re-plan before activation");
+        }
+        if plan.adapter_catalog_revision != EFFECT_ADAPTER_CATALOG_REVISION {
+            bail!("activation plan adapter catalog revision changed; re-plan before activation");
+        }
+        let canonical = self.activation_plan_for_revision(&workflow, &row)?;
+        if &canonical != plan {
+            bail!("activation plan payload changed; re-plan before activation");
+        }
+        let document = WorkflowDoc::from_canonical_json(&row.document)?;
+        self.validate_activation_routes(&workflow.id, &document, reserved_routes)?;
+        let activation = ActivationSnapshot::from_plan(&canonical)?;
+        if let Ok(existing) = self.activation_snapshot(&workflow.name, canonical.revision) {
+            if existing.digest != activation.digest
+                || existing.activation_id != activation.activation_id
+            {
+                bail!("immutable activation already exists with different compiled snapshot");
+            }
+        } else {
+            self.conn.execute(
+                "INSERT INTO workflow_activations (activation_id, workflow_id, revision, compiled_json, compiled_digest, preflight_json, activated_by_principal, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    activation.activation_id,
+                    canonical.workflow_id,
+                    canonical.revision,
+                    serde_json::to_string(&activation)?,
+                    activation.digest,
+                    serde_json::to_string(&activation.preflight)?,
+                    "local",
+                    now(),
+                ],
+            )?;
+        }
+        self.persist_launch_snapshots_from(
+            &canonical.workflow_id,
+            canonical.revision,
+            &canonical.launch_snapshots,
+        )?;
+        self.conn.execute(
+            "UPDATE workflows SET state = ?2, active_revision = ?3, active_activation_id = ?4, updated_at = ?5 WHERE id = ?1",
+            params![
+                canonical.workflow_id,
+                target_state,
+                canonical.revision,
+                activation.activation_id,
+                now(),
+            ],
+        )?;
+        self.workflow_audit(
+            &canonical.workflow_id,
+            "activated",
+            Some(&format!(
+                "revision {}; activation_id {}; digest {}",
+                canonical.revision, activation.activation_id, activation.digest
+            )),
+        )?;
+        self.workflow(&canonical.workflow_id)
+    }
+
+    fn persist_launch_snapshots_from(
         &self,
         workflow_id: &str,
         revision: i64,
-        doc: &WorkflowDoc,
-    ) -> Result<Vec<WorkflowLaunchSnapshotRow>> {
-        let snapshots = doc.materialize_launch_snapshots(workflow_id, revision)?;
-        let (state, reason) = self.launch_snapshot_state(workflow_id, revision)?;
-        if matches!(state, LaunchSnapshotState::Invalid) {
-            bail!("workflow revision {revision} has invalid existing launch snapshot; refusing to overwrite it: {}", reason.unwrap_or_else(|| "integrity check failed".to_string()));
-        }
-        for (step, snapshot) in doc.steps.iter().zip(&snapshots) {
+        snapshots: &[LaunchSnapshot],
+    ) -> Result<()> {
+        for snapshot in snapshots {
             let snapshot_json = serde_json::to_string(snapshot)?;
-            self.conn.execute(
-                "INSERT OR IGNORE INTO workflow_step_launch_snapshots
-                 (workflow_id, revision, step, snapshot_json, digest, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    workflow_id,
-                    revision,
-                    step.name,
-                    snapshot_json,
-                    snapshot.digest,
-                    now()
-                ],
-            )?;
-            let stored: (String, String) = self.conn.query_row(
-                "SELECT snapshot_json, digest FROM workflow_step_launch_snapshots
-                 WHERE workflow_id = ?1 AND revision = ?2 AND step = ?3",
-                params![workflow_id, revision, step.name],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            if stored.0 != serde_json::to_string(snapshot)? || stored.1 != snapshot.digest {
-                bail!("existing launch snapshot for workflow {workflow_id} revision {revision} step '{}' differs; refusing to replace immutable data", step.name);
+            self.conn.execute("INSERT OR IGNORE INTO workflow_step_launch_snapshots (workflow_id, revision, step, snapshot_json, digest, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![workflow_id, revision, snapshot.step, snapshot_json, snapshot.digest, now()])?;
+            let stored: (String, String) = self.conn.query_row("SELECT snapshot_json, digest FROM workflow_step_launch_snapshots WHERE workflow_id = ?1 AND revision = ?2 AND step = ?3", params![workflow_id, revision, snapshot.step], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            if stored.0 != snapshot_json || stored.1 != snapshot.digest {
+                bail!("existing launch snapshot for workflow {workflow_id} revision {revision} step '{}' differs; refusing to replace immutable data", snapshot.step);
             }
         }
-        self.require_verified_launch_snapshots(workflow_id, revision)
-    }
-
-    fn copy_launch_snapshots(
-        &self,
-        workflow_id: &str,
-        from_revision: i64,
-        to_revision: i64,
-    ) -> Result<Vec<WorkflowLaunchSnapshotRow>> {
-        let source = self.require_verified_launch_snapshots(workflow_id, from_revision)?;
-        for row in source {
-            let mut snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)?;
-            snapshot.revision = to_revision;
-            snapshot.digest = snapshot.digest_without_self()?;
-            let snapshot_json = serde_json::to_string(&snapshot)?;
-            self.conn.execute(
-                "INSERT INTO workflow_step_launch_snapshots
-                 (workflow_id, revision, step, snapshot_json, digest, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    workflow_id,
-                    to_revision,
-                    row.step,
-                    snapshot_json,
-                    snapshot.digest,
-                    now()
-                ],
-            )?;
-        }
-        self.require_verified_launch_snapshots(workflow_id, to_revision)
+        Ok(())
     }
 
     pub fn launch_snapshots_for_revision(
@@ -1858,44 +2789,12 @@ impl Ledger {
         revision: Option<i64>,
         reserved_routes: &[String],
     ) -> Result<WorkflowRow> {
-        self.workflow_tx(|| {
-            let wf = self.workflow_by_name(name)?;
-            if !lifecycle_allowed(&wf.state, "active") {
-                bail!("workflow '{name}' is {}; cannot activate", wf.state);
-            }
-            let revision = match revision {
-                Some(r) => {
-                    self.workflow_revision_row(&wf.id, r)?;
-                    r
-                }
-                None => self.latest_workflow_revision(&wf.id)?.revision,
-            };
-            let revision_row = self.workflow_revision_row(&wf.id, revision)?;
-            let doc =
-                WorkflowDoc::from_canonical_json(&revision_row.document).with_context(|| {
-                    format!("workflow '{name}' revision {revision} is not valid JSON")
-                })?;
-            doc.validate()?;
-            doc.validate_adapter_capabilities()?;
-            self.validate_activation_routes(&wf.id, &doc, reserved_routes)?;
-            let snapshots = self.persist_launch_snapshots(&wf.id, revision, &doc)?;
-            let digest = snapshots
-                .iter()
-                .map(|snapshot| snapshot.digest.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            self.conn.execute(
-                "UPDATE workflows SET state = 'active', active_revision = ?2, updated_at = ?3
-                 WHERE id = ?1",
-                params![wf.id, revision, now()],
-            )?;
-            self.workflow_audit(
-                &wf.id,
-                "activated",
-                Some(&format!("revision {revision}; launch_digests={digest}")),
-            )?;
-            self.workflow(&wf.id)
-        })
+        let workflow = self.workflow_by_name(name)?;
+        if !lifecycle_allowed(&workflow.state, "active") {
+            bail!("workflow '{name}' is {}; cannot activate", workflow.state);
+        }
+        let plan = self.plan_activation(name, revision)?;
+        self.activate_plan_with_reserved_routes(&plan, reserved_routes)
     }
 
     /// Pause suppresses new run acceptance; active work elsewhere finishes.
@@ -1969,8 +2868,8 @@ impl Ledger {
         })
     }
 
-    /// Rollback re-activates an earlier snapshot as a NEW revision — history
-    /// is never rewritten. The workflow must already have an activation.
+    /// Rollback re-activates an earlier document as a NEW revision and
+    /// activation. History is never rewritten, and paused workflows stay paused.
     pub fn rollback_workflow(&self, name: &str, to_revision: i64) -> Result<(WorkflowRow, i64)> {
         self.rollback_workflow_with_reserved_routes(name, to_revision, &[])
     }
@@ -1991,39 +2890,44 @@ impl Ledger {
             }
             let snapshot = self.workflow_revision_row(&wf.id, to_revision)?;
             self.require_verified_launch_snapshots(&wf.id, to_revision).with_context(|| {
-                format!("rollback source revision {to_revision} requires an existing verified launch snapshot")
+                format!(
+                    "rollback source revision {to_revision} requires an existing verified launch snapshot"
+                )
             })?;
-            // The rollback door mirrors the execution door: a snapshot that
-            // fails CURRENT validation (possibly stored by an older binary
-            // with weaker rules) must not be re-activated. History stays
-            // readable; only re-activation is refused.
-            let document = WorkflowDoc::from_canonical_json(&snapshot.document)
+            // Historical declarations remain readable, but rollback is a fresh
+            // activation door: current validation and typed compilation must
+            // succeed before any new revision or activation state commits.
+            let _document = WorkflowDoc::from_canonical_json(&snapshot.document)
                 .and_then(|doc| {
                     doc.validate()?;
                     doc.validate_adapter_capabilities()?;
                     Ok(doc)
                 })
                 .with_context(|| {
-                    format!("revision {to_revision} fails current validation; it cannot be re-activated by rollback")
+                    format!(
+                        "revision {to_revision} fails current validation; it cannot be re-activated by rollback"
+                    )
                 })?;
-            self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             let revision = self.insert_revision(
                 &wf.id,
                 &snapshot.document,
                 "rollback",
                 Some(&format!("rollback to revision {to_revision}")),
             )?;
-            self.copy_launch_snapshots(&wf.id, to_revision, revision)?;
-            self.conn.execute(
-                "UPDATE workflows SET active_revision = ?2, updated_at = ?3 WHERE id = ?1",
-                params![wf.id, revision, now()],
+            let revision_row = self.workflow_revision_row(&wf.id, revision)?;
+            let plan = self.activation_plan_for_revision(&wf, &revision_row)?;
+            let target_state = wf.state.as_str();
+            let activated = self.activate_plan_in_transaction(
+                &plan,
+                reserved_routes,
+                target_state,
             )?;
             self.workflow_audit(
                 &wf.id,
                 "rolled_back",
                 Some(&format!("revision {to_revision} -> {revision}")),
             )?;
-            Ok((self.workflow(&wf.id)?, revision))
+            Ok((activated, revision))
         })
     }
 
@@ -2107,6 +3011,28 @@ impl Ledger {
                     });
                 }
             };
+            let activation_id = match wf.active_activation_id.clone() {
+                Some(id) => id,
+                None => {
+                    let reason = format!("workflow '{name}' active revision {revision} requires a typed activation snapshot");
+                    self.workflow_audit(&wf.id, "run_denied", Some(&reason))?;
+                    return Ok(AcceptOutcome::Denied { workflow: wf.name.clone(), kind: "activation_snapshot".to_string(), reason });
+                }
+            };
+            let activation = match self.activation_snapshot(&wf.name, revision) {
+                Ok(snapshot) if snapshot.activation_id == activation_id => snapshot,
+                Ok(_) => {
+                    let reason = format!("workflow '{name}' active activation id does not match revision {revision}");
+                    self.workflow_audit(&wf.id, "run_denied", Some(&reason))?;
+                    return Ok(AcceptOutcome::Denied { workflow: wf.name.clone(), kind: "activation_snapshot".to_string(), reason });
+                }
+                Err(error) => {
+                    let reason = format!("workflow '{name}' active revision {revision} requires a verified activation snapshot: {error:#}");
+                    self.workflow_audit(&wf.id, "workflow_needs_attention", Some(&reason))?;
+                    return Ok(AcceptOutcome::Denied { workflow: wf.name.clone(), kind: "activation_snapshot".to_string(), reason });
+                }
+            };
+            let _ = activation;
             let deny = |kind: &str, reason: String| -> Result<AcceptOutcome> {
                 if kind == "workflow_daily_ceiling" {
                     self.workflow_audit(&wf.id, kind, Some(&reason))?;
@@ -2176,9 +3102,9 @@ impl Ledger {
 
             let id = format!("wfr-{}", new_id());
             self.conn.execute(
-                "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, estimated_cost_usd, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![id, wf.id, revision, trigger_kind, payload, dedupe_key, estimate, ts],
+                "INSERT INTO workflow_runs (id, workflow_id, revision, activation_id, trigger_kind, payload, dedupe_key, estimated_cost_usd, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![id, wf.id, revision, wf.active_activation_id.clone().context("active workflow has no typed activation")?, trigger_kind, payload, dedupe_key, estimate, ts],
             )?;
             self.conn.execute(
                 "INSERT INTO workflow_run_status (run_id, state, updated_at)
@@ -2188,7 +3114,7 @@ impl Ledger {
             self.workflow_audit(
                 &wf.id,
                 "run_accepted",
-                Some(&format!("run {id} pinned revision {revision}")),
+                Some(&format!("run {id} pinned revision {revision}; activation_id {}", wf.active_activation_id.as_deref().unwrap_or("legacy"))),
             )?;
             self.workflow_run_audit(
                 &id,
@@ -2551,6 +3477,11 @@ pub fn workflow_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
         Some(revision) => Some(revision_document_view(ledger, name, revision)?),
         None => None,
     };
+    let activation = wf
+        .active_revision
+        .and_then(|revision| ledger.activation_snapshot(name, revision).ok())
+        .map(serde_json::to_value)
+        .transpose()?;
     let (snapshot_state, snapshot_error, launch_snapshots) = match wf.active_revision {
         Some(revision) => {
             let (state, error, snapshots) = launch_snapshot_projection(ledger, &wf.id, revision)?;
@@ -2569,6 +3500,7 @@ pub fn workflow_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
         "snapshot_state": snapshot_state,
         "snapshot_error": snapshot_error,
         "launch_snapshots": launch_snapshots,
+        "activation": activation,
     }))
 }
 
@@ -2577,6 +3509,12 @@ pub fn revision_view(ledger: &Ledger, name: &str, revision: i64) -> Result<serde
     let document: serde_json::Value = serde_json::from_str(&row.document)?;
     let (snapshot_state, snapshot_error, launch_snapshots) =
         launch_snapshot_projection(ledger, &row.workflow_id, row.revision)?;
+    let activation = ledger
+        .activation_snapshot(name, revision)
+        .ok()
+        .map(serde_json::to_value)
+        .transpose()?;
+
     Ok(serde_json::json!({
         "workflow": name,
         "revision": row.revision,
@@ -2587,12 +3525,35 @@ pub fn revision_view(ledger: &Ledger, name: &str, revision: i64) -> Result<serde
         "snapshot_state": snapshot_state,
         "snapshot_error": snapshot_error,
         "launch_snapshots": launch_snapshots,
+        "activation": activation,
     }))
+}
+
+pub(crate) fn project_document_for_readback(value: &mut serde_json::Value) {
+    if let Some(steps) = value.get_mut("step").and_then(|v| v.as_array_mut()) {
+        for step in steps {
+            let Some(object) = step.as_object_mut() else {
+                continue;
+            };
+            if object.get("kind").and_then(|v| v.as_str()) == Some("agent") {
+                let composition = object.get("composition").cloned();
+                let goal = object.get("goal").cloned();
+                if let Some(composition) = composition {
+                    object.insert("agent".into(), composition);
+                }
+                if let Some(goal) = goal {
+                    object.insert("goal".into(), goal);
+                }
+            }
+        }
+    }
 }
 
 fn revision_document_view(ledger: &Ledger, name: &str, revision: i64) -> Result<serde_json::Value> {
     let row = ledger.workflow_revision(name, revision)?;
-    Ok(serde_json::from_str(&row.document)?)
+    let mut value: serde_json::Value = serde_json::from_str(&row.document)?;
+    project_document_for_readback(&mut value);
+    Ok(value)
 }
 
 /// One workflow run plus the exact document it pinned at acceptance — the
@@ -2600,6 +3561,7 @@ fn revision_document_view(ledger: &Ledger, name: &str, revision: i64) -> Result<
 /// activations unchanged.
 pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
     let run = ledger.workflow_run(run_id)?;
+    let activation = verified_activation_for_run(ledger, &run)?;
     let document = revision_document_view(ledger, &run.workflow, run.revision)?;
     let workflow = ledger.workflow_by_name(&run.workflow)?;
     let (snapshot_state, snapshot_error, launch_snapshots) =
@@ -2607,6 +3569,7 @@ pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "run": run,
         "document": document,
+        "activation": activation,
         "snapshot_state": snapshot_state,
         "snapshot_error": snapshot_error,
         "launch_snapshots": launch_snapshots,

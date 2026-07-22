@@ -421,7 +421,10 @@ rm -rf "$self_drill_tmp"
 # admission/recovery mechanism delta plus the workflow composition contract
 # and execution engine. The added schema, pinning, fallback, and policy checks
 # remain substrate mechanism; workload judgment stays in tasks and lane cards.
-SPINE_LOC_CAP=23552
+# 2026-07-22: raised to the next 256-line boundary (24576) for the typed
+# workflow activation mechanism expansion: checked grants, action preflight,
+# and immutable activation identity.
+SPINE_LOC_CAP=24576
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
