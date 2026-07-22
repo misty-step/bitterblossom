@@ -19,7 +19,8 @@ pub struct AttentionDebt {
 }
 
 pub fn scan(plane: &Plane, ledger: &Ledger, now: OffsetDateTime) -> Result<AttentionDebt> {
-    let dead_letters = ledger.list_dead_letters()?;
+    let open_dlq = usize::try_from(ledger.open_dead_letter_count(None)?)
+        .map_err(|_| anyhow::anyhow!("open dead-letter count exceeds usize"))?;
     let runs = ledger.list_runs(None, None)?;
     let notification_counts = ledger.notification_outbox_counts()?;
     let mut parked_tasks = 0usize;
@@ -42,7 +43,6 @@ pub fn scan(plane: &Plane, ledger: &Ledger, now: OffsetDateTime) -> Result<Atten
             stale_runs += 1;
         }
     }
-    let open_dlq = dead_letters.iter().filter(|d| d.status == "open").count();
     let notification_pending = outbox_total(&notification_counts, "pending");
     let notification_failed = outbox_total(&notification_counts, "failed");
     Ok(build_debt(
@@ -56,7 +56,8 @@ pub fn scan(plane: &Plane, ledger: &Ledger, now: OffsetDateTime) -> Result<Atten
 }
 
 pub fn scan_task(ledger: &Ledger, task: &str, now: OffsetDateTime) -> Result<AttentionDebt> {
-    let dead_letters = ledger.list_dead_letters()?;
+    let open_dlq = usize::try_from(ledger.open_dead_letter_count(Some(task))?)
+        .map_err(|_| anyhow::anyhow!("open dead-letter count exceeds usize"))?;
     let runs = ledger.list_runs(Some(task), None)?;
     let parked_tasks = usize::from(ledger.parked_reason(task)?.is_some());
     let mut stale_runs = 0usize;
@@ -73,10 +74,6 @@ pub fn scan_task(ledger: &Ledger, task: &str, now: OffsetDateTime) -> Result<Att
             stale_runs += 1;
         }
     }
-    let open_dlq = dead_letters
-        .iter()
-        .filter(|d| d.task == task && d.status == "open")
-        .count();
     Ok(build_debt(
         open_dlq,
         parked_tasks,

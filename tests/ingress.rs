@@ -5,13 +5,13 @@ use std::fs;
 use std::path::Path;
 
 use bitterblossom::ingress::{
-    cron_catchup, cron_catchup_guarded, derive_dedupe_key, due_fires, handle_webhook,
-    ingest_cron_fire, parse_schedule, sign_hmac,
+    cron_catchup, cron_catchup_guarded, cron_catchup_guarded_multi, derive_dedupe_key, due_fires,
+    due_fires_bounded_for_runtime, handle_webhook, ingest_cron_fire, parse_schedule, sign_hmac,
 };
-use bitterblossom::ledger::Ledger;
+use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::Plane;
 use chrono::{TimeZone, Utc};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 const SECRET_ENV: &str = "BB_TEST_HOOK_SECRET";
 
@@ -374,9 +374,9 @@ fn webhook_accepts_canary_timestamped_signature_and_delivery_id() {
     std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
 
     let body = include_str!("fixtures/contracts/canary.incident_event.v1.valid.json");
-    let timestamp = "2026-07-01T17:00:00Z";
+    let timestamp = Utc::now().to_rfc3339();
     let delivery = "DLV-canary-live";
-    let headers = canary_headers("s3cret", timestamp, delivery, body);
+    let headers = canary_headers("s3cret", &timestamp, delivery, body);
     let resp = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
     assert_eq!(resp.status, 202, "{}", resp.body);
     assert!(!resp.body.contains("filtered"), "{}", resp.body);
@@ -408,7 +408,7 @@ fn webhook_filters_subject_only_canary_payload_without_a_run() {
     std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
 
     let body = r#"{"schema_version":"canary.incident_event.v1","event":"incident.opened","subject":{"type":"incident","id":"INC-live","service":"canary"}}"#;
-    let headers = canary_headers("s3cret", "2026-07-01T17:00:00Z", "DLV-subject-only", body);
+    let headers = canary_headers("s3cret", &Utc::now().to_rfc3339(), "DLV-subject-only", body);
     let resp = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
 
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -576,6 +576,40 @@ fn cron_due_fires_and_scheduled_timestamp_dedupes() {
     assert!(b.duplicate, "same scheduled timestamp must not double-fire");
     assert_eq!(a.run_id, b.run_id);
     assert_eq!(ledger.list_runs(Some("demo"), None).unwrap().len(), 1);
+}
+
+#[test]
+fn bounded_cron_scan_caps_historical_iteration() {
+    let schedule = parse_schedule("* * * * *").unwrap();
+    let after = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
+    let until = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let (fires, skipped) = due_fires_bounded_for_runtime(&schedule, after, until, 2);
+    assert_eq!(fires.len(), 2);
+    assert_eq!(skipped, 9_999, "scan reports a bounded lower bound");
+}
+
+#[test]
+fn multi_trigger_cron_advances_one_task_cursor_after_union() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    let first = parse_schedule("*/5 * * * *").unwrap();
+    let second = parse_schedule("*/7 * * * *").unwrap();
+    let after = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+    let until = Utc.with_ymd_and_hms(2026, 6, 10, 12, 31, 0).unwrap();
+    let outcome = cron_catchup_guarded_multi(
+        &plane,
+        &mut ledger,
+        "demo",
+        &[&first, &second],
+        after,
+        until,
+        20,
+    )
+    .unwrap();
+    assert_eq!(outcome.ingested, 10);
+    assert_eq!(outcome.duplicates, 0);
+    assert_eq!(ledger.list_runs(Some("demo"), None).unwrap().len(), 10);
 }
 
 #[test]
@@ -844,6 +878,250 @@ fn webhook_submission_storm_distinguishes_distinct_prs_with_same_head_sha() {
         2
     );
     assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 2);
+}
+
+#[test]
+fn webhook_submission_storm_duplicate_is_noop_at_member_queue_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+    let body = pr_body("sha-duplicate", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let first = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-duplicate"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(first.status, 202, "{}", first.body);
+
+    // Saturate an already-admitted member queue. The duplicate path must not
+    // charge capacity or delete the existing submission/run tree.
+    for idx in 0..(Ledger::MAX_PENDING_QUEUE_DEPTH - 1) {
+        let key = format!("fill-correctness-{idx}");
+        ledger
+            .ingest(IngressRequest {
+                task: "correctness",
+                trigger_kind: "manual",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: None,
+                parent_run_id: None,
+            })
+            .unwrap();
+    }
+    let before = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .unwrap();
+    let again = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-duplicate-2"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(again.status, 202, "{}", again.body);
+    assert!(again.body.contains("\"duplicate\":true"), "{}", again.body);
+    assert_eq!(
+        ledger
+            .latest_submission("https://github.com/good/repo/pull/42")
+            .unwrap()
+            .unwrap()
+            .id,
+        before.id
+    );
+    assert_eq!(ledger.list_runs(Some("review"), None).unwrap().len(), 1);
+}
+
+#[test]
+fn webhook_submission_storm_duplicate_repair_pressure_preserves_existing_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+    let body = pr_body("sha-repair-pressure", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let first = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-repair-pressure"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(first.status, 202, "{}", first.body);
+    let control_id = ledger.list_runs(Some("review"), None).unwrap()[0]
+        .id
+        .clone();
+    let security_id = ledger.list_runs(Some("security"), None).unwrap()[0]
+        .id
+        .clone();
+    let submission_id = ledger
+        .latest_submission("https://github.com/good/repo/pull/42")
+        .unwrap()
+        .unwrap()
+        .id;
+    let correctness_id = ledger.list_runs(Some("correctness"), None).unwrap()[0]
+        .id
+        .clone();
+    {
+        let conn = Connection::open(plane.db_path()).unwrap();
+        conn.execute(
+            "DELETE FROM ingress_events WHERE run_id = ?1",
+            params![correctness_id],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM runs WHERE id = ?1", params![correctness_id])
+            .unwrap();
+    }
+    for idx in 0..Ledger::MAX_PENDING_QUEUE_DEPTH {
+        let key = format!("fill-repair-correctness-{idx}");
+        ledger
+            .ingest(IngressRequest {
+                task: "correctness",
+                trigger_kind: "manual",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: None,
+                parent_run_id: None,
+            })
+            .unwrap();
+    }
+    let refused = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-repair-pressure-2"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(refused.status, 429, "{}", refused.body);
+    assert_eq!(
+        ledger
+            .latest_submission("https://github.com/good/repo/pull/42")
+            .unwrap()
+            .unwrap()
+            .id,
+        submission_id
+    );
+    assert!(ledger.run(&control_id).is_ok());
+    assert!(ledger.run(&security_id).is_ok());
+    assert!(ledger
+        .list_runs(Some("correctness"), None)
+        .unwrap()
+        .iter()
+        .all(|run| run.parent_run_id.as_deref() != Some(control_id.as_str())));
+}
+
+#[test]
+fn webhook_submission_storm_first_admission_pressure_leaves_no_partial_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+    for idx in 0..Ledger::MAX_PENDING_QUEUE_DEPTH {
+        let key = format!("fill-review-{idx}");
+        ledger
+            .ingest(IngressRequest {
+                task: "review",
+                trigger_kind: "manual",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: None,
+                parent_run_id: None,
+            })
+            .unwrap();
+    }
+    let body = pr_body_for(99, "sha-pressure", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let refused = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-pressure"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(refused.status, 429, "{}", refused.body);
+    assert!(ledger
+        .latest_submission("https://github.com/good/repo/pull/99")
+        .unwrap()
+        .is_none());
+    assert!(ledger
+        .list_runs(Some("correctness"), None)
+        .unwrap()
+        .is_empty());
+    assert!(ledger.list_runs(Some("security"), None).unwrap().is_empty());
+}
+
+#[test]
+fn webhook_submission_storm_trigger_pressure_rolls_back_post_parent_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_pr_storm_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var("BB_TEST_PR_STORM_SECRET", "s3cret");
+    for idx in 0..(Ledger::MAX_PENDING_QUEUE_DEPTH - 1) {
+        let key = format!("trigger-fill-{idx}");
+        ledger
+            .ingest(IngressRequest {
+                task: "correctness",
+                trigger_kind: "manual",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: None,
+                parent_run_id: None,
+            })
+            .unwrap();
+    }
+    {
+        let conn = Connection::open(plane.db_path()).unwrap();
+        conn.execute_batch(&format!(
+            r#"
+            CREATE TRIGGER fill_storm_member AFTER INSERT ON runs
+            WHEN NEW.task = 'review' AND NEW.idempotency_key LIKE 'wh:%'
+            BEGIN
+              INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+                trace_id, payload, created_at, updated_at)
+              VALUES ('trigger-race-fill', 'correctness', 'manual',
+                'trigger-race-fill', 'pending', 'trigger-race-fill', NULL,
+                datetime('now'), datetime('now'));
+            END;
+            CREATE TRIGGER reject_storm_member BEFORE INSERT ON runs
+            WHEN NEW.task = 'correctness' AND NEW.idempotency_key LIKE 'storm:%'
+              AND (SELECT COUNT(*) FROM runs WHERE task = 'correctness' AND state = 'pending') >= {}
+            BEGIN
+              SELECT RAISE(ABORT, 'queue backpressure: trigger member ceiling');
+            END;
+            "#,
+            Ledger::MAX_PENDING_QUEUE_DEPTH
+        ))
+        .unwrap();
+    }
+    let body = pr_body_for(100, "sha-trigger-pressure", 12);
+    let sig = sign_hmac("s3cret", body.as_bytes());
+    let refused = handle_webhook(
+        &plane,
+        &mut ledger,
+        "review",
+        &headers(&sig, "delivery-trigger-pressure"),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(refused.status, 429, "{}", refused.body);
+    assert!(ledger
+        .latest_submission("https://github.com/good/repo/pull/100")
+        .unwrap()
+        .is_none());
+    assert!(ledger.list_runs(Some("review"), None).unwrap().is_empty());
+    assert_eq!(
+        ledger.pending_run_depth(Some("correctness")).unwrap(),
+        Ledger::MAX_PENDING_QUEUE_DEPTH - 1
+    );
 }
 
 #[test]
@@ -1216,4 +1494,79 @@ fn webhook_submission_storm_opens_newer_head_after_settle() {
         "newer head after settle should fire a new storm"
     );
     assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 2);
+}
+
+#[test]
+fn duplicate_redelivery_survives_atomic_queue_saturation() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    for n in 0..Ledger::MAX_PENDING_QUEUE_DEPTH {
+        let key = format!("storm:{n}");
+        ledger
+            .ingest(bitterblossom::ledger::IngressRequest {
+                task: "demo",
+                trigger_kind: "webhook",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: Some("{}"),
+                parent_run_id: None,
+            })
+            .unwrap();
+    }
+    let duplicate = ledger
+        .ingest(bitterblossom::ledger::IngressRequest {
+            task: "demo",
+            trigger_kind: "webhook",
+            idempotency_key: Some("storm:0"),
+            source_event_id: None,
+            payload: Some("{}"),
+            parent_run_id: None,
+        })
+        .unwrap();
+    assert!(duplicate.duplicate);
+    assert_eq!(
+        ledger.pending_run_depth(Some("demo")).unwrap(),
+        Ledger::MAX_PENDING_QUEUE_DEPTH
+    );
+    let refused = ledger.ingest(bitterblossom::ledger::IngressRequest {
+        task: "demo",
+        trigger_kind: "webhook",
+        idempotency_key: Some("storm:new"),
+        source_event_id: None,
+        payload: Some("{}"),
+        parent_run_id: None,
+    });
+    match refused {
+        Err(error) => assert!(error.to_string().contains("queue backpressure")),
+        Ok(_) => panic!("queue admission unexpectedly accepted"),
+    }
+}
+
+#[test]
+fn partial_timestamped_signature_cannot_downgrade_to_legacy_hmac() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var(SECRET_ENV, "hunter2");
+    let body = r#"{"action":"opened"}"#;
+    let timestamp = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
+    let signature = sign_hmac(
+        "hunter2",
+        format!("{timestamp}.delivery-1.{body}").as_bytes(),
+    );
+    let response = handle_webhook(
+        &plane,
+        &mut ledger,
+        "demo",
+        &[
+            ("X-Canary-Signature".into(), signature),
+            ("X-Timestamp".into(), timestamp),
+        ],
+        body,
+    )
+    .unwrap();
+    assert_eq!(response.status, 400);
+    assert!(response.body.contains("timestamped signature envelope"));
+    assert!(ledger.list_runs(Some("demo"), None).unwrap().is_empty());
 }

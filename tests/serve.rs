@@ -683,6 +683,99 @@ fn ask_parks_after_window_and_answering_creates_a_lineage_linked_resume_run() {
     );
 }
 
+#[test]
+fn parked_ask_answer_retries_after_queue_backpressure_without_partial_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    write_dispatch_plane(dir.path());
+    let port_file = dir.path().join("bb-serve-port");
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_REPORT_PORT_FILE", &port_file)
+        .env("BB_API_TOKEN", "test-token")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    let port = wait_for_port_file(&port_file);
+    wait_for_http(port);
+    let run_id = running_run_with_ask_token(dir.path(), "demo", "ask-secret-saturated");
+    let (status, response) = http_request(
+        port,
+        "POST",
+        "/api/asks",
+        Some("ask-secret-saturated"),
+        Some(&format!(
+            r#"{{"run_id":"{run_id}","task":"demo","kind":"approval","question":"retry?","blocking":true,"window_seconds":0}}"#
+        )),
+    );
+    assert_eq!(status, 201, "{response}");
+    let ask_id = serde_json::from_str::<serde_json::Value>(response_body(&response)).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = http_get(
+        port,
+        &format!("/api/asks/{ask_id}"),
+        Some("ask-secret-saturated"),
+    );
+    assert_eq!(status, 200);
+    {
+        let plane = Plane::load(dir.path()).unwrap();
+        let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+        ledger.transition(&run_id, "parked_on_ask", None).unwrap();
+        for _ in 0..256 {
+            ledger
+                .ingest(IngressRequest {
+                    task: "demo",
+                    trigger_kind: "manual",
+                    idempotency_key: None,
+                    source_event_id: None,
+                    payload: None,
+                    parent_run_id: None,
+                })
+                .unwrap();
+        }
+    }
+    let (status, _) = http_request(
+        port,
+        "POST",
+        &format!("/api/asks/{ask_id}/answer"),
+        Some("test-token"),
+        Some(r#"{"answer":"approve","answered_by":"operator"}"#),
+    );
+    assert_eq!(status, 429);
+    {
+        let plane = Plane::load(dir.path()).unwrap();
+        let ledger = Ledger::open(&plane.db_path()).unwrap();
+        let ask = ledger.ask(&ask_id).unwrap();
+        assert!(
+            ask.answer.is_none(),
+            "queue pressure must roll back the answer"
+        );
+        assert_eq!(ledger.pending_run_depth(Some("demo")).unwrap(), 256);
+        let pending = ledger.pending_runs_oldest_first().unwrap();
+        ledger.transition(&pending[0].id, "running", None).unwrap();
+    }
+    let (status, response) = http_request(
+        port,
+        "POST",
+        &format!("/api/asks/{ask_id}/answer"),
+        Some("test-token"),
+        Some(r#"{"answer":"approve","answered_by":"operator"}"#),
+    );
+    assert_eq!(status, 200, "{response}");
+    let answered: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+    assert!(answered["resumed_run_id"].as_str().is_some());
+    let plane = Plane::load(dir.path()).unwrap();
+    let ledger = Ledger::open(&plane.db_path()).unwrap();
+    assert_eq!(
+        ledger.ask(&ask_id).unwrap().answer.as_deref(),
+        Some("approve")
+    );
+    assert_eq!(ledger.pending_run_depth(Some("demo")).unwrap(), 256);
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {

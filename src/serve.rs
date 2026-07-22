@@ -59,7 +59,7 @@ pub fn serve(root: &Path) -> Result<()> {
     }
     // Workflow runs inherited mid-execution are classified, never blindly
     // re-executed: a step attempt may already have external side effects.
-    for r in &crate::workflow_runtime::recover_inherited_workflow_runs(&ledger)? {
+    for r in &crate::workflow_runtime::recover_inherited_workflow_runs(&plane, &ledger)? {
         eprintln!(
             "recovered workflow run {} workflow={} step={} -> {}",
             r.run_id,
@@ -150,12 +150,36 @@ fn cron_loop(root: &Path) {
                 now,
                 plane.spec.ingress.max_cron_catchup_fires,
             ) {
-                Ok(accepted) => {
-                    for a in accepted.iter().filter(|a| !a.duplicate) {
-                        eprintln!(
-                            "cron: workflow {} accepted schedule fire {}",
-                            a.workflow, a.scheduled
-                        );
+                Ok(outcomes) => {
+                    for outcome in &outcomes {
+                        match outcome.disposition {
+                            crate::workflow_runtime::CronDisposition::Accepted => eprintln!(
+                                "cron: workflow {} accepted schedule fire {}",
+                                outcome.workflow, outcome.scheduled
+                            ),
+                            crate::workflow_runtime::CronDisposition::Denied => eprintln!(
+                                "cron: workflow {} denied schedule fire {} ({})",
+                                outcome.workflow,
+                                outcome.scheduled,
+                                outcome.detail.as_deref().unwrap_or("admission denied")
+                            ),
+                            crate::workflow_runtime::CronDisposition::Suppressed => eprintln!(
+                                "cron: workflow {} suppressed schedule fire {} ({})",
+                                outcome.workflow,
+                                outcome.scheduled,
+                                outcome.detail.as_deref().unwrap_or("workflow suppressed")
+                            ),
+                            crate::workflow_runtime::CronDisposition::Duplicate => {}
+                        }
+                    }
+                    let denied = outcomes
+                        .iter()
+                        .filter(|outcome| {
+                            outcome.disposition == crate::workflow_runtime::CronDisposition::Denied
+                        })
+                        .count();
+                    if denied > 0 {
+                        eprintln!("cron: denied {denied} workflow schedule fire(s)");
                     }
                     wf_default_last = now;
                 }
@@ -204,19 +228,33 @@ fn run_cron_tick(
     now: DateTime<Utc>,
     max_fires: u32,
 ) {
-    let mut seen = HashSet::new();
-    // Backlog 083: cron catch-up is bounded per task. A task that catches up
-    // advances independently; a task that fails retries its own window without
-    // rewinding successful tasks and duplicating their collapse counts.
+    let mut grouped: HashMap<String, Vec<&Schedule>> = HashMap::new();
     for (task, schedule) in schedules {
+        grouped.entry(task.clone()).or_default().push(schedule);
+    }
+    let mut seen = HashSet::new();
+    // Catch up all triggers for one task before advancing its one cursor.
+    // Advancing once per trigger silently drops later trigger windows.
+    for (task, task_schedules) in grouped {
         seen.insert(task.clone());
         let last = *last_by_task.entry(task.clone()).or_insert(*default_last);
-        match ingress::cron_catchup_guarded(plane, ledger, task, schedule, last, now, max_fires) {
+        match ingress::cron_catchup_guarded_multi(
+            plane,
+            ledger,
+            &task,
+            &task_schedules,
+            last,
+            now,
+            max_fires,
+        ) {
             Ok(o) => {
                 if o.skipped > 0 {
-                    eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped);
+                    eprintln!(
+                        "cron: task {task} refused/collapsed {} skipped fires",
+                        o.skipped
+                    );
                 }
-                last_by_task.insert(task.clone(), now);
+                last_by_task.insert(task, now);
             }
             Err(e) => {
                 eprintln!("cron: task {task}: {e:#}");
@@ -345,13 +383,18 @@ fn workflow_runner_tick(root: &Path) {
             return;
         }
     };
+    use crate::workflow_runtime::ExecutionDisposition;
     for id in ids {
         match crate::workflow_runtime::execute_if_queued(&plane, &ledger, &id) {
-            Ok(Some(view)) => eprintln!(
+            Ok(ExecutionDisposition::Executed(view)) => eprintln!(
                 "workflow run {id} {}",
                 view["status"]["state"].as_str().unwrap_or("-")
             ),
-            Ok(None) => {} // claimed elsewhere between listing and CAS
+            // claimed elsewhere between listing and CAS
+            Ok(ExecutionDisposition::ClaimLost) => {}
+            Ok(ExecutionDisposition::Deferred { reason }) => {
+                eprintln!("workflow run {id} deferred: {reason}");
+            }
             Err(e) => {
                 eprintln!("workflow run {id}: {e:#}");
                 canary::report_error("bb.workflow.execute", &format!("run {id}: {e:#}"));
@@ -603,8 +646,14 @@ fn handle_one_request(root: &Path, mut request: tiny_http::Request) {
     let (status, body) = match response {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            report_runtime_error("http request", "bb.http.request", &e);
-            (500, format!("{{\"error\":\"{e}\"}}"))
+            if crate::ledger::is_queue_backpressure(&e) {
+                (429, json_error(e.to_string()))
+            } else if let Some(client) = e.downcast_ref::<ingress::IngressClientError>() {
+                (400, json_error(client.to_string()))
+            } else {
+                report_runtime_error("http request", "bb.http.request", &e);
+                (500, json_error(e.to_string()))
+            }
         }
         Err(panic) => {
             let payload = panic
@@ -828,9 +877,15 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     if method == "POST" && path_no_query == "/api/asks" {
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
-        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-            Ok(body) => body,
-            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => {
+                return Ok((
+                    400,
+                    json_error(format!("request body must be valid UTF-8: {error}")),
+                ))
+            }
+            Ok(Ok(body)) => body,
+            Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
         let req: AskRaiseRequest = match serde_json::from_str(&body) {
             Ok(req) => req,
@@ -897,21 +952,28 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             if !read_authorized(request) {
                 return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
             }
-            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-                Ok(body) => body,
-                Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+                Err(error) => {
+                    return Ok((
+                        400,
+                        json_error(format!("request body must be valid UTF-8: {error}")),
+                    ))
+                }
+                Ok(Ok(body)) => body,
+                Ok(Err(bytes)) => {
+                    return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes))
+                }
             };
             let req: AskAnswerRequest = match serde_json::from_str(&body) {
                 Ok(req) => req,
                 Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
             };
-            let ask = match ledger.answer_ask(id, &req.answer, &req.answered_by) {
+            let ask = match ledger.ask(id) {
                 Ok(ask) => ask,
-                Err(err) => return Ok((409, json_error(err.to_string()))),
+                Err(_) => return Ok((404, json_error(format!("ask {id} not found")))),
             };
             let run = ledger.run(&ask.run_id)?;
-            let mut resumed_run_id = None;
-            if run.state == "parked_on_ask" {
+            let (ask, resumed_run_id) = if run.state == "parked_on_ask" {
                 let packet = match crate::artifacts::read(
                     &ledger,
                     &ask.run_id,
@@ -927,14 +989,24 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                     "packet": packet,
                 })
                 .to_string();
-                let outcome = ledger.ingest(IngressRequest {
-                    task: &ask.task,
-                    trigger_kind: "resume",
-                    idempotency_key: Some(&format!("resume:{}", ask.id)),
-                    source_event_id: None,
-                    payload: Some(&resume_payload),
-                    parent_run_id: Some(&ask.run_id),
-                })?;
+                let resume_key = format!("resume:{}", ask.id);
+                let (ask, outcome) = match ledger.answer_ask_and_resume(
+                    id,
+                    &req.answer,
+                    &req.answered_by,
+                    IngressRequest {
+                        task: &ask.task,
+                        trigger_kind: "resume",
+                        idempotency_key: Some(&resume_key),
+                        source_event_id: None,
+                        payload: Some(&resume_payload),
+                        parent_run_id: Some(&ask.run_id),
+                    },
+                ) {
+                    Ok(result) => result,
+                    Err(err) if crate::ledger::is_queue_backpressure(&err) => return Err(err),
+                    Err(err) => return Ok((409, json_error(err.to_string()))),
+                };
                 if let Ok(task) = plane.task(&ask.task) {
                     crate::glass::post_resumed(
                         &plane,
@@ -946,8 +1018,14 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                         &ask.id,
                     );
                 }
-                resumed_run_id = Some(outcome.run_id);
-            }
+                (ask, Some(outcome.run_id))
+            } else {
+                let ask = match ledger.answer_ask(id, &req.answer, &req.answered_by) {
+                    Ok(ask) => ask,
+                    Err(err) => return Ok((409, json_error(err.to_string()))),
+                };
+                (ask, None)
+            };
             return Ok((
                 200,
                 serde_json::json!({"ask": ask, "resumed_run_id": resumed_run_id}).to_string(),
@@ -1069,9 +1147,15 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
-        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-            Ok(body) => body,
-            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => {
+                return Ok((
+                    400,
+                    json_error(format!("request body must be valid UTF-8: {error}")),
+                ))
+            }
+            Ok(Ok(body)) => body,
+            Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
         if method == "POST" {
             let input: ExternalRunCreate = match serde_json::from_str(&body) {
@@ -1139,9 +1223,15 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         }
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
-        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-            Ok(body) => body,
-            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => {
+                return Ok((
+                    400,
+                    json_error(format!("request body must be valid UTF-8: {error}")),
+                ))
+            }
+            Ok(Ok(body)) => body,
+            Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
         return workflow_post(&plane, &ledger, &path_no_query, &body);
     }
@@ -1152,12 +1242,14 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let pending = ledger.runs_in_state("pending")?;
         let running = ledger.runs_in_state("running")?;
         let oldest_pending = pending.last().map(|r| r.created_at.clone());
+        let workflow_runtime = ledger.workflow_freshness_summary(300)?;
         return Ok((
             200,
             serde_json::json!({
                 "pending": pending.len(),
                 "running": running.len(),
                 "oldest_pending": oldest_pending,
+                "workflow_runtime": workflow_runtime,
             })
             .to_string(),
         ));
@@ -1165,7 +1257,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
 
     if method == "POST" {
         if let Some(route) = url.strip_prefix("/hooks/") {
-            let route = route.trim_end_matches('/').to_string();
+            let route = crate::ingress::normalize_route(route);
             let headers: Vec<(String, String)> = request
                 .headers()
                 .iter()
@@ -1177,42 +1269,63 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 })
                 .collect();
             let plane = Plane::load(root)?;
-            let task_route = ingress::webhook_target(&plane, &route).is_some();
-            // Database-defined workflows own a route only when no
-            // file-defined task claims it (migration precedence: files are
-            // the source being migrated away from, but existing routes keep
-            // working unchanged until their tasks are removed).
-            let workflow_target = if task_route {
-                None
-            } else {
-                let ledger = Ledger::open(&plane.db_path())?;
-                crate::workflow_runtime::webhook_workflow_target(&ledger, &route)?
+            let task_target = match ingress::webhook_target(&plane, &route) {
+                Ok(target) => target,
+                Err(_) => {
+                    return Ok((
+                        409,
+                        serde_json::json!({
+                            "error": "webhook route is ambiguous",
+                            "route": route,
+                        })
+                        .to_string(),
+                    ))
+                }
             };
-            if !task_route && workflow_target.is_none() {
+            let ledger = Ledger::open(&plane.db_path())?;
+            let workflow_target =
+                match crate::workflow_runtime::webhook_workflow_target(&ledger, &route) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        // Never choose one owner when active workflow routes are
+                        // ambiguous. Refuse before reading or accepting the body.
+                        return Ok((
+                            409,
+                            serde_json::json!({
+                                "error": "webhook route is ambiguous",
+                                "route": route,
+                                "detail": error.to_string(),
+                            })
+                            .to_string(),
+                        ));
+                    }
+                };
+            if task_target.is_some() && workflow_target.is_some() {
+                return Ok((
+                    409,
+                    serde_json::json!({
+                        "error": "webhook route is claimed by both task and workflow",
+                        "route": route,
+                    })
+                    .to_string(),
+                ));
+            }
+            if task_target.is_none() && workflow_target.is_none() {
                 return Ok((404, format!("{{\"error\":\"no webhook route '{route}'\"}}")));
             }
-            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-                Ok(body) => body,
-                Err(bytes) => {
-                    let ledger = Ledger::open(&plane.db_path())?;
-                    let owner = ingress::webhook_target(&plane, &route)
-                        .map(|(task, _)| task.name.clone())
-                        .or_else(|| workflow_target.as_ref().map(|(name, _)| name.clone()));
-                    if let Some(owner) = owner {
-                        ledger.record_guard_event(
-                            "ingress_oversized",
-                            Some(&owner),
-                            &format!(
-                                "route={route} bytes={bytes} max={}",
-                                plane.spec.ingress.max_body_bytes
-                            ),
-                            1,
-                        )?;
-                    }
+            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+                Err(error) => {
+                    return Ok((
+                        400,
+                        json_error(format!("request body must be valid UTF-8: {error}")),
+                    ))
+                }
+                Ok(Ok(body)) => body,
+                Ok(Err(bytes)) => {
                     return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes));
                 }
             };
-            let mut ledger = Ledger::open(&plane.db_path())?;
+            let mut ledger = ledger;
             let resp = if let Some((workflow, trigger)) = &workflow_target {
                 ingress::handle_workflow_webhook(
                     &plane, &ledger, workflow, trigger, &headers, &body,
@@ -1380,7 +1493,11 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
             let revision = args.get("revision").and_then(|v| v.as_i64());
             Ok((
                 200,
-                serde_json::to_value(ledger.activate_workflow(name, revision)?)?,
+                serde_json::to_value(ledger.activate_workflow_with_reserved_routes(
+                    name,
+                    revision,
+                    &ingress::task_webhook_routes(plane),
+                )?)?,
             ))
         }
         "pause" => {
@@ -1393,14 +1510,24 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 serde_json::to_value(ledger.pause_workflow(name, reason)?)?,
             ))
         }
-        "resume" => Ok((200, serde_json::to_value(ledger.resume_workflow(name)?)?)),
+        "resume" => Ok((
+            200,
+            serde_json::to_value(ledger.resume_workflow_with_reserved_routes(
+                name,
+                &ingress::task_webhook_routes(plane),
+            )?)?,
+        )),
         "archive" => Ok((200, serde_json::to_value(ledger.archive_workflow(name)?)?)),
         "rollback" => {
             let to = args
                 .get("to")
                 .and_then(|v| v.as_i64())
                 .context("pass {\"to\": <revision>}")?;
-            let (wf, revision) = ledger.rollback_workflow(name, to)?;
+            let (wf, revision) = ledger.rollback_workflow_with_reserved_routes(
+                name,
+                to,
+                &ingress::task_webhook_routes(plane),
+            )?;
             Ok((
                 200,
                 serde_json::json!({ "workflow": wf, "revision": revision }),

@@ -23,6 +23,43 @@ pub const RUN_STATES: &[&str] = &[
 ];
 pub const EXTERNAL_RUN_STATUSES: &[&str] = &["running", "done", "failed"];
 
+#[derive(Debug)]
+pub(crate) struct QueueBackpressure {
+    pub task: String,
+    pub depth: i64,
+    pub missing: i64,
+    pub limit: i64,
+}
+
+impl std::fmt::Display for QueueBackpressure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.missing <= 1 {
+            write!(
+                f,
+                "queue backpressure: task '{}' has {} pending runs (limit {})",
+                self.task, self.depth, self.limit
+            )
+        } else {
+            write!(f, "queue backpressure: task '{}' has {} pending runs and needs {} additional slots (limit {})", self.task, self.depth, self.missing, self.limit)
+        }
+    }
+}
+
+impl std::error::Error for QueueBackpressure {}
+
+pub(crate) fn is_queue_backpressure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if cause.downcast_ref::<QueueBackpressure>().is_some() {
+            return true;
+        }
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.starts_with("queue backpressure:")
+        )
+    })
+}
+
 fn transition_allowed(from: &str, to: &str) -> bool {
     matches!(
         (from, to),
@@ -267,8 +304,18 @@ pub struct Ledger {
 
 const SCHEMA: &str = include_str!("schema.sql");
 pub const LEDGER_SCHEMA_VERSION: i64 = 1;
+type SubmissionHeadRow = (
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 impl Ledger {
+    pub const MAX_PENDING_QUEUE_DEPTH: i64 = 256;
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -328,6 +375,24 @@ impl Ledger {
             "estimated_cost_usd",
             "REAL NOT NULL DEFAULT 1.0",
         )?;
+        ensure_column(&conn, "workflow_events", "run_id", "TEXT")?;
+        // Backfill store-era workflow runs that predate the mutable status table.
+        // Runs with step evidence are conservative operator debt; untouched runs
+        // remain queued and therefore visible to the bounded worker queue.
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_run_status (run_id, state, detail, updated_at)
+             SELECT r.id,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM workflow_step_runs s WHERE s.run_id = r.id
+                    ) THEN 'needs_attention' ELSE 'queued' END,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM workflow_step_runs s WHERE s.run_id = r.id
+                    ) THEN 'legacy run had step evidence but no status row' ELSE NULL END,
+                    r.created_at
+             FROM workflow_runs r
+             WHERE NOT EXISTS (SELECT 1 FROM workflow_run_status s WHERE s.run_id = r.id)",
+            [],
+        )?;
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS workflow_runs_dedupe
                ON workflow_runs(workflow_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
@@ -358,10 +423,45 @@ impl Ledger {
     }
 
     pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
+        // Dedupe and queue admission share one immediate transaction.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let outcome = Self::ingest_in_transaction(&tx, req)?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    fn ingest_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        req: IngressRequest<'_>,
+    ) -> Result<IngressOutcome> {
         let ts = now();
+        let existing: Option<String> = if let Some(key) = req.idempotency_key {
+            tx.query_row(
+                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                params![req.task, key],
+                |r| r.get(0),
+            )
+            .optional()?
+        } else {
+            None
+        };
+        if existing.is_none() {
+            let depth: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+                params![req.task],
+                |r| r.get(0),
+            )?;
+            if depth >= Self::MAX_PENDING_QUEUE_DEPTH {
+                return Err(anyhow::Error::new(QueueBackpressure {
+                    task: req.task.to_string(),
+                    depth,
+                    missing: 1,
+                    limit: Self::MAX_PENDING_QUEUE_DEPTH,
+                }));
+            }
+        }
 
         let candidate_id = new_id();
         let trace_id = new_id();
@@ -422,13 +522,322 @@ impl Ledger {
                 ts
             ],
         )?;
-        tx.commit()?;
 
-        let state = self.run_state(&run_id)?;
+        let state: String = tx.query_row(
+            "SELECT state FROM runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )?;
         Ok(IngressOutcome {
             run_id,
             duplicate,
             state,
+        })
+    }
+
+    /// Answer a parked ask and enqueue its resume as one transaction. Queue
+    /// pressure rolls back both mutations, leaving the ask retryable.
+    pub fn answer_ask_and_resume(
+        &mut self,
+        id: &str,
+        answer: &str,
+        answered_by: &str,
+        resume: IngressRequest<'_>,
+    ) -> Result<(AskRow, IngressOutcome)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE asks SET answer = ?2, answered_at = ?3, answered_by = ?4,
+               state = 'answered', updated_at = ?3
+             WHERE id = ?1 AND answer IS NULL",
+            params![id, answer, now(), answered_by],
+        )?;
+        if changed != 1 {
+            let current = tx.query_row(
+                &format!("{ASK_SELECT} WHERE id = ?1"),
+                params![id],
+                row_to_ask,
+            )?;
+            bail!("ask {id} already answered at {:?}", current.answered_at);
+        }
+        let ask = tx.query_row(
+            &format!("{ASK_SELECT} WHERE id = ?1"),
+            params![id],
+            row_to_ask,
+        )?;
+        let outcome = Self::ingest_in_transaction(&tx, resume)?;
+        tx.commit()?;
+        Ok((ask, outcome))
+    }
+
+    /// Admit a webhook submission storm as one write transaction.
+    ///
+    /// Parent dedupe, submission head selection, queue-capacity checks, and
+    /// member dedupe/insertion all run under the same IMMEDIATE lock. A
+    /// duplicate delivery therefore remains a no-op at a full queue, while a
+    /// repair or first admission either inserts the complete tree or nothing.
+    pub(crate) fn ingest_submission_storm(
+        &mut self,
+        parent: IngressRequest<'_>,
+        change: &str,
+        rev: &str,
+        version: Option<&str>,
+        members: &[(String, String, String)],
+    ) -> Result<IngressOutcome> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ts = now();
+
+        let parent_existing: Option<String> = parent
+            .idempotency_key
+            .and_then(|key| {
+                tx.query_row(
+                    "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                    params![parent.task, key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .transpose()
+            })
+            .transpose()?;
+        let parent_duplicate = parent_existing.is_some();
+        let parent_id = parent_existing.unwrap_or_else(new_id);
+
+        let parent_parked: Option<String> = tx
+            .query_row(
+                "SELECT reason FROM parked_tasks WHERE task = ?1",
+                params![parent.task],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut needed = std::collections::BTreeMap::<String, i64>::new();
+        if !parent_duplicate {
+            needed.insert(parent.task.to_string(), 1);
+        }
+
+        // Resolve the submission head without calling helpers that open their
+        // own transaction. This keeps supersession and member admission atomic.
+        let latest: Option<SubmissionHeadRow> = tx
+            .query_row(
+                "SELECT id, state, rev, round, prior_report_json, report_json, head_version
+                 FROM submissions WHERE change_key = ?1 ORDER BY rowid DESC LIMIT 1",
+                params![change],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let mut settle_old = None;
+        let mut new_submission: Option<(String, i64, Option<String>)> = None;
+        let mut submission_id: Option<String> = None;
+        match latest {
+            Some((id, state, old_rev, _round, _prior, _report, _old_version))
+                if old_rev == rev && state == "open" =>
+            {
+                submission_id = Some(id);
+            }
+            Some((_id, _state, old_rev, _round, _prior, _report, _old_version))
+                if old_rev == rev => {}
+            Some((id, state, _old_rev, _round, _prior, _report, old_version))
+                if state == "open" =>
+            {
+                let newer = version
+                    .zip(old_version.as_deref())
+                    .is_none_or(|(new, old)| new > old);
+                if !parent_duplicate && newer {
+                    settle_old = Some(id);
+                    let id = new_id();
+                    submission_id = Some(id.clone());
+                    new_submission = Some((id, 1, None));
+                }
+            }
+            Some((_id, state, _old_rev, round, _prior, report, old_version)) => {
+                let newer = version
+                    .zip(old_version.as_deref())
+                    .is_none_or(|(new, old)| new > old);
+                if newer {
+                    let id = new_id();
+                    submission_id = Some(id.clone());
+                    let round = if state == "blocked" { round + 1 } else { 1 };
+                    // Carry the prior blocked round's report, not its stale
+                    // prior snapshot, into the next head for operator readback.
+                    let prior_report = if state == "blocked" { report } else { None };
+                    new_submission = Some((id, round, prior_report));
+                }
+            }
+            None => {
+                let id = new_id();
+                submission_id = Some(id.clone());
+                new_submission = Some((id, 1, None));
+            }
+        }
+
+        let mut member_existing = Vec::with_capacity(members.len());
+        if let Some(submission_id) = &submission_id {
+            for (task, kind, _payload) in members {
+                let key = format!("storm:{submission_id}:{kind}");
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                        params![task, key],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if existing.is_none() {
+                    *needed.entry(task.clone()).or_default() += 1;
+                }
+                member_existing.push(existing);
+            }
+        }
+
+        // Capacity is charged only for missing rows. Duplicate deliveries
+        // can repair nothing and must stay successful even at the ceiling.
+        for (task, missing) in &needed {
+            let depth: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+                params![task],
+                |row| row.get(0),
+            )?;
+            if depth + missing > Self::MAX_PENDING_QUEUE_DEPTH {
+                return Err(anyhow::Error::new(QueueBackpressure {
+                    task: task.clone(),
+                    depth,
+                    missing: *missing,
+                    limit: Self::MAX_PENDING_QUEUE_DEPTH,
+                }));
+            }
+        }
+
+        // Parent and event are inserted only after every refusal check above.
+        if !parent_duplicate {
+            let (state, reason) = match parent_parked {
+                Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+                None => ("pending", None),
+            };
+            tx.execute(
+                "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+                   state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                params![
+                    parent_id,
+                    parent.task,
+                    parent.trigger_kind,
+                    parent.idempotency_key,
+                    state,
+                    reason,
+                    new_id(),
+                    parent.parent_run_id,
+                    parent.payload,
+                    ts
+                ],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id,
+               dedupe_key, payload_hash, duplicate, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                parent_id,
+                parent.task,
+                parent.trigger_kind,
+                parent.source_event_id,
+                parent.idempotency_key,
+                parent.payload.map(payload_hash),
+                parent_duplicate as i64,
+                ts
+            ],
+        )?;
+
+        if let Some(old_id) = settle_old {
+            tx.execute(
+                "UPDATE submissions SET state = 'abandoned', report_json = '{}', updated_at = ?2
+                 WHERE id = ?1 AND state = 'open'",
+                params![old_id, ts],
+            )?;
+        }
+        if let Some((id, round, prior_report)) = new_submission {
+            tx.execute(
+                "INSERT INTO submissions (id, change_key, rev, round, state, context,
+                   prior_report_json, created_at, updated_at, head_version)
+                 VALUES (?1, ?2, ?3, ?4, 'open', NULL, ?5, ?6, ?6, ?7)",
+                params![id, change, rev, round, prior_report, ts, version],
+            )?;
+        }
+
+        for ((task, kind, payload), existing) in members.iter().zip(member_existing) {
+            let Some(submission_id) = submission_id.as_ref() else {
+                break;
+            };
+            let key = format!("storm:{submission_id}:{kind}");
+            let payload = serde_json::from_str::<serde_json::Value>(payload)
+                .map(|mut value| {
+                    value["submission"] = serde_json::Value::String(submission_id.clone());
+                    value.to_string()
+                })
+                .unwrap_or_else(|_| payload.clone());
+            let (run_id, duplicate) = if let Some(existing) = existing {
+                (existing, true)
+            } else {
+                let id = new_id();
+                let parked: Option<String> = tx
+                    .query_row(
+                        "SELECT reason FROM parked_tasks WHERE task = ?1",
+                        params![task],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let (state, reason) = match parked {
+                    Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+                    None => ("pending", None),
+                };
+                tx.execute(
+                    "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+                       state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+                     VALUES (?1, ?2, 'webhook', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    params![
+                        id,
+                        task,
+                        key,
+                        state,
+                        reason,
+                        new_id(),
+                        parent_id,
+                        payload,
+                        ts
+                    ],
+                )?;
+                (id, false)
+            };
+            tx.execute(
+                "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id,
+                   dedupe_key, payload_hash, duplicate, received_at)
+                 VALUES (?1, ?2, 'webhook', NULL, ?3, ?4, ?5, ?6)",
+                params![
+                    run_id,
+                    task,
+                    key,
+                    payload_hash(&payload),
+                    duplicate as i64,
+                    ts
+                ],
+            )?;
+        }
+        tx.commit()?;
+
+        Ok(IngressOutcome {
+            state: self.run_state(&parent_id)?,
+            run_id: parent_id,
+            duplicate: parent_duplicate,
         })
     }
 
@@ -469,6 +878,36 @@ impl Ledger {
             let from = self.run_state(run_id)?;
             bail!("illegal run transition {from} -> {to} for {run_id}");
         }
+        Ok(())
+    }
+
+    /// Resolve a legacy run without leaving an executing attempt orphaned.
+    /// Operator-selected terminal state is recorded only after every open
+    /// attempt is closed and its host lease is released.
+    pub fn resolve_run(&self, run_id: &str, to: &str, reason: &str) -> Result<()> {
+        let from = self.run_state(run_id)?;
+        if !transition_allowed(&from, to) {
+            bail!("illegal run transition {from} -> {to} for {run_id}");
+        }
+        let attempts = self.attempts(run_id)?;
+        let outcome = if to == "success" {
+            "success"
+        } else {
+            "failure"
+        };
+        for attempt in attempts.iter().filter(|attempt| attempt.ended_at.is_none()) {
+            self.finish_attempt(
+                attempt.id,
+                outcome,
+                Some(reason),
+                None,
+                &AttemptStats::default(),
+                attempt.artifact_dir.as_deref(),
+            )?;
+            self.set_attempt_phase(attempt.id, "released")?;
+        }
+        self.transition(run_id, to, Some(reason))?;
+        self.release_leases_for_run(run_id)?;
         Ok(())
     }
 
@@ -784,6 +1223,14 @@ impl Ledger {
         Ok(())
     }
 
+    /// Release every lease owned by a run, even when its task/workflow
+    /// declaration was renamed or removed after the process crashed.
+    pub fn release_host_leases_for_run(&self, run_id: &str) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM host_leases WHERE run_id = ?1", params![run_id])?)
+    }
+
     pub fn lease_holder(&self, host: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -836,6 +1283,9 @@ impl Ledger {
             .with_context(|| format!("dead letter {id} not found"))
     }
 
+    /// Return the complete newest-first DLQ view for operators. Callers that
+    /// need bounded work (for example, API widgets) use the explicit page
+    /// method; the primary CLI/API list must not silently hide older rows.
     pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
         let mut stmt = self
             .conn
@@ -844,6 +1294,33 @@ impl Ledger {
             .query_map([], row_to_dlq)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn list_dead_letters_page(&self, limit: i64) -> Result<Vec<DeadLetterRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self
+            .conn
+            .prepare(&format!("{DLQ_SELECT} ORDER BY id DESC LIMIT ?1"))?;
+        let rows = stmt
+            .query_map(params![limit], row_to_dlq)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn open_dead_letter_count(&self, task: Option<&str>) -> Result<i64> {
+        let mut sql = String::from(
+            "SELECT COUNT(*) FROM dead_letters
+             WHERE acknowledged_at IS NULL AND replayed_run_id IS NULL",
+        );
+        let mut args = Vec::new();
+        if let Some(task) = task {
+            sql.push_str(" AND task = ?1");
+            args.push(task.to_string());
+        }
+        let count = self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))?;
+        Ok(count)
     }
     pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
         let changed = self.conn.execute(
@@ -1338,14 +1815,28 @@ impl Ledger {
     pub fn runs_in_state(&self, state: &str) -> Result<Vec<RunRow>> {
         self.list_runs(None, Some(state))
     }
+    pub const DISPATCH_QUEUE_BATCH: i64 = 64;
+
     pub fn pending_runs_oldest_first(&self) -> Result<Vec<RunRow>> {
         let mut stmt = self.conn.prepare(&format!(
-            "{RUN_SELECT} WHERE state = 'pending' ORDER BY created_at ASC"
+            "{RUN_SELECT} WHERE state = 'pending' ORDER BY created_at ASC, id ASC LIMIT ?1"
         ))?;
         let rows = stmt
-            .query_map([], row_to_run)?
+            .query_map(params![Self::DISPATCH_QUEUE_BATCH], row_to_run)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn pending_run_depth(&self, task: Option<&str>) -> Result<i64> {
+        let mut sql = String::from("SELECT COUNT(*) FROM runs WHERE state = 'pending'");
+        let mut args = Vec::new();
+        if let Some(task) = task {
+            sql.push_str(" AND task = ?1");
+            args.push(task.to_string());
+        }
+        Ok(self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))?)
     }
 
     pub fn attempts(&self, run_id: &str) -> Result<Vec<AttemptRow>> {

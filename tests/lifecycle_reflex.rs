@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use bitterblossom::ingress::{handle_webhook, sign_hmac};
 use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::spec::{AttentionDebtPolicy, AuthClass, Plane, TriggerSpec};
+use chrono::Utc;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -516,7 +517,7 @@ fn incident_webhooks_route_linejam_lifecycle_only_to_tailnet_alert_task() {
     std::env::set_var("BB_HOOK_LINEJAM_ALERT", "linejam-secret");
 
     let deliver = |ledger: &mut Ledger, route: &str, body: &str, delivery: &str| {
-        let timestamp = "2026-07-10T06:45:00Z";
+        let timestamp = Utc::now().to_rfc3339();
         let secret = match route {
             "incident-triage" => "generic-secret",
             "linejam-alert" => "linejam-secret",
@@ -626,7 +627,7 @@ fn linejam_resolved_admission_survives_prior_completed_delivery_churn() {
 
     let body =
         r#"{"event":"incident.resolved","incident":{"id":"INC-linejam","service":"linejam"}}"#;
-    let timestamp = "2026-07-10T07:00:00Z";
+    let timestamp = Utc::now().to_rfc3339();
     let delivery = "DLV-linejam-recovery-after-churn";
     let signature = sign_hmac(
         "linejam-secret",
@@ -922,7 +923,7 @@ fn canary_triage_webhook_filters_and_dedupes_canary_events() {
     std::env::set_var("BB_HOOK_CANARY_TRIAGE", "s3cret");
 
     let deliver = |ledger: &mut Ledger, body: &str, delivery: &str| {
-        let timestamp = "2026-07-01T17:00:00Z";
+        let timestamp = Utc::now().to_rfc3339();
         let sig = sign_hmac(
             "s3cret",
             format!("{timestamp}.{delivery}.{body}").as_bytes(),

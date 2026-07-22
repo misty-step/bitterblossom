@@ -101,12 +101,15 @@ pub fn metered_parent_key_violation(
 /// the surrounding BEGIN IMMEDIATE, so standard task spend, all workflow
 /// realized spend, active reservations, and this run's pinned reservation are
 /// observed and admitted as one atomic decision.
+/// `exclude_run`: the already-claimed run being rechecked at execution time,
+/// which must not count against its own daily run budget.
 pub fn workflow_admission_limit(
     plane: &Plane,
     ledger: &Ledger,
     workflow_name: &str,
     doc: &WorkflowDoc,
     additional_reservation: f64,
+    exclude_run: Option<&str>,
 ) -> Result<Option<Violation>> {
     for step in &doc.steps {
         let provider = step.agent.provider.as_deref().unwrap_or("openrouter");
@@ -125,7 +128,7 @@ pub fn workflow_admission_limit(
 
     let wf = ledger.workflow_by_name(workflow_name)?;
     if let Some(max) = doc.policies.max_runs_per_day {
-        let today = ledger.workflow_runs_today_by_id(&wf.id)?;
+        let today = ledger.workflow_runs_today_by_id(&wf.id, exclude_run)?;
         if today >= u64::from(max) {
             return Ok(Some(Violation {
                 kind: "workflow_max_runs_per_day",
@@ -263,10 +266,10 @@ pub fn post_run_check(task: &Task, cost_usd: Option<f64>) -> Option<Violation> {
     let (Some(max), Some(cost)) = (task.spec.budget.max_cost_per_run_usd, cost_usd) else {
         return None;
     };
-    if cost > max {
+    if cost >= max {
         return Some(Violation {
             kind: "max_cost_per_run",
-            detail: format!("run cost ${cost:.4} > max_cost_per_run_usd ${max:.2}"),
+            detail: format!("run cost ${cost:.4} >= max_cost_per_run_usd ${max:.2}"),
         });
     }
     None

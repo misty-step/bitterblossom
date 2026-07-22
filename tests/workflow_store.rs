@@ -1236,10 +1236,9 @@ fn concurrent_revisions_activations_and_accepts_never_lose_or_fork_history() {
                     {
                         AcceptOutcome::Accepted { run } => accepted.push((run.id, run.revision)),
                         AcceptOutcome::Duplicate { .. } => unreachable!("no dedupe key supplied"),
-                        AcceptOutcome::Denied { .. } => {
-                            unreachable!("daily ceiling is not configured")
+                        AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. } => {
+                            unreachable!("never paused")
                         }
-                        AcceptOutcome::Suppressed { .. } => unreachable!("never paused"),
                     }
                 }
                 accepted
@@ -1322,7 +1321,10 @@ fn blind_run_cap_is_pinned_per_revision_without_daily_revaluation() {
 }
 
 #[test]
-fn recheck_stopped_run_without_attempt_releases_capacity() {
+fn recheck_violation_defers_run_and_operator_stop_releases_capacity() {
+    // PR #1013: a recheck violation defers (run stays queued, reservation
+    // pinned) instead of terminally stopping accepted work; a pending
+    // operator stop outranks deferral and releases the reserved capacity.
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fs::write(
@@ -1344,6 +1346,24 @@ fn recheck_stopped_run_without_attempt_releases_capacity() {
         "dev = true\n[budget]\nmax_cost_per_day_usd = 0.5\n",
     )
     .unwrap();
+    let deferred = bb(root, &["workflow", "execute", first_id, "--json"]);
+    assert!(!deferred.status.success(), "{deferred:?}");
+    assert!(
+        String::from_utf8_lossy(&deferred.stderr).contains("deferred by admission recheck"),
+        "{}",
+        String::from_utf8_lossy(&deferred.stderr)
+    );
+    let shown = bb_json(root, &["workflow", "run-show", first_id, "--json"]);
+    assert_eq!(shown["status"]["state"], "queued", "{shown}");
+    // The deferred run's reservation stays pinned: capacity is NOT released.
+    let spend = bb_json(root, &["workflow", "spend", "pr-review", "--json"]);
+    assert_eq!(spend["reserved_usd"], 1.0, "{spend}");
+    // Operator stop outranks deferral: the next claim stops terminally and
+    // releases the reserved capacity.
+    bb_ok(
+        root,
+        &["workflow", "stop", first_id, "--reason", "operator abandon"],
+    );
     let stopped = bb_json(root, &["workflow", "execute", first_id, "--json"]);
     assert_eq!(stopped["status"]["state"], "stopped", "{stopped}");
     assert!(stopped["steps"].as_array().unwrap().is_empty(), "{stopped}");

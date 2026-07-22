@@ -1122,11 +1122,11 @@ impl<'a> InFlightBudgetMonitor<'a> {
             self.last_recorded_cost = Some(cost);
         }
         let max = self.max_cost_usd?;
-        if cost <= max || self.breach.is_some() {
+        if cost < max || self.breach.is_some() {
             return None;
         }
         let reason = format!(
-            "in-flight cost cap {}: observed ${cost:.4} > max_cost_per_run_usd ${max:.2}",
+            "in-flight cost cap {}: observed ${cost:.4} >= max_cost_per_run_usd ${max:.2}",
             self.policy
         );
         let breach = InFlightCapBreach::Cost {

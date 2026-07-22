@@ -245,6 +245,11 @@ impl WorkflowDoc {
                             self.name
                         );
                     }
+                    if let Some(expr) = &trigger.dedupe_key {
+                        crate::ingress::validate_dedupe_key_expression(expr).with_context(
+                            || format!("workflow '{}': invalid webhook dedupe_key", self.name),
+                        )?;
+                    }
                 }
                 other => bail!(
                     "workflow '{}': trigger kind '{other}' is unknown (known: {})",
@@ -337,6 +342,28 @@ impl WorkflowDoc {
                     );
                 }
             }
+        }
+        if self.policies.max_runs_per_day == Some(0) {
+            bail!(
+                "workflow '{}': policies.max_runs_per_day must be >= 1",
+                self.name
+            );
+        }
+        if self.policies.concurrency == Some(0) {
+            bail!(
+                "workflow '{}': policies.concurrency must be >= 1",
+                self.name
+            );
+        }
+        if self
+            .policies
+            .max_cost_per_run_usd
+            .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
+        {
+            bail!(
+                "workflow '{}': policies.max_cost_per_run_usd must be finite and >= 0",
+                self.name
+            );
         }
         if self.policies.max_rounds == Some(0) {
             bail!("workflow '{}': policies.max_rounds must be >= 1", self.name);
@@ -610,6 +637,8 @@ pub struct WorkflowRevisionRow {
 pub struct WorkflowEventRow {
     pub id: i64,
     pub workflow_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub kind: String,
     pub data: Option<String>,
     pub at: String,
@@ -640,14 +669,16 @@ pub enum AcceptOutcome {
     Duplicate {
         run: WorkflowRunRow,
     },
-    /// The workflow daily cost ceiling rejected this acceptance. No run row
-    /// is created; the named workflow event is the durable denial evidence.
-    Denied {
+    Suppressed {
         workflow: String,
         reason: String,
     },
-    Suppressed {
+    /// Admission policy refused the event before a run row was created.
+    /// The audit event is durable and the caller can retry after the named
+    /// queue, concurrency, run-count, or attention-debt condition clears.
+    Denied {
         workflow: String,
+        kind: String,
         reason: String,
     },
 }
@@ -727,6 +758,10 @@ impl Ledger {
             params![workflow_id, kind, data, now()],
         )?;
         Ok(())
+    }
+
+    fn workflow_run_audit(&self, run_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
+        self.record_workflow_runtime_event(run_id, kind, data)
     }
 
     fn insert_revision(
@@ -849,9 +884,100 @@ impl Ledger {
         })
     }
 
+    fn validate_activation_routes(
+        &self,
+        workflow_id: &str,
+        doc: &WorkflowDoc,
+        reserved_routes: &[String],
+    ) -> Result<()> {
+        let mut candidate_routes = std::collections::BTreeSet::new();
+        for route in doc
+            .triggers
+            .iter()
+            .filter(|trigger| trigger.kind == "webhook")
+            .filter_map(|trigger| trigger.route.as_deref())
+        {
+            let normalized = crate::ingress::normalize_route(route);
+            if normalized.is_empty() || !candidate_routes.insert(normalized.clone()) {
+                bail!("workflow contains duplicate or empty webhook route '{normalized}'");
+            }
+        }
+        for route in reserved_routes {
+            if candidate_routes.contains(&crate::ingress::normalize_route(route)) {
+                bail!("webhook route '{route}' is already owned by a task webhook");
+            }
+        }
+        for other in self.list_workflows()? {
+            if other.id == workflow_id || !matches!(other.state.as_str(), "active" | "paused") {
+                continue;
+            }
+            let Some(revision) = other.active_revision else {
+                self.workflow_audit(
+                    &other.id,
+                    "workflow_needs_attention",
+                    Some("active workflow has no active revision"),
+                )?;
+                continue;
+            };
+            let row = match self.workflow_revision_row(&other.id, revision) {
+                Ok(row) => row,
+                Err(error) => {
+                    self.workflow_audit(
+                        &other.id,
+                        "workflow_needs_attention",
+                        Some("active workflow revision is missing"),
+                    )?;
+                    eprintln!(
+                        "workflow '{}' skipped during route collision scan: {error:#}",
+                        other.name
+                    );
+                    continue;
+                }
+            };
+            let other_doc = match WorkflowDoc::from_canonical_json(&row.document)
+                .and_then(|doc| doc.validate().map(|()| doc))
+            {
+                Ok(doc) => doc,
+                Err(error) => {
+                    // A poisoned active sibling is isolated by ingress/cron;
+                    // activation must not revive the old plane-wide outage by
+                    // making every healthy workflow impossible to activate.
+                    eprintln!(
+                        "workflow '{}' skipped during route collision scan: {error:#}",
+                        other.name
+                    );
+                    continue;
+                }
+            };
+            for route in other_doc
+                .triggers
+                .iter()
+                .filter(|trigger| trigger.kind == "webhook")
+                .filter_map(|trigger| trigger.route.as_deref())
+            {
+                if candidate_routes.contains(&crate::ingress::normalize_route(route)) {
+                    bail!(
+                        "webhook route '{route}' is already owned by active workflow or paused workflow '{}'",
+                        other.name
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Activate one revision (default: latest). New acceptances pin the new
     /// revision; existing runs keep the revision they pinned at acceptance.
     pub fn activate_workflow(&self, name: &str, revision: Option<i64>) -> Result<WorkflowRow> {
+        self.activate_workflow_with_reserved_routes(name, revision, &[])
+    }
+
+    pub fn activate_workflow_with_reserved_routes(
+        &self,
+        name: &str,
+        revision: Option<i64>,
+        reserved_routes: &[String],
+    ) -> Result<WorkflowRow> {
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
             if !lifecycle_allowed(&wf.state, "active") {
@@ -864,6 +990,13 @@ impl Ledger {
                 }
                 None => self.latest_workflow_revision(&wf.id)?.revision,
             };
+            let snapshot = self.workflow_revision_row(&wf.id, revision)?;
+            let document = WorkflowDoc::from_canonical_json(&snapshot.document)
+                .and_then(|doc| doc.validate().map(|()| doc))
+                .with_context(|| {
+                    format!("workflow '{name}' revision {revision} fails current validation")
+                })?;
+            self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             self.conn.execute(
                 "UPDATE workflows SET state = 'active', active_revision = ?2, updated_at = ?3
                  WHERE id = ?1",
@@ -876,19 +1009,27 @@ impl Ledger {
 
     /// Pause suppresses new run acceptance; active work elsewhere finishes.
     pub fn pause_workflow(&self, name: &str, reason: &str) -> Result<WorkflowRow> {
-        self.workflow_lifecycle(name, "paused", "paused", Some(reason))
+        self.workflow_lifecycle(name, "paused", "paused", Some(reason), &[])
     }
 
     /// Resume re-enables acceptance on the already-active revision. It never
     /// replays events suppressed while paused; those stay audit dispositions.
     pub fn resume_workflow(&self, name: &str) -> Result<WorkflowRow> {
-        self.workflow_lifecycle(name, "active", "resumed", None)
+        self.resume_workflow_with_reserved_routes(name, &[])
+    }
+
+    pub fn resume_workflow_with_reserved_routes(
+        &self,
+        name: &str,
+        reserved_routes: &[String],
+    ) -> Result<WorkflowRow> {
+        self.workflow_lifecycle(name, "active", "resumed", None, reserved_routes)
     }
 
     /// Archived workflows are frozen, never deleted: historical runs keep
     /// their revision referents readable forever.
     pub fn archive_workflow(&self, name: &str) -> Result<WorkflowRow> {
-        self.workflow_lifecycle(name, "archived", "archived", None)
+        self.workflow_lifecycle(name, "archived", "archived", None, &[])
     }
 
     fn workflow_lifecycle(
@@ -897,6 +1038,7 @@ impl Ledger {
         to: &str,
         audit_kind: &str,
         data: Option<&str>,
+        reserved_routes: &[String],
     ) -> Result<WorkflowRow> {
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
@@ -907,6 +1049,20 @@ impl Ledger {
             };
             if !allowed {
                 bail!("workflow '{name}' is {}; cannot move to {to}", wf.state);
+            }
+            if to == "active" {
+                let revision = wf
+                    .active_revision
+                    .context("paused workflow has no active revision")?;
+                let snapshot = self.workflow_revision_row(&wf.id, revision)?;
+                let document = WorkflowDoc::from_canonical_json(&snapshot.document)
+                    .and_then(|doc| doc.validate().map(|()| doc))
+                    .with_context(|| {
+                        format!(
+                            "workflow '{name}' active revision {revision} fails current validation"
+                        )
+                    })?;
+                self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             }
             self.conn.execute(
                 "UPDATE workflows SET state = ?2, updated_at = ?3 WHERE id = ?1",
@@ -920,6 +1076,15 @@ impl Ledger {
     /// Rollback re-activates an earlier snapshot as a NEW revision — history
     /// is never rewritten. The workflow must already have an activation.
     pub fn rollback_workflow(&self, name: &str, to_revision: i64) -> Result<(WorkflowRow, i64)> {
+        self.rollback_workflow_with_reserved_routes(name, to_revision, &[])
+    }
+
+    pub fn rollback_workflow_with_reserved_routes(
+        &self,
+        name: &str,
+        to_revision: i64,
+        reserved_routes: &[String],
+    ) -> Result<(WorkflowRow, i64)> {
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
             if !matches!(wf.state.as_str(), "active" | "paused") {
@@ -933,14 +1098,15 @@ impl Ledger {
             // fails CURRENT validation (possibly stored by an older binary
             // with weaker rules) must not be re-activated. History stays
             // readable; only re-activation is refused.
-            WorkflowDoc::from_canonical_json(&snapshot.document)
-                .and_then(|doc| doc.validate())
+            let document = WorkflowDoc::from_canonical_json(&snapshot.document)
+                .and_then(|doc| doc.validate().map(|()| doc))
                 .with_context(|| {
                     format!(
                         "revision {to_revision} fails current validation; \
                          it cannot be re-activated by rollback"
                     )
                 })?;
+            self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             let revision = self.insert_revision(
                 &wf.id,
                 &snapshot.document,
@@ -984,58 +1150,118 @@ impl Ledger {
         }
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
+            // Dedupe is checked before paused suppression and every admission
+            // brake: redeliveries remain observable duplicates, never denials.
+            if let Some(key) = dedupe_key {
+                let existing: Option<String> = self.conn.query_row(
+                    "SELECT id FROM workflow_runs WHERE workflow_id = ?1 AND dedupe_key = ?2",
+                    params![wf.id, key],
+                    |r| r.get(0),
+                ).optional()?;
+                if let Some(id) = existing {
+                    self.workflow_audit(&wf.id, "run_deduplicated", Some(&format!("dedupe_key {key:?} matched run {id}")))?;
+                    return Ok(AcceptOutcome::Duplicate { run: self.workflow_run(&id)? });
+                }
+            }
             match wf.state.as_str() {
                 "active" => {}
                 "paused" => {
                     let reason = format!("workflow paused; {trigger_kind} event suppressed");
                     self.workflow_audit(&wf.id, "event_suppressed", Some(&reason))?;
-                    return Ok(AcceptOutcome::Suppressed {
-                        workflow: wf.name,
-                        reason,
-                    });
+                    return Ok(AcceptOutcome::Suppressed { workflow: wf.name, reason });
                 }
                 other => bail!("workflow '{name}' is {other}; only active workflows accept runs"),
             }
-            if let Some(key) = dedupe_key {
-                let existing: Option<String> = self
-                    .conn
-                    .query_row(
-                        "SELECT id FROM workflow_runs WHERE workflow_id = ?1 AND dedupe_key = ?2",
-                        params![wf.id, key],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if let Some(id) = existing {
-                    self.workflow_audit(
-                        &wf.id,
-                        "run_deduplicated",
-                        Some(&format!("dedupe_key {key:?} matched run {id}")),
-                    )?;
-                    return Ok(AcceptOutcome::Duplicate {
-                        run: self.workflow_run(&id)?,
-                    });
-                }
-            }
+
             let revision = wf
                 .active_revision
                 .context("active workflow has no active revision (corrupt state)")?;
-            let revision_row = self.workflow_revision_row(&wf.id, revision)?;
-            let doc = WorkflowDoc::from_canonical_json(&revision_row.document)?;
-            let estimate = doc.policies.conservative_cost_estimate();
+        let snapshot = self.workflow_revision_row(&wf.id, revision)?;
+            // A poisoned active revision is isolated at the acceptance door;
+            // history remains readable but no run or partial state is created.
+            // Acceptance pins the stored snapshot and applies admission policy.
+            let document = match WorkflowDoc::from_canonical_json(&snapshot.document) {
+                Ok(document) => document,
+                Err(error) => {
+                    self.workflow_audit(&wf.id, "workflow_needs_attention", Some("active workflow configuration is invalid"))?;
+                    self.workflow_audit(&wf.id, "run_denied", Some("kind=invalid_configuration"))?;
+                    eprintln!("workflow '{}' skipped: invalid active configuration ({:#})", wf.name, error);
+                    return Ok(AcceptOutcome::Denied {
+                        workflow: wf.name,
+                        kind: "invalid_configuration".to_string(),
+                        reason: "active workflow configuration is invalid".to_string(),
+                    });
+                }
+            };
+            let deny = |kind: &str, reason: String| -> Result<AcceptOutcome> {
+                if kind == "workflow_daily_ceiling" {
+                    self.workflow_audit(&wf.id, kind, Some(&reason))?;
+                }
+                self.workflow_audit(&wf.id, "run_denied", Some(&format!("kind={kind} {reason}")))?;
+                Ok(AcceptOutcome::Denied {
+                    workflow: wf.name.clone(),
+                    kind: kind.to_string(),
+                    reason,
+                })
+            };
+            let estimate = document.policies.conservative_cost_estimate();
             if !estimate.is_finite() || estimate <= 0.0 {
-                bail!("workflow '{name}': conservative run estimate must be finite and greater than zero");
+                return deny("invalid_configuration", format!("workflow '{}': conservative run estimate must be finite and greater than zero", name));
             }
             if let Some(violation) = crate::budget::workflow_admission_limit(
-                plane, self, &wf.name, &doc, estimate,
+                plane, self, &wf.name, &document, estimate, None,
             )? {
-                self.workflow_audit(&wf.id, violation.kind, Some(&violation.detail))?;
-                return Ok(AcceptOutcome::Denied {
-                    workflow: wf.name,
-                    reason: violation.detail,
-                });
+                return deny(violation.kind, violation.detail);
             }
-            let id = format!("wfr-{}", new_id());
+            const MAX_QUEUED_WORKFLOW_RUNS: i64 = 256;
+            let queued: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM workflow_run_status s
+                 JOIN workflow_runs r ON r.id = s.run_id
+                 WHERE r.workflow_id = ?1 AND s.state = 'queued'",
+                params![wf.id],
+                |r| r.get(0),
+            )?;
+            if queued >= MAX_QUEUED_WORKFLOW_RUNS {
+                return deny(
+                    "queue_backpressure",
+                    format!("workflow queued depth {} reached limit {}", queued, MAX_QUEUED_WORKFLOW_RUNS),
+                );
+            }
+
             let ts = now();
+            if let Some(limit) = document.policies.concurrency {
+                let active: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM workflow_run_status s
+                     JOIN workflow_runs r ON r.id = s.run_id
+                     WHERE r.workflow_id = ?1 AND s.state IN ('queued', 'running')",
+                    params![wf.id],
+                    |r| r.get(0),
+                )?;
+                if active >= i64::from(limit) {
+                    return deny(
+                        "concurrency",
+                        format!("workflow has {active} queued/running runs (limit {limit})"),
+                    );
+                }
+            }
+
+            // A needs_attention run is an explicit operator debt signal. Do
+            // not fan out more unattended work until the operator resolves it.
+            let debt: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM workflow_run_status s
+                 JOIN workflow_runs r ON r.id = s.run_id
+                 WHERE r.workflow_id = ?1 AND s.state = 'needs_attention'",
+                params![wf.id],
+                |r| r.get(0),
+            )?;
+            if debt > 0 {
+                return deny(
+                    "attention_debt",
+                    format!("workflow has {debt} run(s) needing operator attention"),
+                );
+            }
+
+            let id = format!("wfr-{}", new_id());
             self.conn.execute(
                 "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, estimated_cost_usd, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1051,6 +1277,11 @@ impl Ledger {
                 "run_accepted",
                 Some(&format!("run {id} pinned revision {revision}")),
             )?;
+            self.workflow_run_audit(
+                &id,
+                "run_accepted",
+                Some(&format!("pinned revision {revision}")),
+            )?;
             Ok(AcceptOutcome::Accepted {
                 run: self.workflow_run(&id)?,
             })
@@ -1058,8 +1289,10 @@ impl Ledger {
     }
 
     /// Recheck queued capacity under the same immediate transaction used by
-    /// acceptance. The run's pinned estimate is already an active reservation;
-    /// no current-policy estimate is introduced here.
+    /// acceptance. The run's pinned estimate is already an active reservation
+    /// (so no current-policy estimate is introduced here), and the run itself
+    /// is excluded from the daily run count — it was admitted against that
+    /// budget when it was accepted.
     pub fn recheck_workflow_run_admission(
         &self,
         plane: &Plane,
@@ -1069,10 +1302,15 @@ impl Ledger {
             let run = self.workflow_run(run_id)?;
             let revision = self.workflow_revision_row(&run.workflow_id, run.revision)?;
             let doc = WorkflowDoc::from_canonical_json(&revision.document)?;
-            Ok(
-                crate::budget::workflow_admission_limit(plane, self, &run.workflow, &doc, 0.0)?
-                    .map(|v| (v.kind.to_string(), v.detail)),
-            )
+            Ok(crate::budget::workflow_admission_limit(
+                plane,
+                self,
+                &run.workflow,
+                &doc,
+                0.0,
+                Some(run_id),
+            )?
+            .map(|v| (v.kind.to_string(), v.detail)))
         })
     }
 
@@ -1155,7 +1393,7 @@ impl Ledger {
     pub fn workflow_events(&self, name: &str) -> Result<Vec<WorkflowEventRow>> {
         let wf = self.workflow_by_name(name)?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, workflow_id, kind, data, at FROM workflow_events
+            "SELECT id, workflow_id, run_id, kind, data, at FROM workflow_events
              WHERE workflow_id = ?1 ORDER BY id",
         )?;
         let rows = stmt
@@ -1163,9 +1401,30 @@ impl Ledger {
                 Ok(WorkflowEventRow {
                     id: r.get(0)?,
                     workflow_id: r.get(1)?,
-                    kind: r.get(2)?,
-                    data: r.get(3)?,
-                    at: r.get(4)?,
+                    run_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    data: r.get(4)?,
+                    at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn workflow_run_events(&self, run_id: &str) -> Result<Vec<WorkflowEventRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workflow_id, run_id, kind, data, at FROM workflow_events
+             WHERE run_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![run_id], |r| {
+                Ok(WorkflowEventRow {
+                    id: r.get(0)?,
+                    workflow_id: r.get(1)?,
+                    run_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    data: r.get(4)?,
+                    at: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1193,12 +1452,21 @@ impl Ledger {
         Ok(rows)
     }
 
-    pub(crate) fn workflow_runs_today_by_id(&self, workflow_id: &str) -> Result<u64> {
+    /// Workflow runs created today, optionally excluding one run id: the
+    /// claim-time admission recheck passes the claimed run itself so a run
+    /// admitted at the daily limit is never counted against its own
+    /// execution.
+    pub(crate) fn workflow_runs_today_by_id(
+        &self,
+        workflow_id: &str,
+        exclude_run: Option<&str>,
+    ) -> Result<u64> {
         let day = &now()[..10];
         let count = self.conn.query_row(
             "SELECT COUNT(*) FROM workflow_runs
-             WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = ?2",
-            params![workflow_id, day],
+             WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = ?2
+               AND (?3 IS NULL OR id != ?3)",
+            params![workflow_id, day, exclude_run],
             |row| row.get(0),
         )?;
         Ok(count)

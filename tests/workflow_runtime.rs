@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
+use rusqlite::{params, Connection};
 
 fn write_plane(root: &Path) {
     fs::write(
@@ -114,7 +115,7 @@ fn metered_workflow_run_stops_in_flight_on_per_run_ceiling() {
     let stub = write_stub(
         root,
         "metered.sh",
-        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.50,"tokens":{"input":1,"output":1}}}'
+        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.01,"tokens":{"input":1,"output":1}}}'
 sleep 2
 printf '%s\n' '{"part":{"type":"text","text":"done"}}'"#,
     );
@@ -161,10 +162,10 @@ side_effect_policy = "kill"
         .iter()
         .any(|event| event.kind == "workflow_guard_spend_in_flight"));
     let status = ledger.workflow_run_status(&run_id).unwrap().unwrap();
-    assert_eq!(status.cost_usd, Some(0.50));
+    assert_eq!(status.cost_usd, Some(0.01));
     let steps = ledger.workflow_step_runs(&run_id).unwrap();
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].cost_usd, Some(0.50));
+    assert_eq!(steps[0].cost_usd, Some(0.01));
 }
 
 #[test]
@@ -236,7 +237,7 @@ fn final_only_claude_cost_is_checked_before_success() {
     let stub = write_stub(
         root,
         "claude-final.sh",
-        r#"printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0.02,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'"#,
+        r#"printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0.01,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'"#,
     );
     let doc = write_doc(
         root,
@@ -271,7 +272,7 @@ side_effect_policy = "kill"
         .as_str()
         .unwrap()
         .contains("final cost cap"));
-    assert_eq!(view["status"]["cost_usd"], 0.02);
+    assert_eq!(view["status"]["cost_usd"], 0.01);
 }
 
 #[test]
@@ -1354,6 +1355,18 @@ bin = "{}"
     // hard-kill the plane mid-execution (SIGKILL: no graceful shutdown)
     serve.kill_hard();
 
+    // Simulate a store-era row with step evidence but no mutable status row.
+    // Ledger::open must backfill it as needs_attention, then boot recovery
+    // must still probe the inherited step instead of skipping it.
+    {
+        let conn = Connection::open(root.join(".bb/plane.db")).unwrap();
+        conn.execute(
+            "DELETE FROM workflow_run_status WHERE run_id = ?1",
+            params![run_id],
+        )
+        .unwrap();
+    }
+
     // restart: boot classification must mark the inherited run
     // needs_attention naming the in-flight step — never blindly re-execute
     let (serve2, port2) = spawn_serve(root, &[("BB_HOOK_WFTEST", PIPELINE_SECRET)]);
@@ -2352,4 +2365,128 @@ fn denied_workflow_webhook_returns_429() {
     );
     assert_eq!(status, 429, "{body}");
     assert!(body["denied"].is_string(), "{body}");
+}
+
+#[test]
+fn admitted_run_at_max_runs_per_day_executes_instead_of_stopping() {
+    // PR #1013 review blocker: the claim-time admission recheck used to
+    // count the claimed run against its own daily budget, terminally
+    // stopping the only run a max_runs_per_day = 1 workflow ever admits.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "bounded-success.sh", "echo completed");
+    let doc = write_doc(
+        root,
+        "bounded-daily.toml",
+        &format!(
+            r#"
+name = "bounded-daily"
+goal = "The single admitted daily run must execute, not self-stop."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Do the bounded work."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+[policies]
+max_runs_per_day = 1
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "bounded-daily");
+    let run_id = accept_test_run(root, "bounded-daily");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    // The daily budget the run was admitted under is fully consumed for
+    // NEW acceptances.
+    let denied = bb(root, &["workflow", "accept", "bounded-daily", "--json"]);
+    assert!(!denied.status.success(), "{denied:?}");
+    assert!(
+        String::from_utf8_lossy(&denied.stdout).contains("max_runs_per_day"),
+        "{denied:?}"
+    );
+}
+
+#[test]
+fn transient_daily_ceiling_defers_claimed_run_and_keeps_it_queued() {
+    // PR #1013 review blocker: a transient plane-ceiling condition at claim
+    // time used to terminally stop an accepted, reservation-backed run.
+    // Deferral must keep it queued and retryable until the pressure clears.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("plane.toml"),
+        "dev = true\n[ingress]\nbind = \"127.0.0.1:0\"\n[budget]\nmax_cost_per_day_usd = 1.0\n",
+    )
+    .unwrap();
+    let stub = write_stub(root, "deferred-success.sh", "echo completed");
+    let doc = write_doc(
+        root,
+        "deferrable.toml",
+        &format!(
+            r#"
+name = "deferrable"
+goal = "A queued run outlives transient plane-ceiling pressure."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+goal = "Do the deferrable work."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+[policies]
+estimated_cost_per_run_usd = 0.25
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "deferrable");
+    let run_id = accept_test_run(root, "deferrable");
+
+    // Transient pressure: another actor's standard spend blows the ceiling
+    // between acceptance and the runner claim.
+    let conn = Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute("INSERT INTO runs (id, task, trigger_kind, state, trace_id, created_at, updated_at) VALUES ('std-1', 'standard', 'test', 'running', 'trace', datetime('now'), datetime('now'))", []).unwrap();
+    conn.execute("INSERT INTO attempts (run_id, n, agent_name, agent_version, harness, model, phase, cost_usd, started_at) VALUES ('std-1', 1, 'agent', 1, 'opencode', 'stub', 'executing', 2.0, datetime('now'))", []).unwrap();
+
+    let deferred = bb(root, &["workflow", "execute", &run_id, "--json"]);
+    assert!(!deferred.status.success(), "{deferred:?}");
+    assert!(
+        String::from_utf8_lossy(&deferred.stderr).contains("deferred by admission recheck"),
+        "{}",
+        String::from_utf8_lossy(&deferred.stderr)
+    );
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    let status = ledger.workflow_run_status(&run_id).unwrap().unwrap();
+    assert_eq!(status.state, "queued", "{:?}", status.detail);
+
+    // Same pressure, second claim: defers again without duplicating the
+    // guard event for an unchanged reason.
+    let again = bb(root, &["workflow", "execute", &run_id, "--json"]);
+    assert!(!again.status.success(), "{again:?}");
+    let guard_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM guard_events WHERE kind = 'workflow_admission_recheck_global_daily_ceiling'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(guard_count, 1);
+
+    // Pressure clears: the SAME run executes to success.
+    conn.execute("DELETE FROM attempts WHERE run_id = 'std-1'", [])
+        .unwrap();
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
 }

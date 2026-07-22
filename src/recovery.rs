@@ -25,9 +25,9 @@ pub fn recover_inherited_runs(plane: &Plane, ledger: &mut Ledger) -> Result<Vec<
         let attempts = ledger.attempts(&run.id)?;
         let latest = attempts.last();
         let release_lease = |ledger: &Ledger| -> Result<()> {
-            if let Ok(task) = plane.task(&run.task) {
-                ledger.release_host_lease(&task.host(), &run.id)?;
-            }
+            // Release by run identity, not the current task host. A renamed or
+            // removed task declaration must not strand a lease forever.
+            ledger.release_host_leases_for_run(&run.id)?;
             Ok(())
         };
 

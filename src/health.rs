@@ -170,6 +170,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
         })
     });
     let attention_debt = attention::scan(plane, ledger, generated_at)?;
+    let workflow_runtime = ledger.workflow_freshness_summary(300)?;
     // Conservative reservation: the worst-case cost each in-flight run could
     // still incur, bounded by its task's per-run cap. The daily ceiling is
     // enforced separately on every dispatch (budget::pre_dispatch_check).
@@ -201,6 +202,7 @@ pub fn status_view(plane: &Plane, ledger: &Ledger) -> Result<Value> {
             "cost_today_usd": ledger.cost_today()?,
             "max_cost_per_day_usd": plane.spec.budget.max_cost_per_day_usd,
             "plane_paused": paused.is_some(),
+            "workflow_runtime": workflow_runtime,
         },
         "backup": backup_status(plane, generated_at)?,
         "guards": {

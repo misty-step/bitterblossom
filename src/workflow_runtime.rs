@@ -47,6 +47,8 @@ pub const OUTCOME_FILENAME: &str = "OUTCOME.json";
 /// Dynamic child-agent evidence a step's agent declares for the run tree.
 pub const CHILD_AGENTS_FILENAME: &str = "CHILD_AGENTS.json";
 const DEFAULT_STEP_TIMEOUT_MINUTES: u64 = 30;
+/// A queued runner must not hold a worker thread behind one host forever.
+const WORKFLOW_LEASE_WAIT: Duration = Duration::from_secs(60);
 /// Absolute per-run-group step-attempt ceiling (defense-in-depth behind the
 /// declared cycle guards; see `execute_claimed`).
 const MAX_RUN_GROUP_ATTEMPTS: i64 = 256;
@@ -137,40 +139,85 @@ pub fn webhook_workflow_target(
     ledger: &Ledger,
     route: &str,
 ) -> Result<Option<(String, crate::workflow::WorkflowTrigger)>> {
+    let route = crate::ingress::normalize_route(route);
+    let mut active = None;
+    let mut paused = None;
     for wf in ledger.list_workflows()? {
-        if wf.state != "active" {
+        if !matches!(wf.state.as_str(), "active" | "paused") {
             continue;
         }
         let Some(revision) = wf.active_revision else {
             continue;
         };
-        // Skip-and-canary: one workflow whose active revision fails to load
-        // or validate must never block OTHER workflows' ingress (the hard
-        // refusal lives at the execute/rollback doors). Without this, any
-        // future validation tightening turns previously-valid active docs
-        // into a plane-wide workflow-ingress outage.
-        let doc = match load_document(ledger, &wf.name, revision) {
+        let row = match ledger.workflow_revision(&wf.name, revision) {
+            Ok(row) => row,
+            Err(error) => {
+                eprintln!(
+                    "workflow '{}' skipped: missing active revision ({error:#})",
+                    wf.name
+                );
+                continue;
+            }
+        };
+        let doc = match WorkflowDoc::from_canonical_json(&row.document)
+            .and_then(|doc| doc.validate().map(|()| doc))
+        {
             Ok(doc) => doc,
-            Err(e) => {
-                skip_unloadable_workflow(&wf.name, &e);
+            Err(error) => {
+                eprintln!(
+                    "workflow '{}' skipped: invalid active revision ({error:#})",
+                    wf.name
+                );
                 continue;
             }
         };
         for trigger in &doc.triggers {
-            if trigger.kind == "webhook" && trigger.route.as_deref() == Some(route) {
-                return Ok(Some((wf.name.clone(), trigger.clone())));
+            if trigger.kind != "webhook"
+                || trigger
+                    .route
+                    .as_deref()
+                    .map(crate::ingress::normalize_route)
+                    .as_deref()
+                    != Some(route.as_str())
+            {
+                continue;
             }
+            let slot = if wf.state == "active" {
+                &mut active
+            } else {
+                &mut paused
+            };
+            if let Some((owner, _)) = slot {
+                bail!(
+                    "webhook route '{route}' is claimed by active workflows '{}' and '{}'",
+                    owner,
+                    wf.name
+                );
+            }
+            *slot = Some((wf.name.clone(), trigger.clone()));
         }
     }
-    Ok(None)
+    Ok(active.or(paused))
 }
 
 /// One accepted (or deduplicated) schedule fire, for logs and drills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronDisposition {
+    Accepted,
+    Duplicate,
+    Suppressed,
+    Denied,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CronAcceptance {
     pub workflow: String,
     pub scheduled: String,
     pub duplicate: bool,
+    pub disposition: CronDisposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Scan active workflows' cron triggers and accept fires due in
@@ -187,7 +234,7 @@ pub fn workflow_cron_tick(
     max_fires: u32,
 ) -> Result<Vec<CronAcceptance>> {
     let mut accepted = Vec::new();
-    for wf in ledger.list_workflows()? {
+    'workflow: for wf in ledger.list_workflows()? {
         if wf.state != "active" {
             continue;
         }
@@ -207,26 +254,49 @@ pub fn workflow_cron_tick(
             .entry(wf.name.clone())
             .or_insert(default_last);
         let mut fires = Vec::new();
+        let mut discarded = 0usize;
+        let mut fired_total = 0usize;
         for trigger in &doc.triggers {
             if trigger.kind != "cron" {
                 continue;
             }
             let schedule =
-                crate::ingress::parse_schedule(trigger.schedule.as_deref().unwrap_or(""))
-                    .with_context(|| format!("workflow '{}': bad cron trigger", wf.name))?;
-            fires.extend(crate::ingress::due_fires(&schedule, last, now_utc));
+                match crate::ingress::parse_schedule(trigger.schedule.as_deref().unwrap_or("")) {
+                    Ok(schedule) => schedule,
+                    Err(error) => {
+                        skip_unloadable_workflow(&wf.name, &error);
+                        continue 'workflow;
+                    }
+                };
+            let (bounded, skipped) = crate::ingress::due_fires_bounded_for_runtime(
+                &schedule,
+                last,
+                now_utc,
+                max_fires as usize,
+            );
+            fired_total = fired_total
+                .saturating_add(bounded.len())
+                .saturating_add(skipped);
+            discarded = discarded.saturating_add(skipped);
+            fires.extend(bounded);
         }
         fires.sort();
         let max = max_fires.max(1) as usize;
         if fires.len() > max {
             let skipped = fires.len() - max;
+            discarded = discarded.saturating_add(skipped);
+            fires = fires.split_off(skipped);
+        }
+        // Record every discarded fire from every trigger before advancing the
+        // workflow cursor. Otherwise multi-trigger catch-up silently loses the
+        // oldest per-trigger fires and a restart cannot explain the gap.
+        if discarded > 0 {
             ledger.record_guard_event(
                 "workflow_cron_collapse",
                 Some(&wf.name),
-                &format!("skipped={skipped} fired={}", fires.len()),
-                skipped as i64,
+                &format!("skipped={discarded} fired={fired_total}"),
+                discarded as i64,
             )?;
-            fires = fires.split_off(skipped);
         }
         for fire in fires {
             let scheduled = fire.to_rfc3339();
@@ -240,10 +310,24 @@ pub fn workflow_cron_tick(
                     dedupe_key: Some(format!("cron:{scheduled}")),
                 },
             )?;
+            let (disposition, detail, duplicate) = match outcome {
+                AcceptOutcome::Accepted { .. } => (CronDisposition::Accepted, None, false),
+                AcceptOutcome::Duplicate { .. } => (CronDisposition::Duplicate, None, true),
+                AcceptOutcome::Suppressed { reason, .. } => {
+                    (CronDisposition::Suppressed, Some(reason), false)
+                }
+                AcceptOutcome::Denied { kind, reason, .. } => (
+                    CronDisposition::Denied,
+                    Some(format!("{kind}: {reason}")),
+                    false,
+                ),
+            };
             accepted.push(CronAcceptance {
                 workflow: wf.name.clone(),
                 scheduled,
-                duplicate: matches!(outcome, AcceptOutcome::Duplicate { .. }),
+                duplicate,
+                disposition,
+                detail,
             });
         }
         last_by_workflow.insert(wf.name.clone(), now_utc);
@@ -290,6 +374,19 @@ pub const RUN_STATES: &[&str] = &[
     "needs_attention",
 ];
 
+fn workflow_transition_allowed(from: &str, to: &str) -> bool {
+    from == to
+        || matches!(
+            (from, to),
+            ("queued", "running")
+                | (
+                    "running",
+                    "succeeded" | "failed" | "incomplete" | "stopped" | "needs_attention"
+                )
+                | ("needs_attention", "succeeded" | "failed" | "stopped")
+        )
+}
+
 #[derive(Debug, Serialize)]
 pub struct WorkflowRunStatusRow {
     pub run_id: String,
@@ -305,7 +402,7 @@ pub struct WorkflowRunStatusRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct StepRunRow {
     pub id: String,
     pub run_id: String,
@@ -400,6 +497,22 @@ impl Ledger {
         Ok(updated == 1)
     }
 
+    /// Release a just-claimed run back to `queued` after an admission
+    /// recheck violation. The pressure is environmental (spend ceilings,
+    /// sibling run-count consumption), not a defect of this run: deferring
+    /// keeps the accepted work and its pinned reservation intact for a
+    /// later runner tick instead of terminally destroying it. CAS on
+    /// `running` so a concurrent terminal transition wins.
+    pub fn defer_claimed_workflow_run(&self, run_id: &str, reason: &str) -> Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE workflow_run_status
+             SET state = 'queued', detail = ?2, updated_at = ?3
+             WHERE run_id = ?1 AND state = 'running'",
+            params![run_id, reason, now()],
+        )?;
+        Ok(updated == 1)
+    }
+
     pub fn set_workflow_run_state(
         &self,
         run_id: &str,
@@ -408,6 +521,18 @@ impl Ledger {
     ) -> Result<()> {
         if !RUN_STATES.contains(&state) {
             bail!("unknown workflow run state '{state}'");
+        }
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT state FROM workflow_run_status WHERE run_id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .with_context(|| format!("workflow run status row missing for {run_id}"))?;
+        if !workflow_transition_allowed(&current, state) {
+            bail!("invalid workflow run transition {current} -> {state}");
         }
         self.conn.execute(
             "UPDATE workflow_run_status SET state = ?2, detail = ?3, updated_at = ?4
@@ -446,12 +571,16 @@ impl Ledger {
     ) -> Result<WorkflowRunStatusRow> {
         // Touching the run proves it exists (workflow_run errors otherwise).
         self.workflow_run(run_id)?;
+        let current = self
+            .workflow_run_status(run_id)?
+            .context("workflow run status row missing")?;
+        if !matches!(current.state.as_str(), "queued" | "running") {
+            bail!(
+                "cannot request stop for workflow run {run_id} in state {}",
+                current.state
+            );
+        }
         let ts = now();
-        self.conn.execute(
-            "INSERT OR IGNORE INTO workflow_run_status (run_id, state, updated_at)
-             VALUES (?1, 'queued', ?2)",
-            params![run_id, ts],
-        )?;
         self.conn.execute(
             "UPDATE workflow_run_status
              SET stop_requested = 1, stop_reason = ?2, updated_at = ?3
@@ -477,20 +606,76 @@ impl Ledger {
         })
     }
 
+    pub const WORKFLOW_QUEUE_BATCH: i64 = 64;
+
     pub fn queued_workflow_run_ids(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT run_id FROM workflow_run_status WHERE state = 'queued' ORDER BY updated_at, run_id",
+            "SELECT run_id FROM workflow_run_status
+             WHERE state = 'queued' ORDER BY updated_at, run_id LIMIT ?1",
         )?;
         let ids = stmt
-            .query_map([], |r| r.get(0))?
+            .query_map(params![Self::WORKFLOW_QUEUE_BATCH], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(ids)
     }
 
+    pub fn workflow_freshness_summary(
+        &self,
+        stale_after_seconds: i64,
+    ) -> Result<serde_json::Value> {
+        let threshold =
+            (Utc::now() - chrono::Duration::seconds(stale_after_seconds.max(0))).to_rfc3339();
+        let queued: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'queued'",
+            [],
+            |r| r.get(0),
+        )?;
+        let running: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'running'",
+            [],
+            |r| r.get(0),
+        )?;
+        let needs_attention: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'needs_attention'",
+            [],
+            |r| r.get(0),
+        )?;
+        let stale_running: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'running' AND updated_at < ?1",
+            params![threshold],
+            |r| r.get(0),
+        )?;
+        let oldest_queued: Option<String> = self.conn.query_row(
+            "SELECT MIN(updated_at) FROM workflow_run_status WHERE state = 'queued'",
+            [],
+            |r| r.get(0),
+        )?;
+        let oldest_running: Option<String> = self.conn.query_row(
+            "SELECT MIN(updated_at) FROM workflow_run_status WHERE state = 'running'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(serde_json::json!({
+            "queued": queued,
+            "running": running,
+            "needs_attention": needs_attention,
+            "stale_running": stale_running,
+            "stale_after_seconds": stale_after_seconds.max(0),
+            "oldest_queued_updated_at": oldest_queued,
+            "oldest_running_updated_at": oldest_running,
+        }))
+    }
+
     fn running_workflow_run_ids(&self) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT run_id FROM workflow_run_status WHERE state = 'running'")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT s.run_id FROM workflow_run_status s
+             WHERE s.state = 'running'
+                OR (s.state = 'needs_attention' AND EXISTS (
+                    SELECT 1 FROM workflow_step_runs wsr
+                    WHERE wsr.run_id = s.run_id AND wsr.state = 'running'
+                ))
+             ORDER BY s.updated_at, s.run_id",
+        )?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -573,6 +758,35 @@ impl Ledger {
             "UPDATE workflow_step_runs SET state = 'failed', error = ?2, ended_at = ?3
              WHERE run_id = ?1 AND state = 'running'",
             params![run_id, error, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Close a step row left running by a crash. Recovery intentionally writes
+    /// a failure/uncertainty explanation instead of pretending the outcome is
+    /// known; the run status carries the operator-facing disposition.
+    pub fn close_workflow_step_for_recovery(&self, step_run_id: &str, error: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflow_step_runs
+             SET state = 'failed', error = ?2, ended_at = ?3
+             WHERE id = ?1 AND state = 'running'",
+            params![step_run_id, error, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Record runtime evidence in the workflow audit trail without exposing the
+    /// composition store's private transaction helper.
+    pub fn record_workflow_runtime_event(
+        &self,
+        run_id: &str,
+        kind: &str,
+        data: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO workflow_events (workflow_id, run_id, kind, data, at)
+             SELECT workflow_id, id, ?2, ?3, ?4 FROM workflow_runs WHERE id = ?1",
+            params![run_id, kind, data, now()],
         )?;
         Ok(())
     }
@@ -719,36 +933,243 @@ pub struct WorkflowRecoveryReport {
     pub run_id: String,
     pub workflow: String,
     pub step: Option<String>,
+    pub attempt_phase: Option<String>,
+    pub probe: Option<String>,
+    pub probe_state: Option<String>,
+    pub probe_reason: Option<String>,
+    pub lease_disposition: String,
     pub disposition: String,
 }
 
-/// Classify workflow runs inherited in `running` state at boot. A step
-/// attempt may have external side effects, so the plane never blindly
-/// re-executes: the run becomes `needs_attention` naming the exact
-/// uncertainty, and replay is an explicit operator act.
-pub fn recover_inherited_workflow_runs(ledger: &Ledger) -> Result<Vec<WorkflowRecoveryReport>> {
+fn workflow_recovery_report(
+    run_id: String,
+    workflow: String,
+    step: Option<String>,
+    disposition: &str,
+    probe: Option<crate::substrate::ProbeResult>,
+    lease_disposition: &str,
+    attempt_phase: Option<String>,
+) -> WorkflowRecoveryReport {
+    let (probe_text, probe_state, probe_reason) = match probe {
+        Some(probe) => (
+            Some(probe.description()),
+            Some(probe.state().to_string()),
+            probe.reason().map(ToString::to_string),
+        ),
+        None => (None, None, None),
+    };
+    WorkflowRecoveryReport {
+        run_id,
+        workflow,
+        step,
+        attempt_phase,
+        probe: probe_text,
+        probe_state,
+        probe_reason,
+        lease_disposition: lease_disposition.to_string(),
+        disposition: disposition.to_string(),
+    }
+}
+
+/// Classify workflow runs inherited in running state at boot. Terminal step
+/// evidence is reconciled first; an in-flight step is probed before recovery
+/// closes its row. No path blindly re-executes work that may have side effects.
+pub fn recover_inherited_workflow_runs(
+    plane: &Plane,
+    ledger: &Ledger,
+) -> Result<Vec<WorkflowRecoveryReport>> {
     let mut reports = Vec::new();
     for run_id in ledger.running_workflow_run_ids()? {
         let run = ledger.workflow_run(&run_id)?;
         let status = ledger
             .workflow_run_status(&run_id)?
             .context("running workflow run has no status row")?;
-        let step = status.current_step.clone();
-        let detail = format!(
-            "inherited running run at boot; step '{}' was in flight when the plane stopped — \
-             side effects unknown, not re-executed; inspect step artifacts, then accept a new \
-             event explicitly if the work must be redone",
-            step.as_deref().unwrap_or("-")
-        );
-        ledger.set_workflow_run_state(&run_id, "needs_attention", Some(&detail))?;
-        reports.push(WorkflowRecoveryReport {
-            run_id,
-            workflow: run.workflow,
-            step,
-            disposition: "needs_attention".to_string(),
-        });
+        let steps = ledger.workflow_step_runs(&run_id)?;
+        let mut running = steps.iter().filter(|step| step.state == "running");
+        let current = running.next().cloned();
+        let extra_running: Vec<_> = running.cloned().collect();
+        for step in extra_running {
+            ledger.close_workflow_step_for_recovery(
+                &step.id,
+                "recovery found more than one running step row; outcome is unknown",
+            )?;
+        }
+
+        if let Some(step) = current {
+            let probe = match load_document(ledger, &run.workflow, run.revision).and_then(|doc| {
+                let spec = doc
+                    .steps
+                    .iter()
+                    .find(|candidate| candidate.name == step.step)
+                    .with_context(|| {
+                        format!("current step '{}' missing from pinned document", step.step)
+                    })?;
+                let substrate_kind = doc.policies.substrate.as_deref().unwrap_or("local");
+                let substrate = substrate::for_task(substrate_kind)?;
+                let host = spec
+                    .host
+                    .clone()
+                    .unwrap_or_else(|| format!("wf-{}", run.id));
+                let attempt_dir = step
+                    .artifact_dir
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        plane
+                            .root
+                            .join(".bb/workflow-runs")
+                            .join(&run.id)
+                            .join(format!("attempt-{}-{}", step.attempt, step.step))
+                    });
+                Ok(substrate.probe(&host, &attempt_dir, &format!("bb-{}", step.id)))
+            }) {
+                Ok(probe) => probe,
+                Err(error) => crate::substrate::ProbeResult::Unknown(error.to_string()),
+            };
+            let probe_desc = probe.description();
+            ledger.record_workflow_runtime_event(&run.id, "boot_probe", Some(&probe_desc))?;
+            match probe {
+                crate::substrate::ProbeResult::Alive => {
+                    let detail = format!(
+                        "inherited workflow step '{}' at attempt {} is still live after restart;                          side effects unknown; inspect evidence before resolving",
+                        step.step, step.attempt
+                    );
+                    ledger.set_workflow_run_state(&run.id, "needs_attention", Some(&detail))?;
+                    reports.push(workflow_recovery_report(
+                        run.id,
+                        run.workflow,
+                        Some(step.step),
+                        "needs_attention",
+                        Some(probe),
+                        "retained",
+                        Some("executing".to_string()),
+                    ));
+                }
+                probe @ (crate::substrate::ProbeResult::Dead
+                | crate::substrate::ProbeResult::Unknown(_)) => {
+                    let detail = format!(
+                        "inherited workflow step '{}' at attempt {} has {} — side effects unknown; \
+                         inspect evidence before explicitly replaying",
+                        step.step, step.attempt, probe_desc
+                    );
+                    ledger.close_workflow_step_for_recovery(&step.id, &detail)?;
+                    ledger.set_workflow_run_state(&run.id, "needs_attention", Some(&detail))?;
+                    let lease_disposition = if matches!(probe, crate::substrate::ProbeResult::Dead)
+                    {
+                        ledger.release_host_leases_for_run(&run.id)?;
+                        "released"
+                    } else {
+                        "retained"
+                    };
+                    reports.push(workflow_recovery_report(
+                        run.id,
+                        run.workflow,
+                        Some(step.step),
+                        "needs_attention",
+                        Some(probe),
+                        lease_disposition,
+                        Some("executing".to_string()),
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let last = steps.last();
+        let (disposition, detail) = match last {
+            Some(step) if step.state == "succeeded" => {
+                let terminal = load_document(ledger, &run.workflow, run.revision)
+                    .ok()
+                    .and_then(|doc| {
+                        doc.steps
+                            .into_iter()
+                            .find(|candidate| candidate.name == step.step)
+                    })
+                    .map(|spec| {
+                        let target = match step.outcome.as_deref() {
+                            Some(outcome) => spec.routes.get(outcome).map(String::as_str),
+                            None if spec.routes.len() <= 1 => {
+                                spec.routes.values().next().map(String::as_str)
+                            }
+                            None => None,
+                        };
+                        spec.routes.is_empty() || target == Some(ROUTE_DONE)
+                    })
+                    .unwrap_or(false);
+                if terminal {
+                    ("succeeded", "recovered terminal workflow step evidence")
+                } else {
+                    (
+                        "needs_attention",
+                        "workflow step succeeded but route/finalization evidence is incomplete",
+                    )
+                }
+            }
+            Some(step) if step.state == "failed" => {
+                ("failed", "recovered failed workflow step evidence")
+            }
+            Some(step) if step.state == "incomplete" => {
+                ("incomplete", "recovered incomplete workflow step evidence")
+            }
+            Some(_) => (
+                "needs_attention",
+                "workflow has no running step but terminal evidence is ambiguous",
+            ),
+            None => (
+                "needs_attention",
+                "workflow run has no step evidence; outcome is unknown",
+            ),
+        };
+        ledger.set_workflow_run_state(&run.id, disposition, Some(detail))?;
+        ledger.release_host_leases_for_run(&run.id)?;
+        reports.push(workflow_recovery_report(
+            run.id,
+            run.workflow,
+            status.current_step,
+            disposition,
+            None,
+            "released",
+            None,
+        ));
     }
     Ok(reports)
+}
+
+/// Resolve an inherited workflow run only after an operator has inspected
+/// side effects. Lease release is keyed by run identity, so an unrelated run
+/// cannot be stranded or released by this operation.
+pub fn resolve_workflow_run(
+    ledger: &Ledger,
+    run_id: &str,
+    state: &str,
+    reason: &str,
+) -> Result<WorkflowRunStatusRow> {
+    if !matches!(state, "succeeded" | "failed" | "stopped") {
+        bail!("workflow recovery resolution state must be succeeded, failed, or stopped");
+    }
+    let current = ledger
+        .workflow_run_status(run_id)?
+        .context("workflow run status row missing")?;
+    if current.state != "needs_attention" {
+        bail!(
+            "workflow run {run_id} is {}, not needs_attention; resolve only recovered uncertainty",
+            current.state
+        );
+    }
+    // A live probe is still an uncertain execution outcome. Resolve the
+    // operator-visible step row before the terminal run transition so no
+    // recovered attempt remains falsely in flight after resolution.
+    let step_detail = format!("operator resolved recovered step: {reason}");
+    for step in ledger.workflow_step_runs(run_id)? {
+        if step.state == "running" {
+            ledger.close_workflow_step_for_recovery(&step.id, &step_detail)?;
+        }
+    }
+    ledger.release_host_leases_for_run(run_id)?;
+    ledger.set_workflow_run_state(run_id, state, Some(reason))?;
+    ledger
+        .workflow_run_status(run_id)?
+        .context("workflow run status row missing after resolution")
 }
 
 // --- execution ---------------------------------------------------------------
@@ -799,6 +1220,7 @@ enum StepDisposition {
     Failed(String),
     Incomplete(String),
     Stopped(String),
+    NeedsAttention(String),
 }
 
 struct WorkflowInFlightMonitor<'a> {
@@ -809,7 +1231,6 @@ struct WorkflowInFlightMonitor<'a> {
     max_cost_usd: f64,
     prior_cost_usd: f64,
     side_effect_policy: &'a str,
-    latest_stats: AttemptStats,
     last_recorded_cost: Option<f64>,
     breached: bool,
 }
@@ -817,8 +1238,7 @@ struct WorkflowInFlightMonitor<'a> {
 impl<'a> WorkflowInFlightMonitor<'a> {
     fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<String> {
         let progress = harness::parse_partial_progress(self.harness, snapshot.stdout);
-        self.latest_stats = progress.stats;
-        let cost = self.latest_stats.cost_usd?;
+        let cost = progress.stats.cost_usd?;
         let total = self.prior_cost_usd + cost;
         let changed = self
             .last_recorded_cost
@@ -833,11 +1253,11 @@ impl<'a> WorkflowInFlightMonitor<'a> {
             );
             self.last_recorded_cost = Some(cost);
         }
-        if total <= self.max_cost_usd || self.breached {
+        if total < self.max_cost_usd || self.breached {
             return None;
         }
         let reason = format!(
-            "workflow in-flight cost cap {}: observed run total ${total:.4} (current step ${cost:.4} + prior ${prior:.4}) > max_cost_per_run_usd ${max:.2}",
+            "workflow in-flight cost cap {}: observed run total ${total:.4} (current step ${cost:.4} + prior ${prior:.4}) >= max_cost_per_run_usd ${max:.2}",
             self.side_effect_policy, prior = self.prior_cost_usd, max = self.max_cost_usd
         );
         let _ = self.ledger.record_guard_event(
@@ -854,12 +1274,29 @@ impl<'a> WorkflowInFlightMonitor<'a> {
     }
 }
 
+/// Outcome of one execution attempt on a queued workflow run.
+pub enum ExecutionDisposition {
+    /// The run was claimed and driven to a terminal state.
+    Executed(serde_json::Value),
+    /// The queued->running claim was lost: someone else is executing.
+    ClaimLost,
+    /// The admission recheck refused capacity; the run was released back
+    /// to `queued` (reservation intact) for a later runner tick.
+    Deferred { reason: String },
+}
+
 /// Execute one accepted workflow run to a terminal state. Claims the run
 /// (queued -> running CAS); refuses anything already claimed or terminal.
 pub fn execute_run(plane: &Plane, ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
     match execute_if_queued(plane, ledger, run_id)? {
-        Some(view) => Ok(view),
-        None => {
+        ExecutionDisposition::Executed(view) => Ok(view),
+        ExecutionDisposition::Deferred { reason } => {
+            bail!(
+                "workflow run {run_id} deferred by admission recheck: {reason}; \
+                 run remains queued"
+            );
+        }
+        ExecutionDisposition::ClaimLost => {
             let state = ledger
                 .workflow_run_status(run_id)?
                 .map(|s| s.state)
@@ -869,27 +1306,51 @@ pub fn execute_run(plane: &Plane, ledger: &Ledger, run_id: &str) -> Result<serde
     }
 }
 
-/// Runner-loop variant of [`execute_run`]: returns `Ok(None)` when the
-/// queued->running claim was lost (someone else is executing), which the
-/// serve loop treats as a non-event instead of an error.
+/// Runner-loop variant of [`execute_run`]: reports a lost claim or an
+/// admission deferral as data, which the serve loop treats as non-events
+/// instead of errors.
 pub fn execute_if_queued(
     plane: &Plane,
     ledger: &Ledger,
     run_id: &str,
-) -> Result<Option<serde_json::Value>> {
+) -> Result<ExecutionDisposition> {
     let run = ledger.workflow_run(run_id)?;
     if !ledger.claim_workflow_run(run_id)? {
-        return Ok(None);
+        return Ok(ExecutionDisposition::ClaimLost);
     }
     if let Some((kind, reason)) = ledger.recheck_workflow_run_admission(plane, run_id)? {
-        ledger.record_guard_event(
-            &format!("workflow_admission_recheck_{kind}"),
-            Some(&run.workflow),
-            &reason,
-            1,
-        )?;
-        ledger.set_workflow_run_state(run_id, "stopped", Some(&reason))?;
-        return Ok(Some(run_detail_view(ledger, run_id)?));
+        // A pending operator stop outranks deferral: honor it terminally
+        // (releasing the pinned reservation) instead of parking the run
+        // behind capacity pressure forever.
+        if let Some(stop) = ledger.workflow_run_stop_reason(run_id)? {
+            let detail = format!("stop signal: {stop}");
+            ledger.record_guard_event(
+                "workflow_guard_stop_signal",
+                Some(&run.workflow),
+                &detail,
+                1,
+            )?;
+            ledger.set_workflow_run_state(run_id, "stopped", Some(&detail))?;
+            return Ok(ExecutionDisposition::Executed(run_detail_view(
+                ledger, run_id,
+            )?));
+        }
+        // Guard-event once per distinct reason, not once per runner tick:
+        // the previous deferral left the same reason in the status detail.
+        let already_deferred = ledger
+            .workflow_run_status(run_id)?
+            .and_then(|s| s.detail)
+            .is_some_and(|detail| detail == reason);
+        ledger.defer_claimed_workflow_run(run_id, &reason)?;
+        if !already_deferred {
+            ledger.record_guard_event(
+                &format!("workflow_admission_recheck_{kind}"),
+                Some(&run.workflow),
+                &reason,
+                1,
+            )?;
+        }
+        return Ok(ExecutionDisposition::Deferred { reason });
     }
     // A claimed run must reach a terminal state even when the executor
     // itself errors (unreadable pinned doc, fs failure) OR panics: both
@@ -907,7 +1368,7 @@ pub fn execute_if_queued(
         Err(anyhow::anyhow!("executor panic: {msg}"))
     });
     match result {
-        Ok(view) => Ok(Some(view)),
+        Ok(view) => Ok(ExecutionDisposition::Executed(view)),
         Err(err) => {
             let detail = format!("executor error: {err:#}");
             let _ = ledger.fail_running_step_runs(run_id, &detail);
@@ -967,6 +1428,9 @@ fn execute_claimed(
             }
             StepDisposition::Stopped(reason) => {
                 break ("stopped", Some(reason), "workflow_run_stopped");
+            }
+            StepDisposition::NeedsAttention(reason) => {
+                break ("needs_attention", Some(reason), "workflow_needs_attention");
             }
             StepDisposition::Succeeded { outcome, summary } => {
                 let target = match step.routes.len() {
@@ -1068,67 +1532,56 @@ fn fired_guard(
         Some(f) => Some(f),
         None => {
             if let Some(cap) = doc.policies.max_cost_per_run_usd {
-                // A cost-blind harness has no observable dollar stream.
                 let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
                     let estimate = doc.policies.conservative_cost_estimate();
                     if !estimate.is_finite() || estimate <= 0.0 {
                         bail!(
-                            "workflow '{}' has invalid conservative estimate {estimate}",
-                            run.workflow
+                            "workflow '{}' has invalid conservative estimate {}",
+                            run.workflow,
+                            estimate
                         );
                     }
-                    (estimate > cap).then(|| {
-                        (
-                            "workflow_guard_spend_estimate",
-                            format!(
-                                "spend estimate: cost-blind harness '{}' reserves ${estimate:.4} > max_cost_per_run_usd ${cap:.2}; unknown spend is never treated as zero",
-                                step.agent.harness
-                            ),
-                        )
-                    })
+                    (estimate > cap).then(|| (
+                        "workflow_guard_spend_estimate",
+                        format!("spend estimate: cost-blind harness '{}' reserves ${:.4} > max_cost_per_run_usd ${:.2}; unknown spend is never treated as zero", step.agent.harness, estimate, cap),
+                    ))
                 } else {
                     None
                 };
+                let spend_is_only_cycle_guard =
+                    doc.policies.max_rounds.is_none() && doc.policies.max_elapsed_seconds.is_none();
+                let unmetered = if spend_is_only_cycle_guard {
+                    let cycle_steps: Vec<&str> = doc
+                        .steps_on_cycles()
+                        .into_iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
+                } else {
+                    0
+                };
+                let unknown_violation = (unmetered > 0).then(|| (
+                    "workflow_guard_spend_indeterminate",
+                    format!("spend guard indeterminate: {} cycle-step attempt(s) reported no cost and max_cost_per_run_usd is the only cycle guard — unknown spend is never treated as zero", unmetered),
+                ));
                 if estimate_violation.is_some() {
                     estimate_violation
+                } else if unknown_violation.is_some() {
+                    unknown_violation
                 } else {
-                    // A spend-only cycle becomes indeterminate after an
-                    // unmetered attempt. Bounded runs can continue.
-                    let spend_is_only_cycle_guard = doc.policies.max_rounds.is_none()
-                        && doc.policies.max_elapsed_seconds.is_none();
-                    let unmetered = if spend_is_only_cycle_guard {
-                        let cycle_steps: Vec<&str> = doc
-                            .steps_on_cycles()
-                            .into_iter()
-                            .map(|s| s.name.as_str())
-                            .collect();
-                        ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
-                    } else {
-                        0
-                    };
-                    if unmetered > 0 {
-                        Some((
-                            "workflow_guard_spend_indeterminate",
+                    let observed = ledger
+                        .workflow_run_status(&run.id)?
+                        .and_then(|s| s.cost_usd)
+                        .unwrap_or(0.0);
+                    (observed >= cap).then(|| {
+                        (
+                            "workflow_guard_spend",
                             format!(
-                                "spend guard indeterminate: {unmetered} cycle-step attempt(s) \
-                                 reported no cost and max_cost_per_run_usd is the only cycle guard \
-                                 — unknown spend is never treated as zero"
+                                "spend guard: observed ${:.4} of run-group cap ${:.2}",
+                                observed, cap
                             ),
-                        ))
-                    } else {
-                        let observed = ledger
-                            .workflow_run_status(&run.id)?
-                            .and_then(|s| s.cost_usd)
-                            .unwrap_or(0.0);
-                        (observed > cap).then(|| {
-                            (
-                                "workflow_guard_spend",
-                                format!(
-                                    "spend guard: observed ${observed:.4} of run-group cap ${cap:.2}"
-                                ),
-                            )
-                        })
-                    }
+                        )
+                    })
                 }
             } else {
                 None
@@ -1254,12 +1707,24 @@ fn final_spend_breach(
         .workflow_run_status(&run.id)?
         .and_then(|status| status.cost_usd)
         .unwrap_or(current_cost);
-    if total <= max_cost {
+    if total < max_cost {
         return Ok(None);
     }
     Ok(Some(format!(
-        "spend guard: observed run total ${total:.4} (workflow final cost cap {side_effect_policy}: current step ${current_cost:.4}) > max_cost_per_run_usd ${max_cost:.2}"
+        "spend guard: observed run total ${:.4} (workflow final cost cap {}: current step ${:.4}) >= max_cost_per_run_usd ${:.2}", total, side_effect_policy, current_cost, max_cost
     )))
+}
+
+struct WorkflowLease<'a> {
+    ledger: &'a Ledger,
+    host: &'a str,
+    run_id: &'a str,
+}
+
+impl Drop for WorkflowLease<'_> {
+    fn drop(&mut self) {
+        let _ = self.ledger.release_host_lease(self.host, self.run_id);
+    }
 }
 
 fn run_step(
@@ -1315,6 +1780,21 @@ fn run_step(
     ) {
         return fail(v.detail, &none);
     }
+    let stop = |reason: String| -> Result<StepDisposition> {
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "incomplete",
+            None,
+            None,
+            Some(&reason),
+            None,
+            &none,
+        )?;
+        Ok(StepDisposition::Stopped(format!(
+            "step '{}' attempt {attempt}: {reason}",
+            step.name
+        )))
+    };
 
     let bundle = match load_bundle(&step.agent) {
         Ok(b) => b,
@@ -1363,6 +1843,40 @@ fn run_step(
         .host
         .clone()
         .unwrap_or_else(|| format!("wf-{}", run.id));
+    // Workflow runs sharing a declared host serialize, but admission must wait
+    // for the bounded lease window rather than failing a valid concurrent run
+    // before its isolated workspace is created.
+    let lease_wait = WORKFLOW_LEASE_WAIT;
+    let lease_started = Instant::now();
+    loop {
+        if let Some(reason) = ledger.workflow_run_stop_reason(&run.id)? {
+            return stop(format!(
+                "stop signal while waiting for host lease '{host}': {reason}"
+            ));
+        }
+        if ledger.try_acquire_host_lease(&host, &run.id)? {
+            if let Some(reason) = ledger.workflow_run_stop_reason(&run.id)? {
+                ledger.release_host_lease(&host, &run.id)?;
+                return stop(format!(
+                    "stop signal before acquiring host '{host}': {reason}"
+                ));
+            }
+            break;
+        }
+        if lease_started.elapsed() >= lease_wait {
+            let holder = ledger.lease_holder(&host)?;
+            return fail(
+                format!("host lease '{host}' is held by run {holder:?} after bounded wait"),
+                &none,
+            );
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _lease = WorkflowLease {
+        ledger,
+        host: &host,
+        run_id: &run.id,
+    };
     let mut session = match substrate.acquire(&host, &attempt_dir) {
         Ok(s) => s,
         Err(e) => return fail(format!("acquire: {e:#}"), &none),
@@ -1425,7 +1939,6 @@ fn run_step(
         max_cost_usd: max_cost,
         prior_cost_usd,
         side_effect_policy,
-        latest_stats: AttemptStats::default(),
         last_recorded_cost: None,
         breached: false,
     };
@@ -1460,7 +1973,13 @@ fn run_step(
             Some(exec.exit_code),
             &stats,
         )?;
-        return Ok(StepDisposition::Stopped(reason.to_string()));
+        return Ok(
+            if in_flight.breached && side_effect_policy == "quarantine" {
+                StepDisposition::NeedsAttention(reason.to_string())
+            } else {
+                StepDisposition::Stopped(reason.to_string())
+            },
+        );
     }
     if exec.timed_out {
         let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
@@ -1529,6 +2048,12 @@ fn run_step(
         return Ok(StepDisposition::Failed(format!("release: {e:#}")));
     }
     if let Some(cost) = parsed.stats.cost_usd {
+        if !cost.is_finite() || cost < 0.0 {
+            return fail(
+                format!("harness reported unusable cost_usd {cost}"),
+                &parsed.stats,
+            );
+        }
         ledger.add_workflow_run_cost(&run.id, cost)?;
     }
 
@@ -1550,7 +2075,11 @@ fn run_step(
                     Some(exec.exit_code),
                     &parsed.stats,
                 )?;
-                return Ok(StepDisposition::Stopped(reason));
+                return Ok(if side_effect_policy == "quarantine" {
+                    StepDisposition::NeedsAttention(reason)
+                } else {
+                    StepDisposition::Stopped(reason)
+                });
             }
         }
     }
@@ -1585,7 +2114,7 @@ fn run_step(
             if let Some(cost) = decl.cost_usd {
                 // Declared spend only ever adds: a negative entry would
                 // silently offset siblings' costs inside the enforced sum.
-                if cost < 0.0 || cost.is_nan() {
+                if cost < 0.0 || !cost.is_finite() {
                     return fail(
                         format!(
                             "{CHILD_AGENTS_FILENAME}: child agent '{}' declares negative \
@@ -1651,7 +2180,11 @@ fn run_step(
                         Some(exec.exit_code),
                         &parsed.stats,
                     )?;
-                    return Ok(StepDisposition::Stopped(reason));
+                    return Ok(if side_effect_policy == "quarantine" {
+                        StepDisposition::NeedsAttention(reason)
+                    } else {
+                        StepDisposition::Stopped(reason)
+                    });
                 }
             }
         }
@@ -1775,6 +2308,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
             .document,
     )?;
     let status = ledger.workflow_run_status(run_id)?;
+    let events = ledger.workflow_run_events(run_id)?;
     let steps = ledger
         .workflow_step_runs(run_id)?
         .into_iter()
@@ -1789,6 +2323,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
         "run": run,
         "document": document,
         "status": status,
+        "events": events,
         "steps": steps,
     }))
 }
