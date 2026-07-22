@@ -912,7 +912,17 @@ fn primary_readback_allows_concurrent_writer_and_proves_read_only() {
         }
     }
     let init = Command::new("python3")
-        .args(["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('pragma journal_mode=wal'); c.execute('create table runs (id integer)'); c.commit(); c.close()", db.to_str().unwrap()])
+        .args([
+            "-c",
+            r#"import sqlite3,sys,time
+for attempt in range(5):
+    try:
+        c=sqlite3.connect(sys.argv[1]); c.execute('pragma journal_mode=wal'); c.execute('create table runs (id integer)'); c.commit(); c.close(); break
+    except sqlite3.OperationalError:
+        if attempt == 4: raise
+        time.sleep(.05)"#,
+            db.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert!(init.status.success(), "{init:?}");

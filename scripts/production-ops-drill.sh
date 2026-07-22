@@ -489,9 +489,9 @@ heartbeat = pathlib.Path(config["heartbeat"])
 if not heartbeat.exists():
     raise SystemExit(f"backup heartbeat missing: {heartbeat}")
 open_rows = [row for row in dlq if row.get("status") == "open"]
-summary = status.get("summary", {})
-if summary.get("open_dlq") != len(open_rows):
-    raise SystemExit("status summary.open_dlq disagrees with the read-only DLQ list")
+summary_open_dlq = status.get("summary", {}).get("open_dlq", 0)
+if not isinstance(summary_open_dlq, int) or summary_open_dlq < 0:
+    raise SystemExit("status summary.open_dlq is not a non-negative integer")
 if after.get("journal_mode", "").lower() != "wal":
     raise SystemExit(f"SQLite journal mode is not WAL: {after.get('journal_mode')!r}")
 if after.get("integrity") != "ok":
@@ -509,9 +509,10 @@ print(json.dumps({
     "backup": {"status": backup["status"], "healthy": backup["healthy"], "age_seconds": age, "rpo_seconds": rpo},
     "sqlite": {"journal_mode": after["journal_mode"], "integrity": after["integrity"], "write_falsified": after["write_falsified"]},
 }, sort_keys=True))
-if open_rows:
+if open_rows or summary_open_dlq:
     print("READINESS BLOCKED: status=open dead letters must be resolved or explicitly acknowledged before enabling PR/merge loops", file=sys.stderr)
-    print("open DLQ ids: " + ",".join(str(row.get("id")) for row in open_rows), file=sys.stderr)
+    if open_rows:
+        print("open DLQ ids: " + ",".join(str(row.get("id")) for row in open_rows), file=sys.stderr)
     raise SystemExit(3)
 PY
 }
