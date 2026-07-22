@@ -99,15 +99,7 @@ pub fn handle_webhook(
         });
     };
     let max_body = plane.spec.ingress.max_body_bytes;
-    if body.len() > max_body {
-        return Ok(WebhookResponse {
-            status: 413,
-            body: format!(
-                "{{\"error\":\"webhook body {} bytes exceeds max_body_bytes {max_body}\"}}",
-                body.len()
-            ),
-        });
-    }
+    let oversized = body.len() > max_body;
     let TriggerSpec::Webhook {
         secret_env,
         dedupe_key,
@@ -146,6 +138,21 @@ pub fn handle_webhook(
                 body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
             });
         }
+    }
+    if oversized {
+        ledger.record_guard_event(
+            "ingress_oversized",
+            Some(&task.name),
+            &format!("route={route} bytes={} max={max_body}", body.len()),
+            1,
+        )?;
+        return Ok(WebhookResponse {
+            status: 413,
+            body: format!(
+                "{{\"error\":\"webhook body {} bytes exceeds max_body_bytes {max_body}\"}}",
+                body.len()
+            ),
+        });
     }
     let payload: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
