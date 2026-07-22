@@ -362,7 +362,7 @@ impl Session for SpriteSession {
         )?;
         if result.timed_out || result.termination_reason.is_some() {
             let kill = format!(
-                "pid=\"$(cat /tmp/{}.pid 2>/dev/null)\" && kill -9 -- \"-$pid\" 2>/dev/null; true",
+                "raw=\"$(cat /tmp/{}.pid 2>/dev/null)\" && pid=\"${{raw%%|*}}\" && case \"$pid\" in \"\"|*[!0-9]*) exit 0;; esac && kill -9 -- \"-$pid\" 2>/dev/null; true",
                 self.marker
             );
             let _ = self.remote_shell(&kill, Duration::from_secs(30));

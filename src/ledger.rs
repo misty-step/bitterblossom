@@ -23,6 +23,43 @@ pub const RUN_STATES: &[&str] = &[
 ];
 pub const EXTERNAL_RUN_STATUSES: &[&str] = &["running", "done", "failed"];
 
+#[derive(Debug)]
+pub(crate) struct QueueBackpressure {
+    pub task: String,
+    pub depth: i64,
+    pub missing: i64,
+    pub limit: i64,
+}
+
+impl std::fmt::Display for QueueBackpressure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.missing <= 1 {
+            write!(
+                f,
+                "queue backpressure: task '{}' has {} pending runs (limit {})",
+                self.task, self.depth, self.limit
+            )
+        } else {
+            write!(f, "queue backpressure: task '{}' has {} pending runs and needs {} additional slots (limit {})", self.task, self.depth, self.missing, self.limit)
+        }
+    }
+}
+
+impl std::error::Error for QueueBackpressure {}
+
+pub(crate) fn is_queue_backpressure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if cause.downcast_ref::<QueueBackpressure>().is_some() {
+            return true;
+        }
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.starts_with("queue backpressure:")
+        )
+    })
+}
+
 fn transition_allowed(from: &str, to: &str) -> bool {
     matches!(
         (from, to),
@@ -411,11 +448,12 @@ impl Ledger {
                 |r| r.get(0),
             )?;
             if depth >= Self::MAX_PENDING_QUEUE_DEPTH {
-                bail!(
-                    "queue backpressure: task '{}' has {depth} pending runs (limit {})",
-                    req.task,
-                    Self::MAX_PENDING_QUEUE_DEPTH
-                );
+                return Err(anyhow::Error::new(QueueBackpressure {
+                    task: req.task.to_string(),
+                    depth,
+                    missing: 1,
+                    limit: Self::MAX_PENDING_QUEUE_DEPTH,
+                }));
             }
         }
 
@@ -578,7 +616,7 @@ impl Ledger {
                     new_submission = Some((id, 1, None));
                 }
             }
-            Some((_id, state, _old_rev, round, prior, _report, old_version)) => {
+            Some((_id, state, _old_rev, round, _prior, report, old_version)) => {
                 let newer = version
                     .zip(old_version.as_deref())
                     .is_none_or(|(new, old)| new > old);
@@ -586,8 +624,10 @@ impl Ledger {
                     let id = new_id();
                     submission_id = Some(id.clone());
                     let round = if state == "blocked" { round + 1 } else { 1 };
-                    let prior = if state == "blocked" { prior } else { None };
-                    new_submission = Some((id, round, prior));
+                    // Carry the prior blocked round's report, not its stale
+                    // prior snapshot, into the next head for operator readback.
+                    let prior_report = if state == "blocked" { report } else { None };
+                    new_submission = Some((id, round, prior_report));
                 }
             }
             None => {
@@ -624,11 +664,12 @@ impl Ledger {
                 |row| row.get(0),
             )?;
             if depth + missing > Self::MAX_PENDING_QUEUE_DEPTH {
-                bail!(
-                    "queue backpressure: task '{}' has {depth} pending runs and needs {missing} additional slots (limit {})",
-                    task,
-                    Self::MAX_PENDING_QUEUE_DEPTH
-                );
+                return Err(anyhow::Error::new(QueueBackpressure {
+                    task: task.clone(),
+                    depth,
+                    missing: *missing,
+                    limit: Self::MAX_PENDING_QUEUE_DEPTH,
+                }));
             }
         }
 
@@ -755,7 +796,6 @@ impl Ledger {
         })
     }
 
-    /// Remove a newly admitted submission storm tree when member admission
     /// fails. Parent, members, ingress events, and the opened submission are
     /// deleted in one transaction so no partial irreversible admission remains.
     pub fn rollback_ingress_storm(
@@ -783,91 +823,6 @@ impl Ledger {
         )?;
         tx.commit()?;
         Ok(())
-    }
-
-    pub fn ingest_batch(&mut self, requests: &[IngressRequest<'_>]) -> Result<Vec<IngressOutcome>> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let ts = now();
-        let mut accepted = Vec::with_capacity(requests.len());
-        for req in requests {
-            let existing: Option<String> = req
-                .idempotency_key
-                .and_then(|key| {
-                    tx.query_row(
-                        "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
-                        params![req.task, key],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .transpose()
-                })
-                .transpose()?;
-            if existing.is_none() {
-                let depth: i64 = tx.query_row(
-                    "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-                    params![req.task],
-                    |r| r.get(0),
-                )?;
-                if depth >= Self::MAX_PENDING_QUEUE_DEPTH {
-                    bail!(
-                        "queue backpressure: task '{}' has {depth} pending runs (limit {})",
-                        req.task,
-                        Self::MAX_PENDING_QUEUE_DEPTH
-                    );
-                }
-            }
-            let candidate_id = new_id();
-            let trace_id = new_id();
-            let parked: Option<String> = tx
-                .query_row(
-                    "SELECT reason FROM parked_tasks WHERE task = ?1",
-                    params![req.task],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let (state, reason) = match parked {
-                Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
-                None => ("pending", None),
-            };
-            let inserted = tx.execute(
-                "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state, state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
-                 ON CONFLICT(task, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
-                params![candidate_id, req.task, req.trigger_kind, req.idempotency_key, state, reason, trace_id, req.parent_run_id, req.payload, ts])?;
-            let (run_id, duplicate) = if inserted == 1 {
-                (candidate_id, false)
-            } else {
-                let key = req
-                    .idempotency_key
-                    .context("batch conflict requires idempotency key")?;
-                (
-                    tx.query_row(
-                        "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
-                        params![req.task, key],
-                        |r| r.get(0),
-                    )?,
-                    true,
-                )
-            };
-            tx.execute(
-                "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id, dedupe_key, payload_hash, duplicate, received_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![run_id, req.task, req.trigger_kind, req.source_event_id, req.idempotency_key, req.payload.map(payload_hash), duplicate as i64, ts])?;
-            accepted.push((run_id, duplicate));
-        }
-        tx.commit()?;
-        accepted
-            .into_iter()
-            .map(|(run_id, duplicate)| {
-                Ok(IngressOutcome {
-                    state: self.run_state(&run_id)?,
-                    run_id,
-                    duplicate,
-                })
-            })
-            .collect()
     }
 
     pub fn run_state(&self, run_id: &str) -> Result<String> {

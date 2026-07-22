@@ -66,16 +66,28 @@ pub fn normalize_route(route: &str) -> String {
     route.trim().trim_matches('/').to_ascii_lowercase()
 }
 
-pub fn task_webhook_routes(plane: &Plane) -> Vec<String> {
+fn task_webhook_routes_filtered(plane: &Plane, excluded_task: Option<&str>) -> Vec<String> {
     plane
         .tasks
-        .values()
-        .flat_map(|task| task.spec.triggers.iter())
+        .iter()
+        .filter(|(name, _)| excluded_task != Some(name.as_str()))
+        .flat_map(|(_, task)| task.spec.triggers.iter())
         .filter_map(|trigger| match trigger {
             TriggerSpec::Webhook { route, .. } => Some(normalize_route(route)),
             _ => None,
         })
         .collect()
+}
+
+pub fn task_webhook_routes(plane: &Plane) -> Vec<String> {
+    task_webhook_routes_filtered(plane, None)
+}
+
+/// Routes owned by task-defined triggers other than the task being migrated.
+/// Import-task deliberately hands the workflow its source task's route; every
+/// other task remains a plane-wide collision guard.
+pub fn task_webhook_routes_except(plane: &Plane, excluded_task: &str) -> Vec<String> {
+    task_webhook_routes_filtered(plane, Some(excluded_task))
 }
 pub fn handle_webhook(
     plane: &Plane,
@@ -242,7 +254,7 @@ pub fn handle_webhook(
             &members,
         ) {
             Ok(outcome) => outcome,
-            Err(error) if error.to_string().contains("queue backpressure") => {
+            Err(error) if crate::ledger::is_queue_backpressure(&error) => {
                 ledger.record_guard_event(
                     "queue_backpressure",
                     Some(&task.name),
@@ -271,7 +283,7 @@ pub fn handle_webhook(
             parent_run_id: None,
         }) {
             Ok(outcome) => outcome,
-            Err(error) if error.to_string().contains("queue backpressure") => {
+            Err(error) if crate::ledger::is_queue_backpressure(&error) => {
                 ledger.record_guard_event(
                     "queue_backpressure",
                     Some(&task.name),
@@ -844,7 +856,7 @@ fn cron_catchup_fires(
         match ingest_cron_fire(ledger, task, *fire) {
             Ok(o) if o.duplicate => outcome.duplicates += 1,
             Ok(_) => outcome.ingested += 1,
-            Err(e) if e.to_string().contains("queue backpressure") => {
+            Err(e) if crate::ledger::is_queue_backpressure(&e) => {
                 outcome.skipped += 1;
                 ledger.record_guard_event(
                     "queue_backpressure",

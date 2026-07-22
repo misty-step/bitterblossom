@@ -307,7 +307,7 @@ impl Session for TailnetSession {
         )?;
         if result.timed_out || result.termination_reason.is_some() {
             let kill = format!(
-                "pid=\"$(cat ~/.bb-tailnet/{}.pid 2>/dev/null)\" && kill -9 -- \"-$pid\" 2>/dev/null; true",
+                "raw=\"$(cat ~/.bb-tailnet/{}.pid 2>/dev/null)\" && pid=\"${{raw%%|*}}\" && case \"$pid\" in \"\"|*[!0-9]*) exit 0;; esac && kill -9 -- \"-$pid\" 2>/dev/null; true",
                 self.marker
             );
             let _ = remote_shell(&self.host, &kill, Duration::from_secs(30));

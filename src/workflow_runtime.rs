@@ -47,6 +47,8 @@ pub const OUTCOME_FILENAME: &str = "OUTCOME.json";
 /// Dynamic child-agent evidence a step's agent declares for the run tree.
 pub const CHILD_AGENTS_FILENAME: &str = "CHILD_AGENTS.json";
 const DEFAULT_STEP_TIMEOUT_MINUTES: u64 = 30;
+/// A queued runner must not hold a worker thread behind one host forever.
+const WORKFLOW_LEASE_WAIT: Duration = Duration::from_secs(60);
 /// Absolute per-run-group step-attempt ceiling (defense-in-depth behind the
 /// declared cycle guards; see `execute_claimed`).
 const MAX_RUN_GROUP_ATTEMPTS: i64 = 256;
@@ -199,11 +201,23 @@ pub fn webhook_workflow_target(
 }
 
 /// One accepted (or deduplicated) schedule fire, for logs and drills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronDisposition {
+    Accepted,
+    Duplicate,
+    Suppressed,
+    Denied,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CronAcceptance {
     pub workflow: String,
     pub scheduled: String,
     pub duplicate: bool,
+    pub disposition: CronDisposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Scan active workflows' cron triggers and accept fires due in
@@ -296,10 +310,24 @@ pub fn workflow_cron_tick(
                     dedupe_key: Some(format!("cron:{scheduled}")),
                 },
             )?;
+            let (disposition, detail, duplicate) = match outcome {
+                AcceptOutcome::Accepted { .. } => (CronDisposition::Accepted, None, false),
+                AcceptOutcome::Duplicate { .. } => (CronDisposition::Duplicate, None, true),
+                AcceptOutcome::Suppressed { reason, .. } => {
+                    (CronDisposition::Suppressed, Some(reason), false)
+                }
+                AcceptOutcome::Denied { kind, reason, .. } => (
+                    CronDisposition::Denied,
+                    Some(format!("{kind}: {reason}")),
+                    false,
+                ),
+            };
             accepted.push(CronAcceptance {
                 workflow: wf.name.clone(),
                 scheduled,
-                duplicate: matches!(outcome, AcceptOutcome::Duplicate { .. }),
+                duplicate,
+                disposition,
+                detail,
             });
         }
         last_by_workflow.insert(wf.name.clone(), now_utc);
@@ -648,7 +676,7 @@ impl Ledger {
              WHERE s.state = 'running'
                 OR (s.state = 'needs_attention' AND EXISTS (
                     SELECT 1 FROM workflow_step_runs wsr
-                    WHERE wsr.run_id = s.run_id
+                    WHERE wsr.run_id = s.run_id AND wsr.state = 'running'
                 ))
              ORDER BY s.updated_at, s.run_id",
         )?;
@@ -1262,7 +1290,6 @@ impl<'a> WorkflowInFlightMonitor<'a> {
             _ => Some(reason),
         }
     }
-}
 
 /// Execute one accepted workflow run to a terminal state. Claims the run
 /// (queued -> running CAS); refuses anything already claimed or terminal.
@@ -1760,6 +1787,22 @@ fn run_step(
     ) {
         return fail(v.detail, &none);
     }
+    let stop = |reason: String| -> Result<StepDisposition> {
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "incomplete",
+            None,
+            None,
+            Some(&reason),
+            None,
+            &none,
+        )?;
+        Ok(StepDisposition::Stopped(format!(
+            "step '{}' attempt {attempt}: {reason}",
+            step.name
+        )))
+    };
+
 
     let bundle = match load_bundle(&step.agent) {
         Ok(b) => b,
@@ -1811,17 +1854,27 @@ fn run_step(
     // Workflow runs sharing a declared host serialize, but admission must wait
     // for the bounded lease window rather than failing a valid concurrent run
     // before its isolated workspace is created.
-    let lease_wait =
-        Duration::from_secs(60 * budget.timeout_minutes.unwrap_or(1)).max(Duration::from_secs(60));
+    let lease_wait = WORKFLOW_LEASE_WAIT;
     let lease_started = Instant::now();
     loop {
+        if let Some(reason) = ledger.workflow_run_stop_reason(&run.id)? {
+            return stop(format!(
+                "stop signal while waiting for host lease '{host}': {reason}"
+            ));
+        }
         if ledger.try_acquire_host_lease(&host, &run.id)? {
+            if let Some(reason) = ledger.workflow_run_stop_reason(&run.id)? {
+                ledger.release_host_lease(&host, &run.id)?;
+                return stop(format!(
+                    "stop signal before acquiring host '{host}': {reason}"
+                ));
+            }
             break;
         }
         if lease_started.elapsed() >= lease_wait {
             let holder = ledger.lease_holder(&host)?;
             return fail(
-                format!("host lease '{host}' is held by run {holder:?}"),
+                format!("host lease '{host}' is held by run {holder:?} after bounded wait"),
                 &none,
             );
         }

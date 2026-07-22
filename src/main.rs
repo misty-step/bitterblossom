@@ -1913,7 +1913,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             )?;
             let wf = if activate {
                 {
-                    let routes = ingress::task_webhook_routes(plane);
+                    let routes = ingress::task_webhook_routes_except(plane, &task.name);
                     ledger.activate_workflow_with_reserved_routes(
                         &wf.name,
                         Some(revision),

@@ -150,12 +150,36 @@ fn cron_loop(root: &Path) {
                 now,
                 plane.spec.ingress.max_cron_catchup_fires,
             ) {
-                Ok(accepted) => {
-                    for a in accepted.iter().filter(|a| !a.duplicate) {
-                        eprintln!(
-                            "cron: workflow {} accepted schedule fire {}",
-                            a.workflow, a.scheduled
-                        );
+                Ok(outcomes) => {
+                    for outcome in &outcomes {
+                        match outcome.disposition {
+                            crate::workflow_runtime::CronDisposition::Accepted => eprintln!(
+                                "cron: workflow {} accepted schedule fire {}",
+                                outcome.workflow, outcome.scheduled
+                            ),
+                            crate::workflow_runtime::CronDisposition::Denied => eprintln!(
+                                "cron: workflow {} denied schedule fire {} ({})",
+                                outcome.workflow,
+                                outcome.scheduled,
+                                outcome.detail.as_deref().unwrap_or("admission denied")
+                            ),
+                            crate::workflow_runtime::CronDisposition::Suppressed => eprintln!(
+                                "cron: workflow {} suppressed schedule fire {} ({})",
+                                outcome.workflow,
+                                outcome.scheduled,
+                                outcome.detail.as_deref().unwrap_or("workflow suppressed")
+                            ),
+                            crate::workflow_runtime::CronDisposition::Duplicate => {}
+                        }
+                    }
+                    let denied = outcomes
+                        .iter()
+                        .filter(|outcome| {
+                            outcome.disposition == crate::workflow_runtime::CronDisposition::Denied
+                        })
+                        .count();
+                    if denied > 0 {
+                        eprintln!("cron: denied {denied} workflow schedule fire(s)");
                     }
                     wf_default_last = now;
                 }
