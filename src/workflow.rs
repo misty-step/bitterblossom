@@ -101,60 +101,96 @@ impl GrantSpec {
         self == &Self::default()
     }
 
-    fn intersect_set(left: &BTreeSet<String>, right: &BTreeSet<String>) -> BTreeSet<String> {
+    fn intersect_set(
+        left: &BTreeSet<String>,
+        right: &BTreeSet<String>,
+        field: &str,
+    ) -> Result<BTreeSet<String>> {
         if left.is_empty() {
-            return right.clone();
+            return Ok(right.clone());
         }
         if right.is_empty() {
-            return left.clone();
+            return Ok(left.clone());
         }
-        left.intersection(right).cloned().collect()
+        let intersection: BTreeSet<String> = left.intersection(right).cloned().collect();
+        if intersection.is_empty() {
+            bail!("grant {field} intersection is empty");
+        }
+        Ok(intersection)
     }
 
-    fn intersect_prefixes(left: &[String], right: &[String]) -> Vec<String> {
+    fn intersect_prefixes(left: &[String], right: &[String]) -> Result<Vec<String>> {
         if left.is_empty() {
-            return right.to_vec();
+            return Ok(right.to_vec());
         }
         if right.is_empty() {
-            return left.to_vec();
+            return Ok(left.to_vec());
         }
-        left.iter()
-            .filter(|prefix| right.iter().any(|candidate| candidate == *prefix))
-            .cloned()
-            .collect()
+        let mut intersection = BTreeSet::new();
+        for left_prefix in left {
+            for right_prefix in right {
+                if left_prefix.starts_with(right_prefix) {
+                    intersection.insert(left_prefix.clone());
+                } else if right_prefix.starts_with(left_prefix) {
+                    intersection.insert(right_prefix.clone());
+                }
+            }
+        }
+        if intersection.is_empty() {
+            bail!("grant branch_prefixes intersection is empty");
+        }
+        Ok(intersection.into_iter().collect())
     }
 
-    fn intersect(&self, other: &Self) -> Self {
-        Self {
-            operations: Self::intersect_set(&self.operations, &other.operations),
-            capabilities: Self::intersect_set(&self.capabilities, &other.capabilities),
-            repositories: Self::intersect_set(&self.repositories, &other.repositories),
+    fn intersect(&self, other: &Self) -> Result<Self> {
+        let powder_scope = match (&self.powder_scope, &other.powder_scope) {
+            (Some(left), Some(right)) if left != right => {
+                bail!("grant powder_scope intersection is empty")
+            }
+            (Some(left), _) => Some(left.clone()),
+            (_, Some(right)) => Some(right.clone()),
+            _ => None,
+        };
+        Ok(Self {
+            operations: Self::intersect_set(&self.operations, &other.operations, "operations")?,
+            capabilities: Self::intersect_set(
+                &self.capabilities,
+                &other.capabilities,
+                "capabilities",
+            )?,
+            repositories: Self::intersect_set(
+                &self.repositories,
+                &other.repositories,
+                "repositories",
+            )?,
             branch_prefixes: Self::intersect_prefixes(
                 &self.branch_prefixes,
                 &other.branch_prefixes,
-            ),
-            powder_scope: match (&self.powder_scope, &other.powder_scope) {
-                (Some(left), Some(right)) if left != right => None,
-                (Some(left), _) => Some(left.clone()),
-                (_, Some(right)) => Some(right.clone()),
-                _ => None,
-            },
-        }
+            )?,
+            powder_scope,
+        })
     }
 
     fn contains(&self, requested: &Self) -> bool {
-        (requested.operations.is_empty() || requested.operations.is_subset(&self.operations))
-            && (requested.capabilities.is_empty()
+        (self.operations.is_empty()
+            || requested.operations.is_empty()
+            || requested.operations.is_subset(&self.operations))
+            && (self.capabilities.is_empty()
+                || requested.capabilities.is_empty()
                 || requested.capabilities.is_subset(&self.capabilities))
-            && (requested.repositories.is_empty()
+            && (self.repositories.is_empty()
+                || requested.repositories.is_empty()
                 || requested.repositories.is_subset(&self.repositories))
-            && (requested.branch_prefixes.is_empty()
-                || requested.branch_prefixes.iter().all(|prefix| {
+            && (self.branch_prefixes.is_empty()
+                || requested.branch_prefixes.is_empty()
+                || requested.branch_prefixes.iter().all(|requested_prefix| {
                     self.branch_prefixes
                         .iter()
-                        .any(|candidate| candidate == prefix)
+                        .any(|catalog_prefix| requested_prefix.starts_with(catalog_prefix))
                 }))
-            && (requested.powder_scope.is_none() || requested.powder_scope == self.powder_scope)
+            && (self.powder_scope.is_none()
+                || requested.powder_scope.is_none()
+                || requested.powder_scope == self.powder_scope)
     }
 }
 
@@ -1140,22 +1176,33 @@ fn compile_action(doc: &WorkflowDoc, step: &WorkflowStep) -> Result<CompiledActi
     let mut adapter = None;
     let mut bindings = BTreeMap::new();
     let grant = match &step.action {
-        WorkflowAction::Agent { .. } => doc.grant.intersect(&step.grant),
-        WorkflowAction::Approval { approval } => {
-            doc.grant.intersect(&step.grant).intersect(&approval.grant)
-        }
+        WorkflowAction::Agent { .. } => doc.grant.intersect(&step.grant)?,
+        WorkflowAction::Approval { approval } => doc
+            .grant
+            .intersect(&step.grant)?
+            .intersect(&approval.grant)?,
         WorkflowAction::Effect { effect } => {
             let descriptor = adapter_descriptor(effect)?;
-            let mut requested = doc.grant.intersect(&step.grant).intersect(&effect.grant);
-            if requested.operations.is_empty() {
-                requested.operations.insert(effect.operation.clone());
+            let mut effect_request = effect.grant.clone();
+            if let Some(repository) = &effect.repository {
+                effect_request.repositories.insert(repository.clone());
             }
-            let catalog = GrantSpec {
+            if let Some(branch) = &effect.branch {
+                effect_request.branch_prefixes.push(branch.clone());
+            }
+            let operation = GrantSpec {
                 operations: [effect.operation.clone()].into_iter().collect(),
+                ..GrantSpec::default()
+            };
+            let requested = doc
+                .grant
+                .intersect(&step.grant)?
+                .intersect(&effect_request)?
+                .intersect(&operation)?;
+            let catalog = GrantSpec {
+                operations: operation.operations.clone(),
                 capabilities: descriptor.capabilities.clone(),
-                repositories: BTreeSet::new(),
-                branch_prefixes: Vec::new(),
-                powder_scope: None,
+                ..GrantSpec::default()
             };
             if !catalog.contains(&requested) {
                 bail!(
@@ -1166,7 +1213,7 @@ fn compile_action(doc: &WorkflowDoc, step: &WorkflowStep) -> Result<CompiledActi
             }
             adapter = Some(descriptor);
             bindings = effect.bindings.clone();
-            requested.intersect(&catalog)
+            requested.intersect(&catalog)?
         }
     };
     if grant.operations.is_empty() && matches!(step.action, WorkflowAction::Effect { .. }) {
@@ -2148,6 +2195,42 @@ fn row_to_workflow_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowRunRow
     })
 }
 
+/// Load and verify the immutable activation pinned by one accepted run.
+/// Execution and readback refuse a run whose identity no longer names that
+/// activation, rather than silently projecting a different revision.
+pub(crate) fn verified_activation_for_run(
+    ledger: &Ledger,
+    run: &WorkflowRunRow,
+) -> Result<ActivationSnapshot> {
+    let activation = ledger
+        .activation_snapshot(&run.workflow, run.revision)
+        .with_context(|| {
+            format!(
+                "workflow run '{}' has no verified activation for workflow '{}' revision {}",
+                run.id, run.workflow, run.revision
+            )
+        })?;
+    activation.verify_digest()?;
+    if activation.workflow_id != run.workflow_id || activation.revision != run.revision {
+        bail!(
+            "workflow run '{}' activation snapshot identity mismatch: expected workflow {} revision {}, found workflow {} revision {}",
+            run.id,
+            run.workflow_id,
+            run.revision,
+            activation.workflow_id,
+            activation.revision
+        );
+    }
+    if activation.activation_id != run.activation_id {
+        bail!(
+            "workflow run '{}' activation_id mismatch: run has {}, loaded activation has {}",
+            run.id,
+            run.activation_id,
+            activation.activation_id
+        );
+    }
+    Ok(activation)
+}
 impl Ledger {
     /// Run `body` inside one immediate (write-locking) transaction so
     /// concurrent revisions/activations serialize instead of interleaving.
@@ -3478,6 +3561,7 @@ fn revision_document_view(ledger: &Ledger, name: &str, revision: i64) -> Result<
 /// activations unchanged.
 pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
     let run = ledger.workflow_run(run_id)?;
+    let activation = verified_activation_for_run(ledger, &run)?;
     let document = revision_document_view(ledger, &run.workflow, run.revision)?;
     let workflow = ledger.workflow_by_name(&run.workflow)?;
     let (snapshot_state, snapshot_error, launch_snapshots) =
@@ -3485,6 +3569,7 @@ pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "run": run,
         "document": document,
+        "activation": activation,
         "snapshot_state": snapshot_state,
         "snapshot_error": snapshot_error,
         "launch_snapshots": launch_snapshots,

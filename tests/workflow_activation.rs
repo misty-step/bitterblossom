@@ -119,7 +119,7 @@ fn malformed_and_unsupported_effect_declarations_fail_before_activation() {
         (
             "widening operation",
             EFFECT_DOC.replace("operations = [\"claim\"]", "operations = [\"work_log\"]"),
-            "widens",
+            "operations",
         ),
     ];
     for (label, text, expected) in cases {
@@ -248,4 +248,161 @@ fn rollback_mints_fresh_activation_and_pins_runs_without_resuming_pause() {
     assert_eq!(run.revision, rollback_revision);
     assert_eq!(run.activation_id, rolled.active_activation_id.unwrap());
     let _ = root;
+}
+
+#[test]
+fn conflicting_grant_layers_are_hard_denied() {
+    let conflicting = EFFECT_DOC
+        .replace("operations = [\"claim\"]", "operations = [\"work_log\"]")
+        .replace(
+            "[step.effect]",
+            "[step.effect.grant]\npowder_scope = \"other\"\n\n[step.effect]",
+        );
+    let (_root, ledger, _plane) = ledger_with_plane();
+    let doc = WorkflowDoc::from_toml(&conflicting).unwrap();
+    let (workflow, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
+    let error = ledger
+        .plan_activation(&workflow.name, Some(revision))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("operations") || error.contains("powder_scope"),
+        "{error}"
+    );
+}
+
+#[test]
+fn effect_bindings_are_included_in_the_compiled_grant() {
+    let bounded = r#"
+name = "bounded-effect"
+goal = "Compile a bounded effect binding."
+
+[grant]
+operations = ["claim"]
+capabilities = ["effect:powder", "operation:claim"]
+repositories = ["org/repo"]
+branch_prefixes = ["feature/"]
+powder_scope = "team"
+
+[[trigger]]
+kind = "test"
+
+[[step]]
+name = "claim"
+kind = "effect"
+
+[step.effect]
+adapter = "powder"
+operation = "claim"
+repository = "org/repo"
+branch = "feature/typed"
+enforcement = "enforced"
+
+[step.effect.grant]
+powder_scope = "team"
+"#;
+    let (_root, ledger, _plane) = ledger_with_plane();
+    let doc = WorkflowDoc::from_toml(bounded).unwrap();
+    let (workflow, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
+    let plan = ledger
+        .plan_activation(&workflow.name, Some(revision))
+        .unwrap();
+    let grant = &plan.compiled.steps[0].grant;
+    assert_eq!(
+        grant
+            .operations
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["claim"]
+    );
+    assert_eq!(
+        grant
+            .repositories
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["org/repo"]
+    );
+    assert_eq!(grant.branch_prefixes, vec!["feature/typed"]);
+    assert_eq!(grant.powder_scope.as_deref(), Some("team"));
+}
+
+#[test]
+fn disjoint_grant_dimensions_are_hard_denied() {
+    let base = r#"
+name = "bounded-conflicts"
+goal = "Reject disjoint typed grant dimensions."
+
+[grant]
+operations = ["claim"]
+capabilities = ["effect:powder", "operation:claim"]
+repositories = ["org/repo"]
+branch_prefixes = ["feature/"]
+powder_scope = "team"
+
+[[trigger]]
+kind = "test"
+
+[[step]]
+name = "claim"
+kind = "effect"
+
+[step.effect]
+adapter = "powder"
+operation = "claim"
+repository = "org/repo"
+branch = "feature/typed"
+enforcement = "enforced"
+
+[step.effect.grant]
+powder_scope = "team"
+"#;
+    let cases = [
+        (
+            "scope",
+            base.replace(
+                "[step.effect.grant]\npowder_scope = \"team\"",
+                "[step.effect.grant]\npowder_scope = \"other\"",
+            ),
+        ),
+        (
+            "branch",
+            base.replace("branch = \"feature/typed\"", "branch = \"bugfix/123\""),
+        ),
+        (
+            "repository",
+            base.replace(
+                "repository = \"org/repo\"\nbranch",
+                "repository = \"org/other\"\nbranch",
+            ),
+        ),
+        (
+            "capability",
+            base.replace(
+                "[step.effect.grant]\npowder_scope = \"team\"",
+                "[step.effect.grant]\ncapabilities = [\"effect:git\"]\npowder_scope = \"team\"",
+            ),
+        ),
+        (
+            "operation",
+            base.replace(
+                "[step.effect.grant]\npowder_scope = \"team\"",
+                "[step.effect.grant]\noperations = [\"work_log\"]\npowder_scope = \"team\"",
+            ),
+        ),
+    ];
+    for (dimension, text) in cases {
+        let (_root, ledger, _plane) = ledger_with_plane();
+        let doc = WorkflowDoc::from_toml(&text).unwrap();
+        let (workflow, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
+        let error = ledger
+            .plan_activation(&workflow.name, Some(revision))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("intersection is empty") || error.contains("widens"),
+            "{dimension}: {error}"
+        );
+    }
 }

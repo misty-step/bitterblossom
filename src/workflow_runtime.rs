@@ -365,10 +365,11 @@ fn load_document(ledger: &Ledger, workflow: &str, revision: i64) -> Result<Workf
     Ok(doc)
 }
 
-/// Reconstruct the executable workflow solely from verified activation rows.
-/// The desired revision document is deliberately not read on this path.
+/// Reconstruct the executable workflow from verified activation rows while
+/// retaining the canonical workflow-level grant from its pinned revision.
 fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Result<WorkflowDoc> {
     let workflow_row = ledger.workflow_by_name(workflow)?;
+    let canonical_grant = load_document(ledger, workflow, revision)?.grant;
     let mut rows = ledger.require_verified_launch_snapshots(&workflow_row.id, revision)?;
     let mut snapshots = rows
         .drain(..)
@@ -441,7 +442,7 @@ fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Resul
         .collect();
     Ok(WorkflowDoc {
         name: workflow.to_string(),
-        grant: first.grant.clone(),
+        grant: canonical_grant,
         goal: first.workflow_goal.clone(),
         triggers: Vec::new(),
         steps,
@@ -1513,6 +1514,7 @@ fn execute_claimed(
     run: &crate::workflow::WorkflowRunRow,
 ) -> Result<serde_json::Value> {
     let run_id = run.id.as_str();
+    crate::workflow::verified_activation_for_run(ledger, run)?;
     let doc = load_pinned_document(ledger, &run.workflow, run.revision)?;
     let started = Instant::now();
 
@@ -2042,6 +2044,21 @@ fn run_step_once(
         )))
     };
     let none = AttemptStats::default();
+    match &step.action {
+        WorkflowAction::Agent { .. } => {}
+        WorkflowAction::Effect { .. } => {
+            return fail_pre_exec(
+                "action 'effect' denied before execution: no controller/effect executor exists yet"
+                    .to_string(),
+            )
+        }
+        WorkflowAction::Approval { .. } => {
+            return fail_pre_exec(
+                "action 'approval' denied before execution: no approval executor exists yet"
+                    .to_string(),
+            )
+        }
+    }
     if let Some(seats) = snapshot.seats {
         return fail_terminal(
             format!("policies.seats={seats} is unsupported; seat admission is not enforceable"),
@@ -2176,6 +2193,7 @@ fn run_step_once(
         "launch_snapshot_digest": snapshot.digest,
         "authority": &snapshot.authority,
         "authority_digest": snapshot.authority_digest,
+        "workflow_grant": &doc.grant,
         "bundle_agents_md_sha256": bundle.as_ref().map(|(_, digest)| digest.clone()),
     })
     .to_string();
@@ -2604,7 +2622,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
     let events = ledger.workflow_run_events(run_id)?;
     let workflow = ledger.workflow_by_name(&run.workflow)?;
     let launch_snapshots = ledger.launch_snapshots_for_revision(&workflow.id, run.revision)?;
-    let activation = ledger.activation_snapshot(&run.workflow, run.revision).ok();
+    let activation = crate::workflow::verified_activation_for_run(ledger, &run)?;
     let steps = ledger
         .workflow_step_runs(run_id)?
         .into_iter()

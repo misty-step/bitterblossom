@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
+use bitterblossom::workflow_runtime::run_detail_view;
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
@@ -2950,4 +2951,138 @@ estimated_cost_per_run_usd = 0.25
         .unwrap();
     let view = execute(root, &run_id);
     assert_eq!(view["status"]["state"], "succeeded", "{view}");
+}
+
+#[test]
+fn effect_and_approval_actions_are_denied_before_harness_execution() {
+    let cases = [
+        (
+            "effect",
+            r#"
+name = "effect"
+goal = "No effect executor is installed."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "effect"
+kind = "effect"
+[step.effect]
+adapter = "powder"
+operation = "claim"
+enforcement = "enforced"
+"#,
+            "no controller/effect executor exists yet",
+        ),
+        (
+            "approval",
+            r#"
+name = "approval"
+goal = "No approval executor is installed."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "approval"
+kind = "approval"
+[step.approval]
+principal = "operator"
+question = "Proceed?"
+"#,
+            "no approval executor exists yet",
+        ),
+    ];
+    for (workflow, text, expected) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_plane(root);
+        let file = write_doc(root, &format!("{workflow}.toml"), text);
+        create_and_activate(root, &file, workflow);
+        let run_id = accept_test_run(root, workflow);
+        let view = execute(root, &run_id);
+        assert_eq!(view["status"]["state"], "failed", "{workflow}: {view}");
+        assert!(
+            view["status"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains(expected),
+            "{workflow}: {view}"
+        );
+        let artifact_dir = Path::new(view["steps"][0]["artifact_dir"].as_str().unwrap());
+        assert!(
+            !artifact_dir.join("stdout.txt").exists(),
+            "{workflow} launched a harness"
+        );
+        assert!(
+            !artifact_dir.join("result.md").exists(),
+            "{workflow} produced harness output"
+        );
+        assert!(
+            !artifact_dir.join("workspace").exists(),
+            "{workflow} acquired an effect workspace"
+        );
+    }
+}
+
+#[test]
+fn workflow_grant_and_activation_identity_are_verified_from_pinned_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let stub = write_stub(root, "grant.sh", "echo completed");
+    let doc = write_doc(
+        root,
+        "grant.toml",
+        &format!(
+            r#"
+name = "grant-preservation"
+goal = "Preserve the workflow grant independently of step grants."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "work"
+grant = {{ capabilities = ["step:specific"] }}
+goal = "Run with a narrower step grant."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+bin = "{}"
+"#,
+            stub.display()
+        ),
+    );
+    create_and_activate(root, &doc, "grant-preservation");
+    let run_id = accept_test_run(root, "grant-preservation");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    let run_json =
+        Path::new(view["steps"][0]["artifact_dir"].as_str().unwrap()).join("workspace/RUN.json");
+    let context: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(run_json).unwrap()).unwrap();
+    assert_eq!(context["workflow_grant"], serde_json::json!({}));
+
+    let ledger = Ledger::open(&root.join(".bb/plane.db")).unwrap();
+    assert!(run_detail_view(&ledger, &run_id).is_ok());
+    let mismatch_run = accept_test_run(root, "grant-preservation");
+    let conn = Connection::open(root.join(".bb/plane.db")).unwrap();
+    conn.execute(
+        "UPDATE workflow_runs SET activation_id = 'tampered-activation' WHERE id = ?1",
+        params![mismatch_run],
+    )
+    .unwrap();
+    let error = run_detail_view(&ledger, &mismatch_run)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("activation_id mismatch"), "{error}");
+    let refused = bb(root, &["workflow", "execute", &mismatch_run, "--json"]);
+    assert!(!refused.status.success(), "tampered activation executed");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("activation_id mismatch"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        ledger.workflow_step_runs(&mismatch_run).unwrap().is_empty(),
+        "activation mismatch reached a harness step"
+    );
 }
