@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::ledger::Ledger;
 use crate::spec::{Plane, Task};
-use crate::workflow::WorkflowDoc;
+use crate::workflow::{LaunchSnapshot, WorkflowDoc, WorkflowLaunchSnapshotRow};
 #[derive(Clone, Debug)]
 pub struct Violation {
     pub kind: &'static str,
@@ -108,21 +108,28 @@ pub fn workflow_admission_limit(
     ledger: &Ledger,
     workflow_name: &str,
     doc: &WorkflowDoc,
+    snapshots: &[WorkflowLaunchSnapshotRow],
     additional_reservation: f64,
     exclude_run: Option<&str>,
 ) -> Result<Option<Violation>> {
-    for step in &doc.steps {
-        let provider = step.agent.provider.as_deref().unwrap_or("openrouter");
-        if let Some(v) = metered_parent_key_violation(
-            &step.agent.name,
-            &step.agent.harness,
-            provider,
-            &step.agent.secrets,
-            &[],
-            None,
-            None,
-        ) {
-            return Ok(Some(v));
+    // Admission validates every immutable identity that may be selected: the
+    // primary plus each ordered fallback. Checking only WorkflowDoc.step.agent
+    // would let a fallback bypass the metered-parent-key refusal.
+    for row in snapshots {
+        let snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot.clone())?;
+        for index in 0..=snapshot.fallbacks.len() {
+            let resolved = snapshot.resolve_fallback(index)?;
+            if let Some(v) = metered_parent_key_violation(
+                &resolved.name,
+                &resolved.harness,
+                resolved.provider.as_deref().unwrap_or("openrouter"),
+                &resolved.secret_refs,
+                &[],
+                None,
+                None,
+            ) {
+                return Ok(Some(v));
+            }
         }
     }
 

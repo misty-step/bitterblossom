@@ -352,7 +352,7 @@ model = "moonshotai/kimi-k2.6"
     ledger.activate_workflow("pr-review", None).unwrap();
     ledger.create_workflow(&second, "test", None).unwrap();
     let err = ledger.activate_workflow("second-workflow", None).unwrap_err().to_string();
-    assert!(err.contains("already active"), "{err}");
+    assert!(err.contains("webhook route") && err.contains("already owned"), "{err}");
 }
 // --- criterion 1: one database-backed lifecycle API -------------------------
 

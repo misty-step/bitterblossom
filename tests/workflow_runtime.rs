@@ -584,6 +584,51 @@ model = "fallback"
 }
 
 #[test]
+fn fallback_metered_parent_key_is_rejected_from_pinned_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let missing_primary = root.join("missing-primary-key");
+    let missing_fallback = root.join("missing-fallback-key");
+    let doc = write_doc(
+        root,
+        "fallback-metered-key.toml",
+        &format!(
+            r#"
+name = "fallback-metered-key"
+goal = "Reject a fallback whose selected harness cannot meter its parent key."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Never launch a cost-blind fallback with a metered parent key."
+[step.agent]
+name = "primary"
+version = 1
+harness = "opencode"
+provider = "openrouter"
+model = "primary"
+bin = "{}"
+secrets = ["OPENROUTER_API_KEY"]
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+secrets = ["OPENROUTER_API_KEY"]
+"#,
+            missing_primary.display(),
+            missing_fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "fallback-metered-key");
+    let output = bb(root, &["workflow", "accept", "fallback-metered-key", "--trigger", "test", "--json"]);
+    let denied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(denied["disposition"], "denied", "{denied}");
+    assert_eq!(denied["kind"], "cost_blind_harness", "{denied}");
+    assert!(denied["reason"].as_str().unwrap().contains("command"), "{denied}");
+}
+
+#[test]
 fn fallback_consumes_round_budget_before_next_launch() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

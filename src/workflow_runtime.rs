@@ -1505,15 +1505,23 @@ fn execute_claimed(
             break ("stopped", Some(detail), "workflow_run_stopped");
         }
 
-        // Guards, checked before every attempt; first fired wins.
-        if let Some(guard) = fired_guard(ledger, run, &doc, step, started)? {
+        let snapshot = load_launch_snapshot(ledger, run, &step.name)?;
+        // Guards, checked before every attempt; first fired wins. Identity and
+        // cost capability come from the immutable selected snapshot, never the
+        // mutable desired declaration.
+        if let Some(guard) = fired_guard(ledger, run, &doc, step, &snapshot, started)? {
             break ("stopped", Some(guard.clone()), "workflow_run_stopped");
         }
 
-        let snapshot = load_launch_snapshot(ledger, run, &step.name)?;
         let disposition = run_step(plane, ledger, run, &doc, step, &snapshot, started)?;
-        if let Some(reason) = post_attempt_spend_guard(ledger, run, &doc)? {
-            break ("stopped", Some(reason), "workflow_run_stopped");
+        // run_step_once performs the selected snapshot's terminal spend check.
+        // The post-attempt guard is retained for a successful adapter result
+        // that did not pass through that terminal branch, without replacing a
+        // more precise selected-attempt stop reason.
+        if matches!(&disposition, StepDisposition::Succeeded { .. }) {
+            if let Some(reason) = post_attempt_spend_guard(ledger, run, &snapshot)? {
+                break ("stopped", Some(reason), "workflow_run_stopped");
+            }
         }
         match disposition {
             StepDisposition::PreExecFailed(error) => {
@@ -1580,11 +1588,37 @@ fn execute_claimed(
 
 /// Evaluate the run group's guards for the next attempt of `step`. Returns
 /// the fired guard description (also recorded as a guard event) or None.
+fn post_attempt_spend_guard(
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    snapshot: &LaunchSnapshot,
+) -> Result<Option<String>> {
+    let Some(cap) = snapshot.max_cost_per_run_usd else {
+        return Ok(None);
+    };
+    let observed = ledger.workflow_run_status(&run.id)?.and_then(|status| status.cost_usd);
+    let Some(observed) = observed else {
+        return Ok(None);
+    };
+    if !observed.is_finite() || observed < 0.0 {
+        let detail = format!("spend guard invalid: observed cost {observed:?} is not finite and non-negative");
+        ledger.record_guard_event("workflow_guard_spend_invalid", Some(&run.workflow), &detail, 1)?;
+        return Ok(Some(detail));
+    }
+    if observed > cap {
+        let detail = format!("spend guard: observed ${observed:.4} exceeds run-group cap ${cap:.2}");
+        ledger.record_guard_event("workflow_guard_spend", Some(&run.workflow), &detail, 1)?;
+        return Ok(Some(detail));
+    }
+    Ok(None)
+}
+
 fn fired_guard(
     ledger: &Ledger,
     run: &crate::workflow::WorkflowRunRow,
     doc: &WorkflowDoc,
     step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
     started: Instant,
 ) -> Result<Option<String>> {
     let fired = if let Some(reason) = ledger.workflow_run_stop_reason(&run.id)? {
@@ -1592,7 +1626,7 @@ fn fired_guard(
             "workflow_guard_stop_signal",
             format!("stop signal: {reason}"),
         ))
-    } else if let Some(max) = doc.policies.max_rounds {
+    } else if let Some(max) = snapshot.max_rounds {
         let attempts = ledger.workflow_step_attempts(&run.id, &step.name)?;
         (attempts >= max as i64).then(|| {
             (
@@ -1610,7 +1644,7 @@ fn fired_guard(
     let fired = match fired {
         Some(f) => Some(f),
         None => {
-            if let Some(max) = doc.policies.max_elapsed_seconds {
+            if let Some(max) = snapshot.max_elapsed_seconds {
                 if started.elapsed() >= Duration::from_secs(max) {
                     Some((
                         "workflow_guard_elapsed",
@@ -1630,9 +1664,11 @@ fn fired_guard(
     let fired = match fired {
         Some(f) => Some(f),
         None => {
-            if let Some(cap) = doc.policies.max_cost_per_run_usd {
-                let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
-                    let estimate = doc.policies.conservative_cost_estimate();
+            if let Some(cap) = snapshot.max_cost_per_run_usd {
+                let estimate_violation = if !harness::reports_cost(&snapshot.harness) {
+                    let estimate = snapshot.estimated_cost_per_run_usd
+                        .or_else(|| snapshot.max_cost_per_run_usd.filter(|value| *value != 0.0))
+                        .unwrap_or(1.0);
                     if !estimate.is_finite() || estimate <= 0.0 {
                         bail!(
                             "workflow '{}' has invalid conservative estimate {}",
@@ -1642,13 +1678,13 @@ fn fired_guard(
                     }
                     (estimate > cap).then(|| (
                         "workflow_guard_spend_estimate",
-                        format!("spend estimate: cost-blind harness '{}' reserves ${:.4} > max_cost_per_run_usd ${:.2}; unknown spend is never treated as zero", step.agent.harness, estimate, cap),
+                        format!("spend estimate: cost-blind harness '{}' reserves ${:.4} > max_cost_per_run_usd ${:.2}; unknown spend is never treated as zero", snapshot.harness, estimate, cap),
                     ))
                 } else {
                     None
                 };
                 let spend_is_only_cycle_guard =
-                    doc.policies.max_rounds.is_none() && doc.policies.max_elapsed_seconds.is_none();
+                    snapshot.max_rounds.is_none() && snapshot.max_elapsed_seconds.is_none();
                 let unmetered = if spend_is_only_cycle_guard {
                     let cycle_steps: Vec<&str> = doc
                         .steps_on_cycles()
@@ -1848,11 +1884,11 @@ fn run_step(
         let resolved = snapshot.resolve_fallback(index)?;
         match run_step_once(plane, ledger, run, doc, step, &resolved)? {
             StepDisposition::PreExecFailed(error) if index < snapshot.fallbacks.len() => {
-                if let Some(reason) = fired_guard(ledger, run, doc, step, started)? {
-                    return Ok(StepDisposition::Stopped(reason));
-                }
                 let next = index + 1;
                 let resolved = snapshot.resolve_fallback(next)?;
+                if let Some(reason) = fired_guard(ledger, run, doc, step, &resolved, started)? {
+                    return Ok(StepDisposition::Stopped(reason));
+                }
                 ledger.record_guard_event(
                     "workflow_fallback_selected",
                     Some(&run.workflow),
@@ -1942,10 +1978,10 @@ fn run_step_once(
     };
     let none = AttemptStats::default();
     if let Some(v) = budget::metered_parent_key_violation(
-        &step.agent.name,
-        &step.agent.harness,
-        step.agent.provider.as_deref().unwrap_or("openrouter"),
-        &step.agent.secrets,
+        &snapshot.name,
+        &snapshot.harness,
+        snapshot.provider.as_deref().unwrap_or("openrouter"),
+        &snapshot.secret_refs,
         &[],
         None,
         None,
@@ -1980,7 +2016,7 @@ fn run_step_once(
     };
     let budget = TaskBudget {
         timeout_minutes: Some(
-            doc.policies
+            snapshot
                 .timeout_minutes
                 .unwrap_or(DEFAULT_STEP_TIMEOUT_MINUTES),
         ),
@@ -2068,7 +2104,7 @@ fn run_step_once(
     })
     .to_string();
     let plan = WorkspacePlan {
-        repos: step.repos.clone(),
+        repos: snapshot.repos.clone(),
         card: card.clone(),
         run_context,
         payload: run.payload.clone(),
@@ -2096,9 +2132,9 @@ fn run_step_once(
     // refused-credential STOP-and-report guardrail; workflow steps are
     // dispatched lanes and receive exactly the same one.
     let prompt = format!("{}\n\n{card}", harness::commission_prompt());
-    let max_cost = doc.policies.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
-    let side_effect_policy = doc.policies.side_effect_policy.as_deref().unwrap_or("kill");
-    let monitor_needed = max_cost.is_finite() && harness::streams_cost(&step.agent.harness);
+    let max_cost = snapshot.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
+    let side_effect_policy = snapshot.side_effect_policy.as_deref().unwrap_or("kill");
+    let monitor_needed = max_cost.is_finite() && harness::streams_cost(&snapshot.harness);
     let prior_cost_usd = ledger
         .workflow_run_status(&run.id)?
         .and_then(|status| status.cost_usd)
@@ -2107,7 +2143,7 @@ fn run_step_once(
         ledger,
         run_id: &run.id,
         workflow: &run.workflow,
-        harness: &step.agent.harness,
+        harness: &snapshot.harness,
         max_cost_usd: max_cost,
         prior_cost_usd,
         side_effect_policy,
@@ -2287,7 +2323,7 @@ fn run_step_once(
                 // Declared spend only ever adds: a negative entry would
                 // silently offset siblings' costs inside the enforced sum.
                 if cost < 0.0 || !cost.is_finite() {
-                    return fail_terminal(
+                    return fail_stopped(
                         format!(
                             "{CHILD_AGENTS_FILENAME}: child agent '{}' declares negative \
                              cost_usd {cost}; declared spend only ever adds",

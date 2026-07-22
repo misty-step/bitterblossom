@@ -577,7 +577,7 @@ impl WorkflowDoc {
                     }
                     if let Some(expr) = &trigger.dedupe_key {
                         crate::ingress::validate_dedupe_key_expression(expr).with_context(
-                            || format!("workflow '{}': invalid webhook dedupe_key", self.name),
+                            || format!("workflow '{}': invalid trigger dedupe_key", self.name),
                         )?;
                     }
                 }
@@ -1879,9 +1879,19 @@ impl Ledger {
                     });
                 }
             };
-            self.require_verified_launch_snapshots(&wf.id, revision).with_context(|| {
-                format!("workflow '{name}' active revision {revision} requires reactivation before accepting runs")
-            })?;
+            let launch_snapshots = match self.require_verified_launch_snapshots(&wf.id, revision) {
+                Ok(snapshots) => snapshots,
+                Err(error) => {
+                    let reason = format!("workflow '{name}' active revision {revision} requires a verified launch snapshot: {error:#}");
+                    self.workflow_audit(&wf.id, "workflow_needs_attention", Some(&reason))?;
+                    self.workflow_audit(&wf.id, "run_denied", Some(&format!("kind=launch_snapshot {reason}")))?;
+                    return Ok(AcceptOutcome::Denied {
+                        workflow: wf.name.clone(),
+                        kind: "launch_snapshot".to_string(),
+                        reason,
+                    });
+                }
+            };
             let deny = |kind: &str, reason: String| -> Result<AcceptOutcome> {
                 if kind == "workflow_daily_ceiling" {
                     self.workflow_audit(&wf.id, kind, Some(&reason))?;
@@ -1898,7 +1908,7 @@ impl Ledger {
                 return deny("invalid_configuration", format!("workflow '{}': conservative run estimate must be finite and greater than zero", name));
             }
             if let Some(violation) = crate::budget::workflow_admission_limit(
-                plane, self, &wf.name, &document, estimate, None,
+                plane, self, &wf.name, &document, &launch_snapshots, estimate, None,
             )? {
                 return deny(violation.kind, violation.detail);
             }
@@ -1990,11 +2000,13 @@ impl Ledger {
             let run = self.workflow_run(run_id)?;
             let revision = self.workflow_revision_row(&run.workflow_id, run.revision)?;
             let doc = WorkflowDoc::from_canonical_json(&revision.document)?;
+            let launch_snapshots = self.require_verified_launch_snapshots(&run.workflow_id, run.revision)?;
             Ok(crate::budget::workflow_admission_limit(
                 plane,
                 self,
                 &run.workflow,
                 &doc,
+                &launch_snapshots,
                 0.0,
                 Some(run_id),
             )?
