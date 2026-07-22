@@ -1248,7 +1248,6 @@ struct WorkflowInFlightMonitor<'a> {
     max_cost_usd: f64,
     prior_cost_usd: f64,
     side_effect_policy: &'a str,
-    latest_stats: AttemptStats,
     last_recorded_cost: Option<f64>,
     breached: bool,
 }
@@ -1256,8 +1255,7 @@ struct WorkflowInFlightMonitor<'a> {
 impl<'a> WorkflowInFlightMonitor<'a> {
     fn observe(&mut self, snapshot: &ExecSnapshot<'_>) -> Option<String> {
         let progress = harness::parse_partial_progress(self.harness, snapshot.stdout);
-        self.latest_stats = progress.stats;
-        let cost = self.latest_stats.cost_usd?;
+        let cost = progress.stats.cost_usd?;
         let total = self.prior_cost_usd + cost;
         let changed = self
             .last_recorded_cost
@@ -1917,7 +1915,6 @@ fn run_step(
         max_cost_usd: max_cost,
         prior_cost_usd,
         side_effect_policy,
-        latest_stats: AttemptStats::default(),
         last_recorded_cost: None,
         breached: false,
     };
@@ -1952,7 +1949,13 @@ fn run_step(
             Some(exec.exit_code),
             &stats,
         )?;
-        return Ok(if in_flight.breached && side_effect_policy == "quarantine" { StepDisposition::NeedsAttention(reason.to_string()) } else { StepDisposition::Stopped(reason.to_string()) });
+        return Ok(
+            if in_flight.breached && side_effect_policy == "quarantine" {
+                StepDisposition::NeedsAttention(reason.to_string())
+            } else {
+                StepDisposition::Stopped(reason.to_string())
+            },
+        );
     }
     if exec.timed_out {
         let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
@@ -2153,7 +2156,11 @@ fn run_step(
                         Some(exec.exit_code),
                         &parsed.stats,
                     )?;
-                    return Ok(if side_effect_policy == "quarantine" { StepDisposition::NeedsAttention(reason) } else { StepDisposition::Stopped(reason) });
+                    return Ok(if side_effect_policy == "quarantine" {
+                        StepDisposition::NeedsAttention(reason)
+                    } else {
+                        StepDisposition::Stopped(reason)
+                    });
                 }
             }
         }

@@ -705,14 +705,20 @@ fn parked_ask_answer_retries_after_queue_backpressure_without_partial_answer() {
         "POST",
         "/api/asks",
         Some("ask-secret-saturated"),
-        Some(&format!(r#"{{"run_id":"{run_id}","task":"demo","kind":"approval","question":"retry?","blocking":true,"window_seconds":0}}"#)),
+        Some(&format!(
+            r#"{{"run_id":"{run_id}","task":"demo","kind":"approval","question":"retry?","blocking":true,"window_seconds":0}}"#
+        )),
     );
     assert_eq!(status, 201, "{response}");
     let ask_id = serde_json::from_str::<serde_json::Value>(response_body(&response)).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let (status, _) = http_get(port, &format!("/api/asks/{ask_id}"), Some("ask-secret-saturated"));
+    let (status, _) = http_get(
+        port,
+        &format!("/api/asks/{ask_id}"),
+        Some("ask-secret-saturated"),
+    );
     assert_eq!(status, 200);
     {
         let plane = Plane::load(dir.path()).unwrap();
@@ -743,7 +749,10 @@ fn parked_ask_answer_retries_after_queue_backpressure_without_partial_answer() {
         let plane = Plane::load(dir.path()).unwrap();
         let ledger = Ledger::open(&plane.db_path()).unwrap();
         let ask = ledger.ask(&ask_id).unwrap();
-        assert!(ask.answer.is_none(), "queue pressure must roll back the answer");
+        assert!(
+            ask.answer.is_none(),
+            "queue pressure must roll back the answer"
+        );
         assert_eq!(ledger.pending_run_depth(Some("demo")).unwrap(), 256);
         let pending = ledger.pending_runs_oldest_first().unwrap();
         ledger.transition(&pending[0].id, "running", None).unwrap();
@@ -760,7 +769,10 @@ fn parked_ask_answer_retries_after_queue_backpressure_without_partial_answer() {
     assert!(answered["resumed_run_id"].as_str().is_some());
     let plane = Plane::load(dir.path()).unwrap();
     let ledger = Ledger::open(&plane.db_path()).unwrap();
-    assert_eq!(ledger.ask(&ask_id).unwrap().answer.as_deref(), Some("approve"));
+    assert_eq!(
+        ledger.ask(&ask_id).unwrap().answer.as_deref(),
+        Some("approve")
+    );
     assert_eq!(ledger.pending_run_depth(Some("demo")).unwrap(), 256);
 }
 

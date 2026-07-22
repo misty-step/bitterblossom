@@ -20,14 +20,12 @@ pub struct WebhookResponse {
 #[derive(Debug)]
 pub enum IngressClientError {
     BadRequest(String),
-    Backpressure(String),
 }
 
 impl fmt::Display for IngressClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadRequest(detail) => write!(f, "{detail}"),
-            Self::Backpressure(detail) => write!(f, "{detail}"),
         }
     }
 }

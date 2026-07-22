@@ -351,7 +351,7 @@ harness = "command"
 model = "stub"
 bin = "{}"
 [policies]
-max_cost_per_day_usd = 1.01
+max_cost_per_day_usd = 1.0
 estimated_cost_per_run_usd = 1.0
 "#,
             stub.display()

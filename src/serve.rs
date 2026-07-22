@@ -641,12 +641,10 @@ fn handle_one_request(root: &Path, mut request: tiny_http::Request) {
     let (status, body) = match response {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            if let Some(client) = e.downcast_ref::<ingress::IngressClientError>() {
-                let status = match client {
-                    ingress::IngressClientError::BadRequest(_) => 400,
-                    ingress::IngressClientError::Backpressure(_) => 429,
-                };
-                (status, json_error(client.to_string()))
+            if crate::ledger::is_queue_backpressure(&e) {
+                (429, json_error(e.to_string()))
+            } else if let Some(client) = e.downcast_ref::<ingress::IngressClientError>() {
+                (400, json_error(client.to_string()))
             } else {
                 report_runtime_error("http request", "bb.http.request", &e);
                 (500, json_error(e.to_string()))
@@ -1001,9 +999,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                     },
                 ) {
                     Ok(result) => result,
-                    Err(err) if crate::ledger::is_queue_backpressure(&err) => {
-                        return Err(ingress::IngressClientError::Backpressure(err.to_string()).into())
-                    }
+                    Err(err) if crate::ledger::is_queue_backpressure(&err) => return Err(err),
                     Err(err) => return Ok((409, json_error(err.to_string()))),
                 };
                 if let Ok(task) = plane.task(&ask.task) {

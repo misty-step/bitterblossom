@@ -307,7 +307,11 @@ fn tailnet_probe_rejects_nonpositive_pidfile() {
     let dir = tempfile::tempdir().unwrap();
     let fake_home = dir.path().join("fake-remote-home");
     fs::create_dir_all(fake_home.join(".bb-tailnet")).unwrap();
-    fs::write(fake_home.join(".bb-tailnet/probe-marker.pid"), "0|never-started").unwrap();
+    fs::write(
+        fake_home.join(".bb-tailnet/probe-marker.pid"),
+        "0|never-started",
+    )
+    .unwrap();
 
     let ssh_stub = dir.path().join("ssh-stub.sh");
     write_executable(&ssh_stub, SSH_STUB);
@@ -321,5 +325,8 @@ fn tailnet_probe_rejects_nonpositive_pidfile() {
     std::env::remove_var("SSH_FAKE_HOME");
     std::env::remove_var("SSH_STUB_LOG");
 
-    assert!(matches!(result, ProbeResult::Unknown(ref reason) if reason.contains("malformed pidfile")), "{result:?}");
+    assert!(
+        matches!(result, ProbeResult::Unknown(ref reason) if reason.contains("malformed pidfile")),
+        "{result:?}"
+    );
 }
