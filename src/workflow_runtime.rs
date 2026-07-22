@@ -1998,6 +1998,12 @@ fn run_step(
         return Ok(StepDisposition::Failed(format!("release: {e:#}")));
     }
     if let Some(cost) = parsed.stats.cost_usd {
+        if !cost.is_finite() || cost < 0.0 {
+            return fail(
+                format!("harness reported unusable cost_usd {cost}"),
+                &parsed.stats,
+            );
+        }
         ledger.add_workflow_run_cost(&run.id, cost)?;
     }
 
@@ -2054,7 +2060,7 @@ fn run_step(
             if let Some(cost) = decl.cost_usd {
                 // Declared spend only ever adds: a negative entry would
                 // silently offset siblings' costs inside the enforced sum.
-                if cost < 0.0 || cost.is_nan() {
+                if cost < 0.0 || !cost.is_finite() {
                     return fail(
                         format!(
                             "{CHILD_AGENTS_FILENAME}: child agent '{}' declares negative \
