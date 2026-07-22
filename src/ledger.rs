@@ -1839,20 +1839,6 @@ impl Ledger {
             .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))?)
     }
 
-    pub fn oldest_pending_run_at(&self, task: Option<&str>) -> Result<Option<String>> {
-        let mut sql = String::from("SELECT created_at FROM runs WHERE state = 'pending'");
-        let mut args = Vec::new();
-        if let Some(task) = task {
-            sql.push_str(" AND task = ?1");
-            args.push(task.to_string());
-        }
-        sql.push_str(" ORDER BY created_at, id LIMIT 1");
-        Ok(self
-            .conn
-            .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))
-            .optional()?)
-    }
-
     pub fn attempts(&self, run_id: &str) -> Result<Vec<AttemptRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, n, agent_name, agent_version, harness, model, phase,

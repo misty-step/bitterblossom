@@ -497,6 +497,22 @@ impl Ledger {
         Ok(updated == 1)
     }
 
+    /// Release a just-claimed run back to `queued` after an admission
+    /// recheck violation. The pressure is environmental (spend ceilings,
+    /// sibling run-count consumption), not a defect of this run: deferring
+    /// keeps the accepted work and its pinned reservation intact for a
+    /// later runner tick instead of terminally destroying it. CAS on
+    /// `running` so a concurrent terminal transition wins.
+    pub fn defer_claimed_workflow_run(&self, run_id: &str, reason: &str) -> Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE workflow_run_status
+             SET state = 'queued', detail = ?2, updated_at = ?3
+             WHERE run_id = ?1 AND state = 'running'",
+            params![run_id, reason, now()],
+        )?;
+        Ok(updated == 1)
+    }
+
     pub fn set_workflow_run_state(
         &self,
         run_id: &str,
@@ -650,26 +666,6 @@ impl Ledger {
         }))
     }
 
-    pub fn queued_workflow_run_depth(&self) -> Result<i64> {
-        Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'queued'",
-            [],
-            |r| r.get(0),
-        )?)
-    }
-
-    pub fn oldest_queued_workflow_run(&self) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT updated_at FROM workflow_run_status
-                 WHERE state = 'queued' ORDER BY updated_at, run_id LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?)
-    }
-
     fn running_workflow_run_ids(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT s.run_id FROM workflow_run_status s
@@ -781,19 +777,6 @@ impl Ledger {
 
     /// Record runtime evidence in the workflow audit trail without exposing the
     /// composition store's private transaction helper.
-    pub fn record_workflow_runtime_event_by_workflow(
-        &self,
-        workflow_id: &str,
-        kind: &str,
-        data: Option<&str>,
-    ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO workflow_events (workflow_id, kind, data, at) VALUES (?1, ?2, ?3, ?4)",
-            params![workflow_id, kind, data, now()],
-        )?;
-        Ok(())
-    }
-
     pub fn record_workflow_runtime_event(
         &self,
         run_id: &str,
@@ -1291,12 +1274,29 @@ impl<'a> WorkflowInFlightMonitor<'a> {
     }
 }
 
+/// Outcome of one execution attempt on a queued workflow run.
+pub enum ExecutionDisposition {
+    /// The run was claimed and driven to a terminal state.
+    Executed(serde_json::Value),
+    /// The queued->running claim was lost: someone else is executing.
+    ClaimLost,
+    /// The admission recheck refused capacity; the run was released back
+    /// to `queued` (reservation intact) for a later runner tick.
+    Deferred { reason: String },
+}
+
 /// Execute one accepted workflow run to a terminal state. Claims the run
 /// (queued -> running CAS); refuses anything already claimed or terminal.
 pub fn execute_run(plane: &Plane, ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
     match execute_if_queued(plane, ledger, run_id)? {
-        Some(view) => Ok(view),
-        None => {
+        ExecutionDisposition::Executed(view) => Ok(view),
+        ExecutionDisposition::Deferred { reason } => {
+            bail!(
+                "workflow run {run_id} deferred by admission recheck: {reason}; \
+                 run remains queued"
+            );
+        }
+        ExecutionDisposition::ClaimLost => {
             let state = ledger
                 .workflow_run_status(run_id)?
                 .map(|s| s.state)
@@ -1306,27 +1306,51 @@ pub fn execute_run(plane: &Plane, ledger: &Ledger, run_id: &str) -> Result<serde
     }
 }
 
-/// Runner-loop variant of [`execute_run`]: returns `Ok(None)` when the
-/// queued->running claim was lost (someone else is executing), which the
-/// serve loop treats as a non-event instead of an error.
+/// Runner-loop variant of [`execute_run`]: reports a lost claim or an
+/// admission deferral as data, which the serve loop treats as non-events
+/// instead of errors.
 pub fn execute_if_queued(
     plane: &Plane,
     ledger: &Ledger,
     run_id: &str,
-) -> Result<Option<serde_json::Value>> {
+) -> Result<ExecutionDisposition> {
     let run = ledger.workflow_run(run_id)?;
     if !ledger.claim_workflow_run(run_id)? {
-        return Ok(None);
+        return Ok(ExecutionDisposition::ClaimLost);
     }
     if let Some((kind, reason)) = ledger.recheck_workflow_run_admission(plane, run_id)? {
-        ledger.record_guard_event(
-            &format!("workflow_admission_recheck_{kind}"),
-            Some(&run.workflow),
-            &reason,
-            1,
-        )?;
-        ledger.set_workflow_run_state(run_id, "stopped", Some(&reason))?;
-        return Ok(Some(run_detail_view(ledger, run_id)?));
+        // A pending operator stop outranks deferral: honor it terminally
+        // (releasing the pinned reservation) instead of parking the run
+        // behind capacity pressure forever.
+        if let Some(stop) = ledger.workflow_run_stop_reason(run_id)? {
+            let detail = format!("stop signal: {stop}");
+            ledger.record_guard_event(
+                "workflow_guard_stop_signal",
+                Some(&run.workflow),
+                &detail,
+                1,
+            )?;
+            ledger.set_workflow_run_state(run_id, "stopped", Some(&detail))?;
+            return Ok(ExecutionDisposition::Executed(run_detail_view(
+                ledger, run_id,
+            )?));
+        }
+        // Guard-event once per distinct reason, not once per runner tick:
+        // the previous deferral left the same reason in the status detail.
+        let already_deferred = ledger
+            .workflow_run_status(run_id)?
+            .and_then(|s| s.detail)
+            .is_some_and(|detail| detail == reason);
+        ledger.defer_claimed_workflow_run(run_id, &reason)?;
+        if !already_deferred {
+            ledger.record_guard_event(
+                &format!("workflow_admission_recheck_{kind}"),
+                Some(&run.workflow),
+                &reason,
+                1,
+            )?;
+        }
+        return Ok(ExecutionDisposition::Deferred { reason });
     }
     // A claimed run must reach a terminal state even when the executor
     // itself errors (unreadable pinned doc, fs failure) OR panics: both
@@ -1344,7 +1368,7 @@ pub fn execute_if_queued(
         Err(anyhow::anyhow!("executor panic: {msg}"))
     });
     match result {
-        Ok(view) => Ok(Some(view)),
+        Ok(view) => Ok(ExecutionDisposition::Executed(view)),
         Err(err) => {
             let detail = format!("executor error: {err:#}");
             let _ = ledger.fail_running_step_runs(run_id, &detail);

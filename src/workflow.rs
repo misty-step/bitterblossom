@@ -761,12 +761,7 @@ impl Ledger {
     }
 
     fn workflow_run_audit(&self, run_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO workflow_events (workflow_id, run_id, kind, data, at)
-             SELECT workflow_id, id, ?2, ?3, ?4 FROM workflow_runs WHERE id = ?1",
-            params![run_id, kind, data, now()],
-        )?;
-        Ok(())
+        self.record_workflow_runtime_event(run_id, kind, data)
     }
 
     fn insert_revision(
@@ -1214,7 +1209,7 @@ impl Ledger {
                 return deny("invalid_configuration", format!("workflow '{}': conservative run estimate must be finite and greater than zero", name));
             }
             if let Some(violation) = crate::budget::workflow_admission_limit(
-                plane, self, &wf.name, &document, estimate,
+                plane, self, &wf.name, &document, estimate, None,
             )? {
                 return deny(violation.kind, violation.detail);
             }
@@ -1234,20 +1229,6 @@ impl Ledger {
             }
 
             let ts = now();
-            if let Some(limit) = document.policies.max_runs_per_day {
-                let count: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM workflow_runs
-                     WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = substr(?2, 1, 10)",
-                    params![wf.id, ts],
-                    |r| r.get(0),
-                )?;
-                if count >= i64::from(limit) {
-                    return deny(
-                        "max_runs_per_day",
-                        format!("workflow accepted {count} runs today (limit {limit})"),
-                    );
-                }
-            }
             if let Some(limit) = document.policies.concurrency {
                 let active: i64 = self.conn.query_row(
                     "SELECT COUNT(*) FROM workflow_run_status s
@@ -1308,8 +1289,10 @@ impl Ledger {
     }
 
     /// Recheck queued capacity under the same immediate transaction used by
-    /// acceptance. The run's pinned estimate is already an active reservation;
-    /// no current-policy estimate is introduced here.
+    /// acceptance. The run's pinned estimate is already an active reservation
+    /// (so no current-policy estimate is introduced here), and the run itself
+    /// is excluded from the daily run count — it was admitted against that
+    /// budget when it was accepted.
     pub fn recheck_workflow_run_admission(
         &self,
         plane: &Plane,
@@ -1319,10 +1302,15 @@ impl Ledger {
             let run = self.workflow_run(run_id)?;
             let revision = self.workflow_revision_row(&run.workflow_id, run.revision)?;
             let doc = WorkflowDoc::from_canonical_json(&revision.document)?;
-            Ok(
-                crate::budget::workflow_admission_limit(plane, self, &run.workflow, &doc, 0.0)?
-                    .map(|v| (v.kind.to_string(), v.detail)),
-            )
+            Ok(crate::budget::workflow_admission_limit(
+                plane,
+                self,
+                &run.workflow,
+                &doc,
+                0.0,
+                Some(run_id),
+            )?
+            .map(|v| (v.kind.to_string(), v.detail)))
         })
     }
 
@@ -1464,12 +1452,21 @@ impl Ledger {
         Ok(rows)
     }
 
-    pub(crate) fn workflow_runs_today_by_id(&self, workflow_id: &str) -> Result<u64> {
+    /// Workflow runs created today, optionally excluding one run id: the
+    /// claim-time admission recheck passes the claimed run itself so a run
+    /// admitted at the daily limit is never counted against its own
+    /// execution.
+    pub(crate) fn workflow_runs_today_by_id(
+        &self,
+        workflow_id: &str,
+        exclude_run: Option<&str>,
+    ) -> Result<u64> {
         let day = &now()[..10];
         let count = self.conn.query_row(
             "SELECT COUNT(*) FROM workflow_runs
-             WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = ?2",
-            params![workflow_id, day],
+             WHERE workflow_id = ?1 AND substr(created_at, 1, 10) = ?2
+               AND (?3 IS NULL OR id != ?3)",
+            params![workflow_id, day, exclude_run],
             |row| row.get(0),
         )?;
         Ok(count)

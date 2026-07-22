@@ -383,13 +383,18 @@ fn workflow_runner_tick(root: &Path) {
             return;
         }
     };
+    use crate::workflow_runtime::ExecutionDisposition;
     for id in ids {
         match crate::workflow_runtime::execute_if_queued(&plane, &ledger, &id) {
-            Ok(Some(view)) => eprintln!(
+            Ok(ExecutionDisposition::Executed(view)) => eprintln!(
                 "workflow run {id} {}",
                 view["status"]["state"].as_str().unwrap_or("-")
             ),
-            Ok(None) => {} // claimed elsewhere between listing and CAS
+            // claimed elsewhere between listing and CAS
+            Ok(ExecutionDisposition::ClaimLost) => {}
+            Ok(ExecutionDisposition::Deferred { reason }) => {
+                eprintln!("workflow run {id} deferred: {reason}");
+            }
             Err(e) => {
                 eprintln!("workflow run {id}: {e:#}");
                 canary::report_error("bb.workflow.execute", &format!("run {id}: {e:#}"));
