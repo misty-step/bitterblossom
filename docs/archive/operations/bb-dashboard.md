@@ -1,3 +1,6 @@
+> Historical reference only. The com.misty-step.bb-dashboard service is retired; do not install it.
+> Use `docs/operations/README.md` for the local-primary service.
+
 # BB Dashboard Local Service
 
 This runbook makes the review dashboard durable on Serenity:

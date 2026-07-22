@@ -102,9 +102,18 @@ declared secrets and command-harness binaries preflight clean, and (with
 unauthenticated `/health` and `/` routes answer. Each failing check names
 concrete remediation; the command exits non-zero if anything fails.
 
-`examples/local-plane/` is a zero-credential local plane: a `command`-harness
-agent whose inline script writes a small `REPORT.json`. The `local` substrate
-is dev/test machinery, rejected unless `plane.toml` sets `dev = true`.
+`examples/local-plane/` is a zero-credential dev-temp fixture: a `command`-harness
+agent whose inline script writes a small `REPORT.json`. It is separate from the
+shipped local-primary production plane, which runs under launchd with
+`dev = false`, `allow_local_substrate = true`, and `127.0.0.1:7093`. The
+production ledger is `plane/.bb/plane.db` in WAL mode with a Litestream backup
+heartbeat at `plane/.bb/backup-last-success`; credentials are injected by the
+operator-local launchd environment and never committed. Read the canonical
+runbook at [`docs/operations/README.md`](docs/operations/README.md), then run
+`BB_RUNTIME_PLANE=plane BB_BIN=./target/release/bb ./scripts/production-ops-drill.sh --primary`
+before enabling unattended PR/merge loops. The drill is read-only and fails
+closed when any DLQ has derived `status = "open"`; replayed or acknowledged rows
+do not block. Use `--dev-temp` only for the isolated CI drain/restore rehearsal.
 
 `examples/demo-plane/` is a complete commented production-shaped config that
 dispatches to a remote substrate: `sprites` restores checkpoints, syncs

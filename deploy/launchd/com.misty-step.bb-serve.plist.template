@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.misty-step.bb-serve</string>
+  <key>WorkingDirectory</key><string>__BB_REPO_DIR__</string>
+  <key>ProgramArguments</key><array><string>__BB_REPO_DIR__/scripts/bb-serve-local-entrypoint.sh</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>BB_LOCAL_PRIMARY_BIN</key><string>__BB_INSTALL_BIN__</string></dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__BB_LOG_DIR__/bb-serve.out.log</string>
+  <key>StandardErrorPath</key><string>__BB_LOG_DIR__/bb-serve.err.log</string>
+</dict></plist>

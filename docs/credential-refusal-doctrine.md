@@ -110,7 +110,10 @@ checkpoint baked with broader credentials silently widens every lane on that
 sprite; audit what a checkpoint bakes (env + home dotfiles, names only) when
 minting one.
 
-### local (dev/test substrate) — DEV-ONLY, gap documented
+### local (local-primary production substrate) — explicit operator grant
+
+The canonical local-primary service is launchd-managed at `127.0.0.1:7093`; its
+release plane uses `dev = false` and `allow_local_substrate = true`.
 
 `src/substrate/local.rs` isolates the *environment* well: `execute()` spawns
 with `env_clear()` and a strict allowlist, hermetic runs get a relocated
@@ -127,13 +130,13 @@ operator's machine**. Consequences:
   (bitterblossom-915), so `op` works inside local workloads;
 - anything the operator's uid can read is ultimately readable.
 
-**Decision: the local substrate is an explicit operator choice and is not
-hardened for untrusted workloads.** Unattended or untrusted workloads should
-use the sprites substrate unless the operator has consciously granted local
-execution with `allow_local_substrate = true` on a production plane. Closing
-the hardening gap locally would mean OS-level sandboxing, which is not this
-plane's mechanism to own. The doctrine (prompt seam + card contract) remains
-the guardrail on every substrate.
+**Decision: the local substrate is the shipped local-primary production choice
+for this single-operator plane, and is not hardened for untrusted workloads.**
+The production plane sets `dev = false` plus the explicit
+`allow_local_substrate = true` grant. Unattended or untrusted workloads should
+select the sprites substrate instead. Closing the local hardening gap would
+mean OS-level sandboxing, which is not this plane's mechanism to own. The
+doctrine (prompt seam + card contract) remains the guardrail on every substrate.
 
 ### tailnet — same posture as sprites
 

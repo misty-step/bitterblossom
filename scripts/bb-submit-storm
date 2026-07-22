@@ -2,8 +2,11 @@
 """Open a BB submission and run the canonical storm members safely.
 
 This is intentionally a small operator recipe rather than a second workflow
-engine: it validates a payload file, preflights the declared storm secrets, opens
-one submission, dispatches members with --payload-file, then returns a receipt.
+engine: it validates a payload file, preflights the declared storm secrets, reads
+DLQ status before any submit mutation, opens one submission, dispatches members
+with --payload-file, then returns a receipt. Only derived status=open blocks;
+replayed and acknowledged history is informational. The read-to-submit window is
+not transactional; controller admission remains the future hardening seam.
 """
 
 import argparse
@@ -69,9 +72,10 @@ def parse_json(proc: subprocess.CompletedProcess, action: str) -> Any:
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        raise SystemExit(
+        eprint(
             f"{action}: bb returned non-JSON stdout: {exc}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
+        raise SystemExit(2)
 
 
 def submission_id(doc: Any) -> str:
@@ -131,6 +135,25 @@ def main() -> int:
         if preflight.stderr:
             eprint(preflight.stderr.rstrip())
         return preflight.returncode
+
+    dlq = run_bb(base, args.config, ["dlq", "list", "--json"])
+    if dlq.returncode != 0:
+        eprint("submission readiness read failed before mutation")
+        if dlq.stdout:
+            eprint(dlq.stdout.rstrip())
+        if dlq.stderr:
+            eprint(dlq.stderr.rstrip())
+        return dlq.returncode
+    dlq_doc = parse_json(dlq, "dlq list")
+    if not isinstance(dlq_doc, list) or not all(isinstance(row, dict) for row in dlq_doc):
+        eprint("submission readiness read returned a malformed DLQ document")
+        return 2
+    open_rows = [row for row in dlq_doc if row.get("status") == "open"]
+    if open_rows:
+        eprint("submission storm blocked: status=open dead letters require resolution or explicit acknowledgement before PR/merge loops")
+        for row in open_rows:
+            eprint(f"open DLQ #{row.get('id', '?')} task={row.get('task', '?')}")
+        return 3
 
     open_args = ["submit", "open", "--change", change, "--rev", rev, "--json"]
     if isinstance(context, str) and context.strip():

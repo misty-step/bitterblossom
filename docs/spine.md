@@ -79,10 +79,12 @@ cron refreshes on a bounded poll.
 ## plane.toml
 
 ```toml
-db_path = ".bb/plane.db"          # default; created on demand (WAL mode)
+dev = false                       # shipped local-primary production plane
+allow_local_substrate = true       # explicit operator-account execution grant
+db_path = ".bb/plane.db"          # persistent ledger (WAL mode)
 
 [ingress]                         # used by `bb serve`
-bind = "127.0.0.1:7077"
+bind = "127.0.0.1:7093"
 
 [notify]
 webhook_url = "https://ntfy.sh/my-plane"   # state transitions only
@@ -412,80 +414,62 @@ Reconsider devcontainer support only behind a substrate that can delegate
 to a real devcontainer implementation or container runtime without moving
 Feature/package judgment into the Rust spine.
 
-## Durable reflex deployment
+## Durable local-primary deployment
 
-The operator plane runs as a hosted app, not as a laptop process. Product
-images contain the `bb` binary and substrate tools only; the production
-`plane.toml`, `agents/`, `tasks/`, cards, budgets, org allowlists, and ledger
-state are instance data supplied at runtime. DigitalOcean App Platform sets
-`BB_INGRESS_BIND=0.0.0.0:8080` so its public URL can reach `bb serve`; set
-`BB_API_TOKEN` before binding wider because the read API and HTML operator shell
-are token-gated, and `bb serve` refuses non-loopback binds without it.
-`/health` stays unauthenticated for liveness and exposes only coarse queue
-counts; webhook ingress is authenticated by each trigger's HMAC secret.
+The shipped operator plane runs on the local machine as a launchd-managed
+service, not as a temporary development process. The production instance
+configuration and ledger live under the checkout's plane directory; the
+repository contains the binary and contract, never runtime secrets or live
+state. The local substrate is explicit: production sets dev = false and
+allow_local_substrate = true because local execution uses the operator account.
 
 Deployment contract:
 
-- Host: one DigitalOcean App Platform service, command `bb serve`, with
-  `BB_PLANE_DIR=/app/plane`. Its container disk is ephemeral.
-- Config and state: the entrypoint fetches the private config bundle named by
-  `BB_PLANE_CONFIG_URL` into `/app/plane` on a fresh boot. Litestream restores
-  and replicates `.bb/plane.db`; no App Platform volume exists. Ordinary card,
-  budget, and allowlist changes update the Spaces-hosted config bundle and take
-  effect on a fresh deployment.
-- Backup readiness: `[backup]` in `plane.toml` declares the provider, replica
-  secret env name, RPO/RTO, and heartbeat file. `bb status --json` reports
-  `backup.status` from that heartbeat without reading replica secrets; a stale
-  or missing heartbeat means the ledger is not protected enough for unattended
-  growth. The production image starts through `bb-litestream-entrypoint`, which
-  fails closed when `BB_LITESTREAM_REQUIRED=1` and the replica secret env is
-  missing, starts `litestream replicate -config`, waits for the first
-  `litestream sync -wait`, and writes the heartbeat only after sync confirms the
-  ephemeral ledger has replicated.
-- Schema rollback: `bb` stamps SQLite `PRAGMA user_version` as
-  `ledger.schema_version` in `bb status --json`/`bb check --json` and refuses to
-  open a ledger newer than the binary supports. Rollbacks across a schema bump
-  must roll forward or restore a compatible backup; never force `user_version`
-  downward.
-- Image: [Dockerfile](../Dockerfile) builds the Rust `bb` binary and installs
-  the pinned Linux Sprite CLI plus pinned Litestream; it must not `COPY plane`.
-  The operator-owned App Platform spec sets `BB_PLANE_DIR`, `BB_SPRITE_BIN`,
-  and the Litestream env-name contract without committing the replica URL.
-- Runtime secrets live in App Platform, never in git: `BB_API_TOKEN`,
-  `BB_HOOK_REVIEW`, `BB_HOOK_CI_DIAGNOSE`, `OPENROUTER_API_KEY`, `GH_TOKEN`,
-  `CERBERUS_REVIEW_GH_TOKEN`, `SPRITE_TOKEN`, and
-  `LITESTREAM_REPLICA_URL`. The Cerberus review task uses
-  `CERBERUS_REVIEW_GH_TOKEN` for bot/app posting identity; operator
-  `GH_TOKEN` is for other explicit GitHub-backed dispatch only.
-- GitHub `pull_request` webhooks for the reviewed repo subset point at
-  `https://bitterblossom-plane-9xpa5.ondigitalocean.app/hooks/review`; the current subset is
-  `misty-step/bitterblossom`, enforced again by the task filter. In-scope
-  `opened`, `ready_for_review`, and `synchronize` deliveries create the review
-  run and expand into the submission storm automatically: one submission keyed
-  by the PR URL plus one run for every `[gate].required` verdict member,
-  deduped by PR URL plus head SHA so redeliveries repair missing member rows
-  without collapsing distinct PRs that share a commit, and a redelivery of a
-  head whose submission has already settled is an idempotent no-op. Large PRs
-  are not filtered by additions count: the `review` task carries no per-run cost
-  cap (a breached cap parks the whole task, which is why it was dropped), so
-  spend is bounded by the 30-minute per-run timeout, `max_runs_per_day`, and the
-  plane's enforced `max_cost_per_day_usd` daily ceiling — not by a per-run
-  dollar cap.
-- GitHub `check_suite` webhooks for failed GitHub Actions suites point at
-  `https://bitterblossom-plane-9xpa5.ondigitalocean.app/hooks/ci-diagnose`; the first slice is
-  report-only and may recommend a builder command, but never creates one.
-- Health and recovery checks after a host restart are: unauthenticated
-  `GET /health`, `GET /api/tasks` with `Authorization: Bearer $BB_API_TOKEN`,
-  `doctl apps get "$BB_DO_APP_ID"`, the active deployment readback from
-  `doctl apps get-deployment`, and, when run classification is needed,
-  `BB_PLANE_DIR=/app/plane bb recover` in a `doctl apps console` session.
-- Production operations live in [`docs/operations/`](operations/). The
-  maintained smoke and restore drill is
-  `./scripts/production-ops-drill.sh --local` for CI/local proof and
-  `BB_API_TOKEN=... BB_DO_APP_ID=... BB_EXPECTED_DEPLOYMENT_ID=... ./scripts/production-ops-drill.sh --remote`
-  for the DigitalOcean plane. The expected ID must identify the exact rollout
-  under verification; the smoke rejects an older active deployment and any
-  rollout still in progress.
+- Host: one launchd job, com.misty-step.bb-serve, running the local entrypoint
+  with BB_PLANE_DIR=plane and bb serve. It binds only to 127.0.0.1:7093.
+- Config and state: plane/plane.toml, agents, tasks, cards, budgets, and
+  plane/.bb/plane.db are durable local instance data. SQLite runs in WAL mode;
+  do not delete the -wal file during recovery or edit PRAGMA user_version.
+- Backup readiness: [backup] declares provider = litestream, the env-name-only
+  replica_env = LITESTREAM_REPLICA_URL, heartbeat path
+  .bb/backup-last-success, and RPO/RTO. bb status --json reports the heartbeat
+  without reading replica secrets. A missing or stale heartbeat blocks unattended
+  growth until the operator repairs backup coverage.
+- Credentials: Mint supplies scoped values. Launchd injects BB_API_TOKEN,
+  webhook/HMAC values, OPENROUTER_API_KEY, GH_TOKEN,
+  CERBERUS_REVIEW_GH_TOKEN, SPRITE_TOKEN for the bounded alternate,
+  LITESTREAM_REPLICA_URL, and Canary check-in values. Values stay in the
+  operator-local launchd environment, never git, plane.toml, argv, or evidence.
+- Readiness: run `./scripts/production-ops-drill.sh --primary` before enabling
+  PR/merge loops. It captures launchd ownership, GET /health and the read-only
+  /api/status, /api/runs, and /api/dlq surfaces, then opens SQLite with
+  `mode=ro&immutable=0`, `PRAGMA query_only = ON`, and journal/integrity/schema
+  snapshots before and after the readback. A derived DLQ status=open is a hard
+  readiness block. Do not use bb doctor, bb check, bb status, bb runs, bb dlq,
+  bb recover, or bb serve against the live ledger; reserve those CLI reads for
+  fixtures and isolated copies where migration writes are safe.
+- Recovery: after launchd restart, inspect health/status and run bb recover --json
+  only after side-effect inspection. Unknown probes retain leases; never blindly
+  replay work that may have crossed the execution boundary.
+- Drain/restart: send SIGTERM to the launchd job, confirm bb serve logs its
+  graceful shutdown, then kickstart the same label and rerun every readback.
+- Logs/headroom: stdout/stderr are under ~/.local/state/bitterblossom and the
+  operator records df/du headroom for the WAL, Litestream queue, logs, and one
+  isolated restore.
+- Rollback: preserve the failed binary, config, database, and WAL; the installer
+  keeps the prior installed binary at `~/.local/libexec/bitterblossom/bb.previous`;
+  stop/drain launchd; restore that known-good binary/config pair; kickstart the same
+  job; and
+  rerun doctor, status, integrity, backup, and isolated-restore checks. Never
+  lower schema metadata or silently discard an open DLQ.
+- Alternate substrate: sprites and tailnet remain available through task and
+  workflow configuration when stronger isolation is required. They are bounded
+  alternates, not the production default.
+
+The executable runbook and read-only primary drill are
+[docs/operations/README.md](operations/README.md) and
+./scripts/production-ops-drill.sh --primary. The repository gate runs the
+separate --dev-temp fixture so CI never mutates the live ledger.
 
 The GitHub webhook is deliberately a per-repo hook for v1, not a GitHub
 App. It exercises the same HMAC/dedupe/filter path as a future App
@@ -513,87 +497,14 @@ The ledger is the system of record; everything reads from it:
   credentials do not leak through URLs, logs, or browser history. Unset =
   open, acceptable only on the loopback default bind.
 
-### Register-through for external dispatches
+### External dispatch boundary
 
-Design A is register-through: local Codex exec lanes, Claude Code subagents,
-Herdr panes, cron jobs, and other non-`bb` dispatches keep executing where they
-already execute, but they fire a lightweight receipt into the plane so the
-ledger and dashboard are still the operator's single pane.
-
-- Create: `POST /api/external-runs` with bearer auth and
-  `{agent, role, repo, brief_hash, plane, status_url?, receipt_path?,
-  started_at}`. The plane returns an `id` and records the row with
-  `source:"external"` and `status:"running"`. `plane` is a descriptive label
-  for which logical/campaign plane the run belongs to (e.g.
-  `campaign-2026-07-07-focus`, or `local` for an unlabelled local run) --
-  not a substrate lease; external runs never lease or execute through the
-  plane (bitterblossom-922).
-- Transition: `PATCH /api/external-runs/<id>` with
-  `{status:"running"|"done"|"failed", completed_at?}`. Terminal statuses require
-  `completed_at`.
-- Glass: create and terminal PATCH emit glass lifecycle posts automatically
-  (bitterblossom-956) -- `registered` at create, `done`/`failed` at close,
-  keyed on the external run's own id so both cohere into one glass session.
-  This is what makes an interactive lead session (register-through's first
-  user) visible on the glass live stage, not just a ledger row. Requires
-  `[glass].base_url`; absent, it is a no-op like every other glass post.
-- Read: `GET /api/status` exposes `external_runs.recent`,
-  `external_runs.by_status`, `summary.external_runs`, and
-  `summary.external_running`; the dashboard renders these rows beside native
-  runs with source `external`. Native dispatch, budget, recovery, DLQ, leases,
-  and `bb runs list` continue to read the native `runs` table only.
-- Shim: wrappers should call `scripts/bb-register.sh start` before work and
-  `scripts/bb-register.sh done <id>` or `scripts/bb-register.sh failed <id>`
-  after work. The shim reads `BB_URL`, `BB_API_TOKEN`,
-  `BB_REGISTER_AGENT`, `BB_REGISTER_ROLE`, `BB_REGISTER_REPO`,
-  `BB_REGISTER_BRIEF_HASH`, `BB_REGISTER_PLANE` (the campaign/logical label),
-  and optional status/receipt timestamps from the
-  environment, sends the bearer header through `curl --config -`, prints the
-  created run id on stdout (so the closing `done <id>` has a target), and exits
-  0 without output when the plane URL/token is unset or unreachable.
-  Registration must never block the dispatch itself.
-
-#### Interactive lead sessions are the default origin
-
-The register-through path's first-class user is the **interactive lead
-session** (a Claude Code / codex session the operator drives). Making bb the
-default origin for campaign/groom/chew lanes is a two-line habit, not new
-machinery:
-
-```sh
-# at session start -- announce yourself, capture the run id
-export BB_URL=https://bitterblossom-plane-9xpa5.ondigitalocean.app BB_API_TOKEN=…   # from mint/op at point of use
-id=$(BB_REGISTER_AGENT=<lane> BB_REGISTER_ROLE=interactive-lead \
-     BB_REGISTER_REPO=<repo> BB_REGISTER_BRIEF_HASH=<campaign> \
-     BB_REGISTER_PLANE=<campaign-label> \
-     BB_REGISTER_RECEIPT_PATH=<report-path> \
-     scripts/bb-register.sh start)
-# … do the work …
-scripts/bb-register.sh done "$id"     # or: failed "$id"
-```
-
-The session now has a ledger row (`GET /api/external-runs`), a live glass feed
-(register + done posts under one session), and a receipt link -- fully visible
-in bb and glass with zero change to how the session actually executes. When the
-plane has `[glass].base_url` set, every registered lane appears on the glass
-live stage automatically. This is the growth path for "every agent run goes
-through bitterblossom": it accrues on reps, one lane at a time, without any lane
-being *dispatched* by bb.
-
-Route-through is a later design: the plane will eventually own dispatch
-admission and execution for more local roles, but that authority waits for the
-role/substrate contracts named on the ratified card. Until then, external rows
-are observability receipts, not dispatch leases.
-- Canary self-report: `src/canary.rs` posts a `bb-plane` check-in every 60s
-  and ad hoc error reports to canary-obs, gated on two App Platform secrets —
-  `CANARY_ENDPOINT` (e.g. `https://canary-obs-3jzhr.ondigitalocean.app`) and
-  `CANARY_INGEST_KEY` (a scoped `ingest-only` key bound to service
-  `bitterblossom-plane`, minted via canary's `POST /api/v1/keys`). Both must
-  be set or the module no-ops with a one-time stderr warning. The check-in name is
-  `bb-plane`; canary needs a matching monitor (`POST /api/v1/monitors` with
-  `"name":"bb-plane"`) or check-ins 404. This is a different secret from
-  `BB_API_TOKEN` and unrelated to `CANARY_API_KEY` (canary's own admin key,
-  never set here).
+External run registration, register-through wrappers, supervised local agents, and
+interactive lead sessions are outside the current product boundary. The current
+origin is the unattended trigger/workflow path defined in VISION.md; this spine
+must not instruct operators to register an interactive session or route work
+through a historical wrapper. Older implementation material remains in Git
+history for archaeology, not as an active contract.
 
 ### Glass lifecycle emitter (bitterblossom-933)
 
@@ -606,15 +517,10 @@ this is a no-op, exactly like `[notify]`. Delivery is best-effort (shells to
 curl, matching canary.rs/notify.rs/ask.rs); a glass outage never affects
 dispatch.
 
-External (register-through) runs get the same floor (bitterblossom-956):
-`post_external_registered` fires from the `POST /api/external-runs` handler and
-`post_external_completed` from the terminal `PATCH`. Because an external run
-never chains a parent, its glass session is keyed on its own id
-(`external_runs.glass_session_id`) rather than a lineage root. This is the seam
-that makes an interactive lead session -- not just bb-*dispatched* runs --
-visible on the live stage. Proven live 2026-07-07: a registered interactive
-session produced `registered` + `done` posts sharing one session on the real
-glass instance (`serenity:9040`), zero agent cooperation.
+The historical external-run glass extension is not part of the local-primary
+operator contract. Native trigger/workflow runs retain the glass lifecycle floor;
+external registration remains archived implementation material.
+
 
 Glass assigns session ids itself -- `POST /api/posts` with an unrecognized
 `session_id` is a 404, not an auto-create (verified against the live

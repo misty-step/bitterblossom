@@ -52,7 +52,7 @@ write_drill_plane() {
 dev = true
 
 [ingress]
-bind = "127.0.0.1:7077"
+bind = "127.0.0.1:0"
 
 [notify]
 webhook_url = "http://example.invalid/hook"

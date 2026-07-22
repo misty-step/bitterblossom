@@ -20,7 +20,7 @@ with `incident.opened` or `incident.updated` is recorded but never closes work.
 ## Single-flight contract
 
 Every Linejam alert run uses the dedicated tailnet workspace host
-`ssh://bb-runner@10.108.0.4:2222`. The non-default port avoids App Platform's
+`ssh://bb-runner@10.108.0.4:2222`. The non-default port avoids the hosted service's
 managed SSH-port boundary while staying private to the peered VPC.
 Bitterblossom holds that host's atomic lease for the full wrapper attempt.
 Powder deliberately returns the same run to repeated

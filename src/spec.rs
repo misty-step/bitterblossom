@@ -108,19 +108,13 @@ fn default_db_path() -> String {
 pub struct IngressSpec {
     #[serde(default = "default_bind")]
     pub bind: String,
-    /// Maximum accepted webhook request body size in bytes. Oversized
-    /// deliveries are rejected (413) before ingest, so they grow no ledger
-    /// row. Defaults to a generous webhook ceiling (backlog 083).
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
-    /// Maximum cron fires ingested per tick; older catch-up fires beyond
-    /// this are collapsed to the latest and counted as skipped. Bounds
-    /// unattended catch-up after downtime (backlog 083).
     #[serde(default = "default_max_cron_catchup_fires")]
     pub max_cron_catchup_fires: u32,
 }
 fn default_bind() -> String {
-    "127.0.0.1:7077".to_string()
+    "127.0.0.1:0".to_string()
 }
 fn default_max_body_bytes() -> usize {
     1_048_576

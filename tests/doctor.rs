@@ -111,6 +111,49 @@ fn doctor_reports_ok_against_a_live_serve_process() {
 }
 
 #[test]
+fn doctor_reports_ok_against_effective_bind_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_loopback_port();
+    write_local_plane(dir.path(), "127.0.0.0:1");
+    let bind = format!("127.0.0.1:{port}");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args(["--config", dir.path().to_str().unwrap(), "serve"])
+        .env("BB_INGRESS_BIND", &bind)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _child = ChildGuard(child);
+    wait_for_http(port);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bb"))
+        .args([
+            "--config",
+            dir.path().to_str().unwrap(),
+            "doctor",
+            "--expect-serve",
+            "--json",
+        ])
+        .env("BB_INGRESS_BIND", &bind)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], true, "{report}");
+    assert!(report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check["name"] == "serve_api" && check["status"] == "ok"));
+}
+
+#[test]
 fn doctor_cli_exits_non_zero_and_prints_remediation_on_invalid_config() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("plane.toml"), "not = [valid").unwrap();

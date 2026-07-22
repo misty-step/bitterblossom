@@ -205,6 +205,15 @@ another cwd.
 read APIs. Do not bind publicly without `BB_API_TOKEN`; the server refuses
 non-loopback binds without it.
 
+The shipped production plane is launchd-managed local-primary: `dev = false`,
+`allow_local_substrate = true`, and `127.0.0.1:7093`, with SQLite WAL at
+`plane/.bb/plane.db` and the named Litestream heartbeat at
+`plane/.bb/backup-last-success`. Use `scripts/production-ops-drill.sh --primary`
+for a non-destructive HTTP health/status/runs/DLQ and read-only SQLite store readback;
+use `--dev-temp` only for the isolated CI drain/restart/backup/restore fixture.
+A derived DLQ `status = "open"` blocks PR/merge-loop enablement; replayed or
+acknowledged rows do not.
+
 Useful API mirrors:
 
 - `GET /api/tasks`
