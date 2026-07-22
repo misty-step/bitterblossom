@@ -796,35 +796,6 @@ impl Ledger {
         })
     }
 
-    /// fails. Parent, members, ingress events, and the opened submission are
-    /// deleted in one transaction so no partial irreversible admission remains.
-    pub fn rollback_ingress_storm(
-        &mut self,
-        parent_run_id: &str,
-        submission_id: Option<&str>,
-    ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM ingress_events
-             WHERE run_id = ?1 OR run_id IN (SELECT id FROM runs WHERE parent_run_id = ?1)",
-            params![parent_run_id],
-        )?;
-        if let Some(submission_id) = submission_id {
-            tx.execute(
-                "DELETE FROM submissions WHERE id = ?1",
-                params![submission_id],
-            )?;
-        }
-        tx.execute(
-            "DELETE FROM runs WHERE id = ?1 OR parent_run_id = ?1",
-            params![parent_run_id],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
     pub fn run_state(&self, run_id: &str) -> Result<String> {
         self.conn
             .query_row(
