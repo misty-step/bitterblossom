@@ -971,3 +971,123 @@ for attempt in range(5):
     );
     assert!(String::from_utf8_lossy(&after_run.stdout).contains("write_falsified"));
 }
+
+#[test]
+fn primary_config_works_without_tomllib_on_system_python() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = fs::read_to_string(root.join("scripts/production-ops-drill.sh")).unwrap();
+    let parser_start = script.find("read_primary_config() {").unwrap();
+    let parser_end = script[parser_start..]
+        .find("\n}\n\nread_http_json()")
+        .map(|index| parser_start + index + 2)
+        .unwrap();
+    let parser = &script[parser_start..parser_end];
+
+    let plane = dir.path().join("plane");
+    fs::create_dir_all(plane.join(".bb")).unwrap();
+    fs::write(
+        plane.join("plane.toml"),
+        r#"dev = false
+allow_local_substrate = true
+db_path = ".bb/private-ledger.db"
+
+[ingress]
+bind = "127.0.0.1:7093"
+
+[backup]
+enabled = true
+replica_env = "LITESTREAM_REPLICA_URL"
+last_success_path = ".bb/private-heartbeat"
+
+[gate]
+required = ["verify"]
+"#,
+    )
+    .unwrap();
+
+    let shim_dir = dir.path().join("python-shim");
+    fs::create_dir_all(&shim_dir).unwrap();
+    let blocker = dir.path().join("blocked-tomllib");
+    fs::create_dir_all(&blocker).unwrap();
+    fs::write(
+        blocker.join("tomllib.py"),
+        "raise ModuleNotFoundError('tomllib intentionally unavailable')\n",
+    )
+    .unwrap();
+    let real_python = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path).find_map(|dir| {
+                let candidate = dir.join("python3");
+                candidate.is_file().then_some(candidate)
+            })
+        })
+        .expect("python3 must be available for operator recipes");
+    let shim = shim_dir.join("python3");
+    fs::write(
+        &shim,
+        format!("#!/bin/sh\nexec '{}' \"$@\"\n", real_python.display()),
+    )
+    .unwrap();
+    make_executable(&shim);
+
+    let blocked = Command::new(&shim)
+        .args(["-c", "import tomllib"])
+        .env("PYTHONPATH", &blocker)
+        .output()
+        .unwrap();
+    assert!(
+        !blocked.status.success(),
+        "shim unexpectedly provided tomllib"
+    );
+
+    let runner = dir.path().join("read-primary-config.sh");
+    let mut runner_text =
+        String::from("#!/bin/sh\nset -eu\nTMP=\"$1\"\nBB_CONFIG=\"$TMP/plane\"\n");
+    runner_text.push_str(parser);
+    runner_text.push_str(
+        r#"
+read_primary_config
+test -s "$TMP/primary-config.json"
+python3 - "$TMP/primary-config.json" <<'PY'
+import json
+import sys
+config = json.load(open(sys.argv[1]))
+assert config["bind"] == "127.0.0.1:7093"
+assert config["dev"] is False
+assert config["allow_local_substrate"] is True
+assert config["backup_enabled"] is True
+assert config["replica_env"] == "LITESTREAM_REPLICA_URL"
+print("ok:primary-config-reached")
+PY
+"#,
+    );
+    fs::write(&runner, runner_text).unwrap();
+    make_executable(&runner);
+
+    let path = format!("{}:{}", shim_dir.display(), std::env::var("PATH").unwrap());
+    let out = Command::new("sh")
+        .arg(&runner)
+        .arg(dir.path())
+        .env("PATH", path)
+        .env("PYTHONPATH", &blocker)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok:primary-config"), "{stdout}");
+    assert!(stdout.contains("ok:primary-config-reached"), "{stdout}");
+    assert!(
+        !stdout.contains("private-ledger"),
+        "config path leaked: {stdout}"
+    );
+    assert!(
+        !stdout.contains("private-heartbeat"),
+        "config path leaked: {stdout}"
+    );
+}
