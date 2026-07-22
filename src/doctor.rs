@@ -63,27 +63,20 @@ pub fn run(root: &Path, expect_serve: bool) -> DoctorReport {
     checks.push(database_check(&plane));
     checks.extend(preflight_checks(&plane));
 
-    match effective_bind(&plane) {
-        Ok(bind) => match fixed_bind(&bind) {
-            Some(bind) => {
-                checks.push(serve_health_check(&bind, expect_serve));
-                checks.push(dashboard_check(&bind, expect_serve));
-                if !plane.spec.dev { checks.push(retired_dashboard_check()); }
-            }
-            None if expect_serve => checks.push(check(
-                "serve_api",
-                "fail",
-                format!("effective [ingress].bind is \"{bind}\" (ephemeral); --expect-serve needs a fixed address"),
-                Some("set [ingress].bind to a fixed host:port in plane.toml before requiring a live serve check".into()),
-            )),
-            None => {}
-        },
-        Err(detail) => checks.push(check(
+    let bind = effective_bind(&plane);
+    if let Some(bind) = fixed_bind(&bind) {
+        checks.push(serve_health_check(&bind, expect_serve));
+        checks.push(dashboard_check(&bind, expect_serve));
+        if !plane.spec.dev {
+            checks.push(retired_dashboard_check());
+        }
+    } else if expect_serve {
+        checks.push(check(
             "serve_api",
             "fail",
-            detail,
-            Some("make BB_INGRESS_BIND match [ingress].bind, or unset the override".into()),
-        )),
+            format!("effective [ingress].bind is \"{bind}\" (ephemeral); --expect-serve needs a fixed address"),
+            Some("set [ingress].bind to a fixed host:port in plane.toml before requiring a live serve check".into()),
+        ));
     }
 
     DoctorReport {
@@ -168,20 +161,12 @@ fn preflight_check_name(kind: &str) -> &'static str {
     }
 }
 
-fn effective_bind(plane: &Plane) -> Result<String, String> {
-    let configured = plane.spec.ingress.bind.trim();
-    match std::env::var("BB_INGRESS_BIND")
+fn effective_bind(plane: &Plane) -> String {
+    std::env::var("BB_INGRESS_BIND")
         .ok()
         .filter(|v| !v.trim().is_empty())
-    {
-        Some(value) if value.trim() != configured => Err(format!(
-            "BB_INGRESS_BIND={:?} disagrees with [ingress].bind={:?}",
-            value.trim(),
-            configured
-        )),
-        Some(value) => Ok(value.trim().to_string()),
-        None => Ok(configured.to_string()),
-    }
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| plane.spec.ingress.bind.trim().to_string())
 }
 
 fn fixed_bind(bind: &str) -> Option<String> {

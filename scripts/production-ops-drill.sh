@@ -433,43 +433,15 @@ try:
         "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
     ).fetchall()
     table_names = [row[1] for row in schema if row[0] == "table"]
-    table_counts = {}
-    table_columns = {}
-    for name in table_names:
-        quoted = '"' + name.replace('"', '""') + '"'
-        table_counts[name] = conn.execute(f"SELECT count(*) FROM {quoted}").fetchone()[0]
-        table_columns[name] = {row[1] for row in conn.execute(f"PRAGMA table_info({quoted})").fetchall()}
-
-    def require_columns(table, columns):
-        missing = sorted(set(columns) - table_columns.get(table, set()))
-        if missing:
-            raise SystemExit(f"SQLite {table} is missing required column(s): {', '.join(missing)}")
-
-    state_counts = {}
-    for table, column in (("runs", "state"), ("submissions", "state")):
-        if table not in table_names:
-            continue
-        require_columns(table, [column])
-        qt = '"' + table.replace('"', '""') + '"'
-        qc = '"' + column.replace('"', '""') + '"'
-        state_counts[table] = {
-            str(row[0]): row[1]
-            for row in conn.execute(
-                f"SELECT {qc}, count(*) FROM {qt} GROUP BY {qc} ORDER BY {qc}"
-            ).fetchall()
-        }
-    if "dead_letters" in table_names:
-        require_columns("dead_letters", ["acknowledged_at", "replayed_run_id"])
-        qt = '"dead_letters"'
-        state_counts["dead_letters"] = {
-            str(row[0]): row[1]
-            for row in conn.execute(
-                f"SELECT CASE WHEN replayed_run_id IS NOT NULL THEN 'replayed' "
-                f"WHEN acknowledged_at IS NOT NULL THEN 'acknowledged' "
-                f"ELSE 'open' END, count(*) FROM {qt} "
-                "GROUP BY 1 ORDER BY 1"
-            ).fetchall()
-        }
+    if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
+        raise SystemExit("SQLite readback connection is not query_only")
+    try:
+        conn.execute("CREATE TABLE bb_read_only_probe (id INTEGER)")
+    except sqlite3.OperationalError as error:
+        if "readonly" not in str(error).lower() and "query_only" not in str(error).lower():
+            raise SystemExit(f"SQLite write falsifier failed with an unexpected error: {error}")
+    else:
+        raise SystemExit("SQLite write falsifier unexpectedly succeeded")
 finally:
     conn.close()
 
@@ -480,8 +452,7 @@ doc = {
     "integrity": str(integrity),
     "user_version": user_version,
     "schema_hash": schema_hash,
-    "table_counts": table_counts,
-    "state_counts": state_counts,
+    "write_falsified": True,
 }
 out.write_text(json.dumps(doc, sort_keys=True))
 print(json.dumps(doc, sort_keys=True))
@@ -525,16 +496,18 @@ if after.get("journal_mode", "").lower() != "wal":
     raise SystemExit(f"SQLite journal mode is not WAL: {after.get('journal_mode')!r}")
 if after.get("integrity") != "ok":
     raise SystemExit(f"SQLite integrity_check failed: {after.get('integrity')!r}")
-for key in ("journal_mode", "integrity", "table_counts", "state_counts", "schema_hash", "user_version"):
+if after.get("write_falsified") is not True:
+    raise SystemExit("SQLite readback did not prove its write falsifier")
+for key in ("journal_mode", "integrity", "schema_hash", "user_version"):
     if before.get(key) != after.get(key):
-        raise SystemExit(f"readback changed SQLite {key}: before={before.get(key)!r} after={after.get(key)!r}")
+        raise SystemExit(f"SQLite invariant changed during readback: {key}")
 print(json.dumps({
     "bind": config["bind"],
     "runs": len(runs),
     "open_dlq": len(open_rows),
     "replayed_or_acknowledged_dlq": sum(row.get("status") in {"replayed", "acknowledged"} for row in dlq),
     "backup": {"status": backup["status"], "healthy": backup["healthy"], "age_seconds": age, "rpo_seconds": rpo},
-    "sqlite": {"journal_mode": after["journal_mode"], "integrity": after["integrity"], "table_counts": after["table_counts"]},
+    "sqlite": {"journal_mode": after["journal_mode"], "integrity": after["integrity"], "write_falsified": after["write_falsified"]},
 }, sort_keys=True))
 if open_rows:
     print("READINESS BLOCKED: status=open dead letters must be resolved or explicitly acknowledged before enabling PR/merge loops", file=sys.stderr)

@@ -748,6 +748,25 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
     );
     assert!(!install_dir.join("bb.previous").exists());
     assert_eq!(mode(&env_file), 0o600);
+    let first_calls = fs::read_to_string(&launch_log).unwrap();
+    let bootstraps: Vec<_> = first_calls
+        .lines()
+        .filter(|line| line.starts_with("bootstrap gui/"))
+        .collect();
+    assert!(
+        bootstraps[0].contains("bb-plane-litestream.plist"),
+        "{first_calls}"
+    );
+    assert!(bootstraps[1].contains("bb-serve.plist"), "{first_calls}");
+    let kickstarts: Vec<_> = first_calls
+        .lines()
+        .filter(|line| line.starts_with("kickstart -k"))
+        .collect();
+    assert!(
+        kickstarts[0].contains("bb-plane-litestream"),
+        "{first_calls}"
+    );
+    assert!(kickstarts[1].contains("bb-serve"), "{first_calls}");
     let rendered =
         fs::read_to_string(home.join("Library/LaunchAgents/com.misty-step.bb-serve.plist"))
             .unwrap();
@@ -770,6 +789,11 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
     assert!(
         !launch_log.exists() || fs::read_to_string(&launch_log).unwrap().is_empty(),
         "malformed plist must fail before launchctl mutation"
+    );
+    assert_eq!(
+        fs::read_to_string(install_dir.join("bb")).unwrap(),
+        "release-v1",
+        "invalid plist must leave the stable binary untouched"
     );
     fs::write(&serve_template, valid_serve_template).unwrap();
 
@@ -829,4 +853,111 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
     let launch_calls = fs::read_to_string(&launch_log).unwrap();
     assert!(launch_calls.contains("bootout gui/"));
     assert!(launch_calls.contains("com.misty-step.bb-dashboard"));
+}
+
+#[test]
+fn primary_readback_allows_concurrent_writer_and_proves_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = fs::read_to_string(root.join("scripts/production-ops-drill.sh")).unwrap();
+    let snapshot_start = script.find("sqlite_snapshot() {").unwrap();
+    let check_start = script.find("check_primary_readback() {").unwrap();
+    let check_end = script[check_start..]
+        .find("\n}\n\nverify_launchd_primary")
+        .map(|index| check_start + index + 2)
+        .unwrap();
+    let snapshot = &script[snapshot_start..check_start];
+    let check = &script[check_start..check_end];
+    let snapshot_runner = dir.path().join("snapshot.sh");
+    fs::write(
+        &snapshot_runner,
+        format!("#!/bin/sh\nset -eu\n{snapshot}\nsqlite_snapshot \"$1\" \"$2\"\n"),
+    )
+    .unwrap();
+    let check_runner = dir.path().join("check.sh");
+    fs::write(
+        &check_runner,
+        format!(
+            "#!/bin/sh\nset -eu\n{snapshot}{check}\nsqlite_snapshot \"$1\" \"$2\"\ncheck_primary_readback \"$3\" \"$4\" \"$5\" \"$6\" \"$7\" \"$2\"\n"
+        ),
+    )
+    .unwrap();
+    let db = dir.path().join("plane.db");
+    let before = dir.path().join("before.json");
+    let after = dir.path().join("after.json");
+    let status = dir.path().join("status.json");
+    let runs = dir.path().join("runs.json");
+    let dlq = dir.path().join("dlq.json");
+    let config = dir.path().join("config.json");
+    let heartbeat = dir.path().join("backup-last-success");
+    fs::write(&heartbeat, "fresh\n").unwrap();
+    fs::write(&status, r#"{"backup":{"enabled":true,"status":"fresh","healthy":true,"last_success_age_seconds":1,"rpo_seconds":300},"summary":{"open_dlq":0}}"#).unwrap();
+    fs::write(&runs, "[]\n").unwrap();
+    fs::write(&dlq, "[]\n").unwrap();
+    fs::write(
+        &config,
+        format!(
+            r#"{{"heartbeat":"{}","bind":"127.0.0.1:7093"}}"#,
+            heartbeat.display()
+        ),
+    )
+    .unwrap();
+    for runner in [&snapshot_runner, &check_runner] {
+        let mut mode = fs::metadata(runner).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            mode.set_mode(0o755);
+            fs::set_permissions(runner, mode).unwrap();
+        }
+    }
+    let init = Command::new("python3")
+        .args(["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('pragma journal_mode=wal'); c.execute('create table runs (id integer)'); c.commit(); c.close()", db.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let before_run = Command::new("sh")
+        .arg(&snapshot_runner)
+        .args([db.to_str().unwrap(), before.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(before_run.status.success(), "{before_run:?}");
+
+    let mut writer = Command::new("python3")
+        .args(["-c", "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1]); c.executemany('insert into runs values (?)', ((i,) for i in range(2000))); c.commit(); time.sleep(.2); c.close()", db.to_str().unwrap()])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let after_run = Command::new("sh")
+        .arg(&check_runner)
+        .args([
+            db.to_str().unwrap(),
+            after.to_str().unwrap(),
+            status.to_str().unwrap(),
+            runs.to_str().unwrap(),
+            dlq.to_str().unwrap(),
+            config.to_str().unwrap(),
+            before.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        after_run.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&after_run.stdout),
+        String::from_utf8_lossy(&after_run.stderr)
+    );
+    assert!(writer.wait().unwrap().success());
+    let after_count = Command::new("python3")
+        .args(["-c", "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('select count(*) from runs').fetchone()[0])", db.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&after_count.stdout)
+            .trim()
+            .parse::<u32>()
+            .unwrap()
+            > 0
+    );
+    assert!(String::from_utf8_lossy(&after_run.stdout).contains("write_falsified"));
 }

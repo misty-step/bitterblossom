@@ -121,6 +121,8 @@ fn litestream_entrypoint_restores_missing_db_before_initializing_ledger() {
     let db_path = dir.path().join("plane/.bb/plane.db");
     let config_path = dir.path().join("litestream.yml");
     let heartbeat_path = dir.path().join("plane/.bb/backup-last-success");
+    fs::create_dir_all(heartbeat_path.parent().unwrap()).unwrap();
+    fs::write(&heartbeat_path, "stale\n").unwrap();
     let socket_path = dir.path().join("litestream.sock");
 
     write_executable(
@@ -198,6 +200,7 @@ esac
     assert!(restore_index < status_index, "{log}");
     assert!(restore_index < serve_index, "{log}");
     assert_eq!(fs::read_to_string(db_path).unwrap(), "restored\n");
+    assert_ne!(fs::read_to_string(heartbeat_path).unwrap(), "stale\n");
 }
 
 #[test]
@@ -305,4 +308,44 @@ fn entrypoint_does_not_touch_ssh_directory_when_tailnet_credentials_are_unset() 
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!ssh_dir.exists());
+}
+
+#[test]
+fn local_primary_serve_waits_for_litestream_readiness_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    fs::create_dir_all(repo.join("scripts")).unwrap();
+    fs::create_dir_all(repo.join("plane")).unwrap();
+    fs::copy(
+        repo_root().join("scripts/bb-serve-local-entrypoint.sh"),
+        repo.join("scripts/bb-serve-local-entrypoint.sh"),
+    )
+    .unwrap();
+    fs::copy(
+        repo_root().join("scripts/bb-operator-env.sh"),
+        repo.join("scripts/bb-operator-env.sh"),
+    )
+    .unwrap();
+    fs::write(repo.join("plane/plane.toml"), "dev = false\n").unwrap();
+    let bb = dir.path().join("bb");
+    let log = dir.path().join("bb.log");
+    write_executable(&bb, "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$BB_TEST_LOG\"\n");
+    let ready = dir.path().join("ready");
+    let child = Command::new(repo.join("scripts/bb-serve-local-entrypoint.sh"))
+        .env_remove("BB_ENV_FILE")
+        .env("BB_LOCAL_PRIMARY_BIN", &bb)
+        .env("BB_TEST_LOG", &log)
+        .env("BB_LITESTREAM_HEARTBEAT_PATH", &ready)
+        .env("BB_LITESTREAM_STARTUP_TIMEOUT_SECONDS", "5")
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        !log.exists(),
+        "serve started before Litestream readiness marker"
+    );
+    fs::write(&ready, "ready\\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(fs::read_to_string(log).unwrap().contains("--config"));
 }

@@ -56,14 +56,6 @@ cleanup() {
   [ -z "${tmp_bin:-}" ] || rm -f "$tmp_bin"
 }
 trap cleanup EXIT INT TERM
-cp "$release_bin" "$tmp_bin"
-chmod 755 "$tmp_bin"
-if [ -e "$install_bin" ] || [ -L "$install_bin" ]; then
-  mv -f "$install_bin" "$previous_bin"
-fi
-mv -f "$tmp_bin" "$install_bin"
-tmp_bin=
-
 python3 - "$repo_dir" "$log_dir" "$plist_dir" "$install_bin" <<'PY'
 import os
 import pathlib
@@ -117,7 +109,17 @@ if [ "$(uname -s)" = "Darwin" ] && command -v plutil >/dev/null 2>&1; then
   done
 fi
 
+cp "$release_bin" "$tmp_bin"
+chmod 755 "$tmp_bin"
+if [ -e "$install_bin" ] || [ -L "$install_bin" ]; then
+  mv -f "$install_bin" "$previous_bin"
+fi
+mv -f "$tmp_bin" "$install_bin"
+tmp_bin=
+
 uid=$(id -u)
+ready_marker="$plane_dir/.bb/backup-last-success"
+rm -f "$ready_marker"
 wait_for_bootout() {
   label=$1
   attempts=0
@@ -165,9 +167,9 @@ for label in com.misty-step.bb-serve com.misty-step.bb-plane-litestream; do
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
   wait_for_bootout "$label"
 done
-bootstrap_label com.misty-step.bb-serve "$plist_dir/com.misty-step.bb-serve.plist"
 bootstrap_label com.misty-step.bb-plane-litestream "$plist_dir/com.misty-step.bb-plane-litestream.plist"
-launchctl kickstart -k "gui/$uid/com.misty-step.bb-serve"
 launchctl kickstart -k "gui/$uid/com.misty-step.bb-plane-litestream"
+bootstrap_label com.misty-step.bb-serve "$plist_dir/com.misty-step.bb-serve.plist"
+launchctl kickstart -k "gui/$uid/com.misty-step.bb-serve"
 printf '%s
 ' "installed local-primary services: com.misty-step.bb-serve and com.misty-step.bb-plane-litestream (binary $install_bin)"
