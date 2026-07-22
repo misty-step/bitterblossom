@@ -965,13 +965,12 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 Ok(req) => req,
                 Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
             };
-            let ask = match ledger.answer_ask(id, &req.answer, &req.answered_by) {
+            let ask = match ledger.ask(id) {
                 Ok(ask) => ask,
-                Err(err) => return Ok((409, json_error(err.to_string()))),
+                Err(_) => return Ok((404, json_error(format!("ask {id} not found")))),
             };
             let run = ledger.run(&ask.run_id)?;
-            let mut resumed_run_id = None;
-            if run.state == "parked_on_ask" {
+            let (ask, resumed_run_id) = if run.state == "parked_on_ask" {
                 let packet = match crate::artifacts::read(
                     &ledger,
                     &ask.run_id,
@@ -987,14 +986,26 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                     "packet": packet,
                 })
                 .to_string();
-                let outcome = ledger.ingest(IngressRequest {
-                    task: &ask.task,
-                    trigger_kind: "resume",
-                    idempotency_key: Some(&format!("resume:{}", ask.id)),
-                    source_event_id: None,
-                    payload: Some(&resume_payload),
-                    parent_run_id: Some(&ask.run_id),
-                })?;
+                let resume_key = format!("resume:{}", ask.id);
+                let (ask, outcome) = match ledger.answer_ask_and_resume(
+                    id,
+                    &req.answer,
+                    &req.answered_by,
+                    IngressRequest {
+                        task: &ask.task,
+                        trigger_kind: "resume",
+                        idempotency_key: Some(&resume_key),
+                        source_event_id: None,
+                        payload: Some(&resume_payload),
+                        parent_run_id: Some(&ask.run_id),
+                    },
+                ) {
+                    Ok(result) => result,
+                    Err(err) if crate::ledger::is_queue_backpressure(&err) => {
+                        return Err(ingress::IngressClientError::Backpressure(err.to_string()).into())
+                    }
+                    Err(err) => return Ok((409, json_error(err.to_string()))),
+                };
                 if let Ok(task) = plane.task(&ask.task) {
                     crate::glass::post_resumed(
                         &plane,
@@ -1006,8 +1017,14 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                         &ask.id,
                     );
                 }
-                resumed_run_id = Some(outcome.run_id);
-            }
+                (ask, Some(outcome.run_id))
+            } else {
+                let ask = match ledger.answer_ask(id, &req.answer, &req.answered_by) {
+                    Ok(ask) => ask,
+                    Err(err) => return Ok((409, json_error(err.to_string()))),
+                };
+                (ask, None)
+            };
             return Ok((
                 200,
                 serde_json::json!({"ask": ask, "resumed_run_id": resumed_run_id}).to_string(),

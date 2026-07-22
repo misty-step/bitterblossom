@@ -110,6 +110,7 @@ impl Substrate for TailnetSubstrate {
             "raw=\"$(cat \"$HOME/.bb-tailnet/{marker}.pid\" 2>/dev/null)\" || exit 3; \
              pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; \
              case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; \
+             [ \"$pid\" -gt 0 ] 2>/dev/null || exit 5; \
              kill -0 \"$pid\" 2>/dev/null || exit 4; \
              if [ \"$expected\" = \"$raw\" ] || [ -z \"$expected\" ]; then exit 0; fi; \
              actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; \
@@ -294,7 +295,7 @@ impl Session for TailnetSession {
             ""
         };
         let script = format!(
-            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho \"$|$(ps -p $ -o lstart=)\" > ~/.bb-tailnet/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
+            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho \"$$|$(ps -p $$ -o lstart= | sed 's/^ *//;s/ *$//')\" > ~/.bb-tailnet/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
             ws = shell_quote(&self.workspace),
             marker = self.marker,
         );
@@ -307,7 +308,7 @@ impl Session for TailnetSession {
         )?;
         if result.timed_out || result.termination_reason.is_some() {
             let kill = format!(
-                "raw=\"$(cat ~/.bb-tailnet/{}.pid 2>/dev/null)\" && pid=\"${{raw%%|*}}\" && case \"$pid\" in \"\"|*[!0-9]*) exit 0;; esac && kill -9 -- \"-$pid\" 2>/dev/null; true",
+                "raw=\"$(cat ~/.bb-tailnet/{}.pid 2>/dev/null)\"; pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; case \"$pid\" in \"\"|*[!0-9]*) exit 0;; esac; [ \"$pid\" -gt 0 ] 2>/dev/null || exit 0; if [ \"$expected\" != \"$raw\" ] && [ -n \"$expected\" ]; then actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; [ \"$actual\" = \"$expected\" ] || exit 0; fi; kill -9 -- \"-$pid\" 2>/dev/null || true",
                 self.marker
             );
             let _ = remote_shell(&self.host, &kill, Duration::from_secs(30));

@@ -360,7 +360,7 @@ fn sprite_probe_treats_malformed_pidfile_as_unknown() {
 
     let marker = format!("bb-probe-test-{}", std::process::id());
     let pidfile = std::path::PathBuf::from(format!("/tmp/{marker}.pid"));
-    fs::write(&pidfile, "not-a-pid").unwrap();
+    fs::write(&pidfile, "0|never-started").unwrap();
 
     let probe = SpritesSubstrate.probe("test-sprite", root, &marker);
     match probe {

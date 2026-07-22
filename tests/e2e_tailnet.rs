@@ -302,12 +302,12 @@ fn tailnet_dispatch_dead_letters_with_plain_language_reason_when_host_unreachabl
 }
 
 #[test]
-fn tailnet_probe_reports_dead_when_pidfile_process_is_gone() {
+fn tailnet_probe_rejects_nonpositive_pidfile() {
     let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let fake_home = dir.path().join("fake-remote-home");
     fs::create_dir_all(fake_home.join(".bb-tailnet")).unwrap();
-    fs::write(fake_home.join(".bb-tailnet/probe-marker.pid"), "999999999").unwrap();
+    fs::write(fake_home.join(".bb-tailnet/probe-marker.pid"), "0|never-started").unwrap();
 
     let ssh_stub = dir.path().join("ssh-stub.sh");
     write_executable(&ssh_stub, SSH_STUB);
@@ -321,5 +321,5 @@ fn tailnet_probe_reports_dead_when_pidfile_process_is_gone() {
     std::env::remove_var("SSH_FAKE_HOME");
     std::env::remove_var("SSH_STUB_LOG");
 
-    assert_eq!(result, ProbeResult::Dead, "{result:?}");
+    assert!(matches!(result, ProbeResult::Unknown(ref reason) if reason.contains("malformed pidfile")), "{result:?}");
 }

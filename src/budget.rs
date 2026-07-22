@@ -142,11 +142,11 @@ pub fn workflow_admission_limit(
         + workflow_spend.reserved_usd
         + additional_reservation;
     if let Some(ceiling) = plane.spec.budget.max_cost_per_day_usd {
-        if plane_projected > ceiling {
+        if plane_projected >= ceiling {
             return Ok(Some(Violation {
                 kind: "global_daily_ceiling",
                 detail: format!(
-                    "plane daily ceiling: projected ${plane_projected:.4} (standard observed ${standard_observed:.4} + workflow observed ${:.4} + estimated ${:.4} + reserved ${:.4} + new reservation ${additional_reservation:.4}) > max_cost_per_day_usd ${ceiling:.2}",
+                    "plane daily ceiling: projected ${plane_projected:.4} (standard observed ${standard_observed:.4} + workflow observed ${:.4} + estimated ${:.4} + reserved ${:.4} + new reservation ${additional_reservation:.4}) >= max_cost_per_day_usd ${ceiling:.2}",
                     workflow_spend.observed_usd,
                     workflow_spend.estimated_usd,
                     workflow_spend.reserved_usd,
@@ -159,7 +159,7 @@ pub fn workflow_admission_limit(
     if let Some(ceiling) = doc.policies.max_cost_per_day_usd {
         let projected =
             own.observed_usd + own.estimated_usd + own.reserved_usd + additional_reservation;
-        if projected > ceiling {
+        if projected >= ceiling {
             return Ok(Some(Violation {
                 kind: "workflow_daily_ceiling",
                 detail: format!(

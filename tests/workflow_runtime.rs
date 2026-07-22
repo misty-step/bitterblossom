@@ -115,7 +115,7 @@ fn metered_workflow_run_stops_in_flight_on_per_run_ceiling() {
     let stub = write_stub(
         root,
         "metered.sh",
-        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.50,"tokens":{"input":1,"output":1}}}'
+        r#"printf '%s\n' '{"part":{"type":"step-finish","cost":0.01,"tokens":{"input":1,"output":1}}}'
 sleep 2
 printf '%s\n' '{"part":{"type":"text","text":"done"}}'"#,
     );
@@ -162,10 +162,10 @@ side_effect_policy = "kill"
         .iter()
         .any(|event| event.kind == "workflow_guard_spend_in_flight"));
     let status = ledger.workflow_run_status(&run_id).unwrap().unwrap();
-    assert_eq!(status.cost_usd, Some(0.50));
+    assert_eq!(status.cost_usd, Some(0.01));
     let steps = ledger.workflow_step_runs(&run_id).unwrap();
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].cost_usd, Some(0.50));
+    assert_eq!(steps[0].cost_usd, Some(0.01));
 }
 
 #[test]
@@ -237,7 +237,7 @@ fn final_only_claude_cost_is_checked_before_success() {
     let stub = write_stub(
         root,
         "claude-final.sh",
-        r#"printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0.02,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'"#,
+        r#"printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0.01,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'"#,
     );
     let doc = write_doc(
         root,
@@ -272,7 +272,7 @@ side_effect_policy = "kill"
         .as_str()
         .unwrap()
         .contains("final cost cap"));
-    assert_eq!(view["status"]["cost_usd"], 0.02);
+    assert_eq!(view["status"]["cost_usd"], 0.01);
 }
 
 #[test]
@@ -351,7 +351,7 @@ harness = "command"
 model = "stub"
 bin = "{}"
 [policies]
-max_cost_per_day_usd = 1.0
+max_cost_per_day_usd = 1.01
 estimated_cost_per_run_usd = 1.0
 "#,
             stub.display()

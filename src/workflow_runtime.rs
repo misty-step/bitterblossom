@@ -1237,6 +1237,7 @@ enum StepDisposition {
     Failed(String),
     Incomplete(String),
     Stopped(String),
+    NeedsAttention(String),
 }
 
 struct WorkflowInFlightMonitor<'a> {
@@ -1271,11 +1272,11 @@ impl<'a> WorkflowInFlightMonitor<'a> {
             );
             self.last_recorded_cost = Some(cost);
         }
-        if total <= self.max_cost_usd || self.breached {
+        if total < self.max_cost_usd || self.breached {
             return None;
         }
         let reason = format!(
-            "workflow in-flight cost cap {}: observed run total ${total:.4} (current step ${cost:.4} + prior ${prior:.4}) > max_cost_per_run_usd ${max:.2}",
+            "workflow in-flight cost cap {}: observed run total ${total:.4} (current step ${cost:.4} + prior ${prior:.4}) >= max_cost_per_run_usd ${max:.2}",
             self.side_effect_policy, prior = self.prior_cost_usd, max = self.max_cost_usd
         );
         let _ = self.ledger.record_guard_event(
@@ -1405,6 +1406,9 @@ fn execute_claimed(
             }
             StepDisposition::Stopped(reason) => {
                 break ("stopped", Some(reason), "workflow_run_stopped");
+            }
+            StepDisposition::NeedsAttention(reason) => {
+                break ("needs_attention", Some(reason), "workflow_needs_attention");
             }
             StepDisposition::Succeeded { outcome, summary } => {
                 let target = match step.routes.len() {
@@ -1948,7 +1952,7 @@ fn run_step(
             Some(exec.exit_code),
             &stats,
         )?;
-        return Ok(StepDisposition::Stopped(reason.to_string()));
+        return Ok(if in_flight.breached && side_effect_policy == "quarantine" { StepDisposition::NeedsAttention(reason.to_string()) } else { StepDisposition::Stopped(reason.to_string()) });
     }
     if exec.timed_out {
         let stats = harness::parse_partial_stats(&agent.harness, &exec.stdout);
@@ -2044,7 +2048,11 @@ fn run_step(
                     Some(exec.exit_code),
                     &parsed.stats,
                 )?;
-                return Ok(StepDisposition::Stopped(reason));
+                return Ok(if side_effect_policy == "quarantine" {
+                    StepDisposition::NeedsAttention(reason)
+                } else {
+                    StepDisposition::Stopped(reason)
+                });
             }
         }
     }
@@ -2145,7 +2153,7 @@ fn run_step(
                         Some(exec.exit_code),
                         &parsed.stats,
                     )?;
-                    return Ok(StepDisposition::Stopped(reason));
+                    return Ok(if side_effect_policy == "quarantine" { StepDisposition::NeedsAttention(reason) } else { StepDisposition::Stopped(reason) });
                 }
             }
         }
