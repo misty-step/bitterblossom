@@ -1543,7 +1543,6 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 workflow::AcceptOutcome::Duplicate { .. } => 200,
                 workflow::AcceptOutcome::Denied { .. } => 429,
                 workflow::AcceptOutcome::Suppressed { .. } => 202,
-                workflow::AcceptOutcome::Denied { .. } => 429,
             };
             Ok((status, serde_json::to_value(outcome)?))
         }

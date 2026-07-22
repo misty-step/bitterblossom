@@ -1,4 +1,7 @@
+use std::fs;
+
 use bitterblossom::ledger::{IngressRequest, Ledger};
+use bitterblossom::spec::Plane;
 use bitterblossom::workflow::WorkflowDoc;
 use bitterblossom::workflow_runtime::{
     accept, resolve_workflow_run, TriggerEnvelope, TriggerSource,
@@ -37,15 +40,17 @@ model = "stub"
     .unwrap()
 }
 
-fn store() -> (tempfile::TempDir, Ledger) {
+fn store() -> (tempfile::TempDir, Plane, Ledger) {
     let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("plane.toml"), "dev = true\n").unwrap();
+    let plane = Plane::load(dir.path()).unwrap();
     let ledger = Ledger::open(&dir.path().join("plane.db")).unwrap();
-    (dir, ledger)
+    (dir, plane, ledger)
 }
 
 #[test]
 fn legacy_resolve_closes_open_attempt_and_releases_lease() {
-    let (_dir, mut ledger) = store();
+    let (_dir, _plane, mut ledger) = store();
     let accepted = ledger
         .ingest(IngressRequest {
             task: "legacy",
@@ -80,7 +85,7 @@ fn legacy_resolve_closes_open_attempt_and_releases_lease() {
 
 #[test]
 fn workflow_admission_denial_is_atomic_and_audited() {
-    let (_dir, ledger) = store();
+    let (_dir, plane, ledger) = store();
     let workflow = doc(
         "bounded",
         "bounded-hook",
@@ -90,6 +95,7 @@ concurrency = 1",
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
     let accepted = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),
@@ -106,6 +112,7 @@ concurrency = 1",
     let run_events = ledger.workflow_run_events(&accepted_id).unwrap();
     assert!(run_events.iter().any(|event| event.kind == "run_accepted"));
     let denied = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),
@@ -117,7 +124,7 @@ concurrency = 1",
     .unwrap();
     match denied {
         bitterblossom::workflow::AcceptOutcome::Denied { kind, .. } => {
-            assert_eq!(kind, "max_runs_per_day")
+            assert_eq!(kind, "workflow_max_runs_per_day")
         }
         other => panic!("expected denial, got {other:?}"),
     }
@@ -167,7 +174,7 @@ fn legacy_workflow_event_table_backfills_run_id_for_readback() {
 
 #[test]
 fn invalid_dedupe_is_refused_before_activation() {
-    let (_dir, ledger) = store();
+    let (_dir, _plane, ledger) = store();
     let mut workflow = doc("bad-dedupe", "bad-dedupe-hook", "");
     workflow.triggers[0].dedupe_key = Some("missing-separator".into());
     let created = ledger.create_workflow(&workflow, "test", None);
@@ -176,7 +183,7 @@ fn invalid_dedupe_is_refused_before_activation() {
 
 #[test]
 fn active_workflow_route_collision_fails_closed() {
-    let (_dir, ledger) = store();
+    let (_dir, _plane, ledger) = store();
     let first = doc("first", "same-hook", "");
     let (first_row, first_revision) = ledger.create_workflow(&first, "test", None).unwrap();
     ledger
@@ -197,7 +204,7 @@ fn active_workflow_route_collision_fails_closed() {
 
 #[test]
 fn duplicate_workflow_routes_are_rejected_on_activation() {
-    let (_dir, ledger) = store();
+    let (_dir, _plane, ledger) = store();
     let mut workflow = doc("duplicate-routes", "same", "");
     workflow.triggers.push(workflow.triggers[0].clone());
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
@@ -214,11 +221,12 @@ fn duplicate_workflow_routes_are_rejected_on_activation() {
 
 #[test]
 fn paused_workflow_redelivery_is_duplicate_not_suppressed() {
-    let (_dir, ledger) = store();
+    let (_dir, plane, ledger) = store();
     let workflow = doc("paused-dedupe", "paused", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
     let first = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),
@@ -234,6 +242,7 @@ fn paused_workflow_redelivery_is_duplicate_not_suppressed() {
     ));
     ledger.pause_workflow(&row.name, "operator test").unwrap();
     let replay = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),
@@ -251,11 +260,12 @@ fn paused_workflow_redelivery_is_duplicate_not_suppressed() {
 
 #[test]
 fn workflow_terminal_transitions_and_stop_requests_are_fail_closed() {
-    let (_dir, ledger) = store();
+    let (_dir, plane, ledger) = store();
     let workflow = doc("transitions", "transitions", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
     let accepted = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),
@@ -289,11 +299,12 @@ fn workflow_terminal_transitions_and_stop_requests_are_fail_closed() {
 
 #[test]
 fn workflow_freshness_reports_queued_running_and_attention() {
-    let (_dir, ledger) = store();
+    let (_dir, plane, ledger) = store();
     let workflow = doc("freshness", "freshness", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
     let accepted = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),
@@ -321,7 +332,7 @@ fn workflow_freshness_reports_queued_running_and_attention() {
 
 #[test]
 fn dead_letter_open_count_excludes_replayed_rows_and_list_is_complete() {
-    let (_dir, ledger) = store();
+    let (_dir, _plane, ledger) = store();
     let mut ids = Vec::new();
     for n in 0..205 {
         ids.push(
@@ -340,7 +351,7 @@ fn dead_letter_open_count_excludes_replayed_rows_and_list_is_complete() {
 
 #[test]
 fn task_workflow_route_collision_fails_at_activation() {
-    let (_dir, ledger) = store();
+    let (_dir, _plane, ledger) = store();
     let workflow = doc("workflow-owner", " Shared-Route ", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     let error = ledger
@@ -358,7 +369,7 @@ fn task_workflow_route_collision_fails_at_activation() {
 
 #[test]
 fn paused_workflow_keeps_normalized_route_reserved() {
-    let (_dir, ledger) = store();
+    let (_dir, _plane, ledger) = store();
     let first = doc("paused-owner", "retained-route", "");
     let (first_row, first_revision) = ledger.create_workflow(&first, "test", None).unwrap();
     ledger
@@ -378,7 +389,7 @@ fn paused_workflow_keeps_normalized_route_reserved() {
 
 #[test]
 fn workflow_cron_collapse_accumulates_each_trigger_before_cursor_advance() {
-    let (_dir, ledger) = store();
+    let (_dir, plane, ledger) = store();
     let workflow = WorkflowDoc::from_toml(
         r#"
 name = "multi-cron"
@@ -408,9 +419,15 @@ model = "stub"
     let last = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
     let now = Utc.with_ymd_and_hms(2026, 7, 21, 12, 30, 0).unwrap();
     let mut cursors = std::collections::HashMap::new();
-    let accepted =
-        bitterblossom::workflow_runtime::workflow_cron_tick(&ledger, &mut cursors, last, now, 2)
-            .unwrap();
+    let accepted = bitterblossom::workflow_runtime::workflow_cron_tick(
+        &plane,
+        &ledger,
+        &mut cursors,
+        last,
+        now,
+        2,
+    )
+    .unwrap();
     assert_eq!(accepted.len(), 2, "{accepted:?}");
     let collapse = ledger
         .guard_event_counts()
@@ -426,11 +443,12 @@ model = "stub"
 
 #[test]
 fn resolving_recovered_run_closes_alive_step_before_terminal_state() {
-    let (dir, ledger) = store();
+    let (dir, plane, ledger) = store();
     let workflow = doc("resolve-alive", "resolve-alive", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
     let accepted = accept(
+        &plane,
         &ledger,
         &TriggerEnvelope {
             workflow: row.name.clone(),

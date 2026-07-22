@@ -381,20 +381,14 @@ pub fn handle_workflow_webhook(
         },
     ) {
         Ok(outcome) => outcome,
-        Err(error) if error.to_string().contains("payload must be JSON") => return Ok(WebhookResponse {
-            status: 400,
-            body: "{\"error\":\"invalid workflow webhook payload\"}".to_string(),
-        }),
+        Err(error) if error.to_string().contains("payload must be JSON") => {
+            return Ok(WebhookResponse {
+                status: 400,
+                body: "{\"error\":\"invalid workflow webhook payload\"}".to_string(),
+            })
+        }
         Err(error) => return Err(error),
     };
-        ledger,
-        &crate::workflow_runtime::TriggerEnvelope {
-            workflow: workflow.to_string(),
-            source: crate::workflow_runtime::TriggerSource::External,
-            payload: Some(body.to_string()),
-            dedupe_key: Some(format!("wh:{}:{derived}", normalize_route(route))),
-        },
-    )?;
     use crate::workflow::AcceptOutcome;
     let body = match &outcome {
         AcceptOutcome::Accepted { run } => {

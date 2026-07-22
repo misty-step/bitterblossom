@@ -1965,9 +1965,6 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                         "duplicate: dedupe key already accepted run {} on '{}'",
                         run.id, run.workflow
                     ),
-                    AcceptOutcome::Denied { workflow, reason } => {
-                        println!("denied on '{workflow}': {reason}");
-                    }
                     AcceptOutcome::Suppressed { workflow, reason } => {
                         println!("suppressed on '{workflow}': {reason}")
                     }

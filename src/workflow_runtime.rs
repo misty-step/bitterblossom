@@ -1290,6 +1290,7 @@ impl<'a> WorkflowInFlightMonitor<'a> {
             _ => Some(reason),
         }
     }
+}
 
 /// Execute one accepted workflow run to a terminal state. Claims the run
 /// (queued -> running CAS); refuses anything already claimed or terminal.
@@ -1508,7 +1509,11 @@ fn fired_guard(
                 let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
                     let estimate = doc.policies.conservative_cost_estimate();
                     if !estimate.is_finite() || estimate <= 0.0 {
-                        bail!("workflow '{}' has invalid conservative estimate {}", run.workflow, estimate);
+                        bail!(
+                            "workflow '{}' has invalid conservative estimate {}",
+                            run.workflow,
+                            estimate
+                        );
                     }
                     (estimate > cap).then(|| (
                         "workflow_guard_spend_estimate",
@@ -1520,7 +1525,11 @@ fn fired_guard(
                 let spend_is_only_cycle_guard =
                     doc.policies.max_rounds.is_none() && doc.policies.max_elapsed_seconds.is_none();
                 let unmetered = if spend_is_only_cycle_guard {
-                    let cycle_steps: Vec<&str> = doc.steps_on_cycles().into_iter().map(|s| s.name.as_str()).collect();
+                    let cycle_steps: Vec<&str> = doc
+                        .steps_on_cycles()
+                        .into_iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
                     ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
                 } else {
                     0
@@ -1534,63 +1543,19 @@ fn fired_guard(
                 } else if unknown_violation.is_some() {
                     unknown_violation
                 } else {
-                    let observed = ledger.workflow_run_status(&run.id)?.and_then(|s| s.cost_usd).unwrap_or(0.0);
-                    (observed >= cap).then(|| (
-                        "workflow_guard_spend",
-                        format!("spend guard: observed ${:.4} of run-group cap ${:.2}", observed, cap),
-                    ))
-                }
+                    let observed = ledger
+                        .workflow_run_status(&run.id)?
+                        .and_then(|s| s.cost_usd)
+                        .unwrap_or(0.0);
+                    (observed >= cap).then(|| {
                         (
-                            "workflow_guard_spend_estimate",
+                            "workflow_guard_spend",
                             format!(
-                                "spend estimate: cost-blind harness '{}' reserves ${estimate:.4} > max_cost_per_run_usd ${cap:.2}; unknown spend is never treated as zero",
-                                step.agent.harness
+                                "spend guard: observed ${:.4} of run-group cap ${:.2}",
+                                observed, cap
                             ),
                         )
                     })
-                } else {
-                    None
-                };
-                if estimate_violation.is_some() {
-                    estimate_violation
-                } else {
-                    // A spend-only cycle becomes indeterminate after an
-                    // unmetered attempt. Bounded runs can continue.
-                    let spend_is_only_cycle_guard = doc.policies.max_rounds.is_none()
-                        && doc.policies.max_elapsed_seconds.is_none();
-                    let unmetered = if spend_is_only_cycle_guard {
-                        let cycle_steps: Vec<&str> = doc
-                            .steps_on_cycles()
-                            .into_iter()
-                            .map(|s| s.name.as_str())
-                            .collect();
-                        ledger.unmetered_workflow_attempts(&run.id, &cycle_steps)?
-                    } else {
-                        0
-                    };
-                    if unmetered > 0 {
-                        Some((
-                            "workflow_guard_spend_indeterminate",
-                            format!(
-                                "spend guard indeterminate: {unmetered} cycle-step attempt(s) \
-                                 reported no cost and max_cost_per_run_usd is the only cycle guard \
-                                 — unknown spend is never treated as zero"
-                            ),
-                        ))
-                    } else {
-                        let observed = ledger
-                            .workflow_run_status(&run.id)?
-                            .and_then(|s| s.cost_usd)
-                            .unwrap_or(0.0);
-                        (observed > cap).then(|| {
-                            (
-                                "workflow_guard_spend",
-                                format!(
-                                    "spend guard: observed ${observed:.4} of run-group cap ${cap:.2}"
-                                ),
-                            )
-                        })
-                    }
                 }
             } else {
                 None
@@ -1712,7 +1677,10 @@ fn final_spend_breach(
     side_effect_policy: &str,
     current_cost: f64,
 ) -> Result<Option<String>> {
-    let total = ledger.workflow_run_status(&run.id)?.and_then(|status| status.cost_usd).unwrap_or(current_cost);
+    let total = ledger
+        .workflow_run_status(&run.id)?
+        .and_then(|status| status.cost_usd)
+        .unwrap_or(current_cost);
     if total <= max_cost {
         return Ok(None);
     }
@@ -1731,7 +1699,6 @@ impl Drop for WorkflowLease<'_> {
     fn drop(&mut self) {
         let _ = self.ledger.release_host_lease(self.host, self.run_id);
     }
-}
 }
 
 fn run_step(
@@ -1802,7 +1769,6 @@ fn run_step(
             step.name
         )))
     };
-
 
     let bundle = match load_bundle(&step.agent) {
         Ok(b) => b,

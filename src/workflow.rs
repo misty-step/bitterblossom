@@ -669,12 +669,6 @@ pub enum AcceptOutcome {
     Duplicate {
         run: WorkflowRunRow,
     },
-    /// The workflow daily cost ceiling rejected this acceptance. No run row
-    /// is created; the named workflow event is the durable denial evidence.
-    Denied {
-        workflow: String,
-        reason: String,
-    },
     Suppressed {
         workflow: String,
         reason: String,
