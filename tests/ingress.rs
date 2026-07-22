@@ -374,9 +374,9 @@ fn webhook_accepts_canary_timestamped_signature_and_delivery_id() {
     std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
 
     let body = include_str!("fixtures/contracts/canary.incident_event.v1.valid.json");
-    let timestamp = "2026-07-01T17:00:00Z";
+    let timestamp = Utc::now().to_rfc3339();
     let delivery = "DLV-canary-live";
-    let headers = canary_headers("s3cret", timestamp, delivery, body);
+    let headers = canary_headers("s3cret", &timestamp, delivery, body);
     let resp = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
     assert_eq!(resp.status, 202, "{}", resp.body);
     assert!(!resp.body.contains("filtered"), "{}", resp.body);
@@ -408,7 +408,7 @@ fn webhook_filters_subject_only_canary_payload_without_a_run() {
     std::env::set_var("BB_TEST_CANARY_SECRET", "s3cret");
 
     let body = r#"{"schema_version":"canary.incident_event.v1","event":"incident.opened","subject":{"type":"incident","id":"INC-live","service":"canary"}}"#;
-    let headers = canary_headers("s3cret", "2026-07-01T17:00:00Z", "DLV-subject-only", body);
+    let headers = canary_headers("s3cret", &Utc::now().to_rfc3339(), "DLV-subject-only", body);
     let resp = handle_webhook(&plane, &mut ledger, "canary-triage", &headers, body).unwrap();
 
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -1216,4 +1216,74 @@ fn webhook_submission_storm_opens_newer_head_after_settle() {
         "newer head after settle should fire a new storm"
     );
     assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 2);
+}
+
+
+#[test]
+fn duplicate_redelivery_survives_atomic_queue_saturation() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    for n in 0..Ledger::MAX_PENDING_QUEUE_DEPTH {
+        let key = format!("storm:{n}");
+        ledger
+            .ingest(bitterblossom::ledger::IngressRequest {
+                task: "demo",
+                trigger_kind: "webhook",
+                idempotency_key: Some(&key),
+                source_event_id: None,
+                payload: Some("{}"),
+                parent_run_id: None,
+            })
+            .unwrap();
+    }
+    let duplicate = ledger
+        .ingest(bitterblossom::ledger::IngressRequest {
+            task: "demo",
+            trigger_kind: "webhook",
+            idempotency_key: Some("storm:0"),
+            source_event_id: None,
+            payload: Some("{}"),
+            parent_run_id: None,
+        })
+        .unwrap();
+    assert!(duplicate.duplicate);
+    assert_eq!(ledger.pending_run_depth(Some("demo")).unwrap(), Ledger::MAX_PENDING_QUEUE_DEPTH);
+    let refused = ledger.ingest(bitterblossom::ledger::IngressRequest {
+        task: "demo",
+        trigger_kind: "webhook",
+        idempotency_key: Some("storm:new"),
+        source_event_id: None,
+        payload: Some("{}"),
+        parent_run_id: None,
+    });
+    match refused {
+        Err(error) => assert!(error.to_string().contains("queue backpressure")),
+        Ok(_) => panic!("queue admission unexpectedly accepted"),
+    }
+}
+
+#[test]
+fn partial_timestamped_signature_cannot_downgrade_to_legacy_hmac() {
+    let dir = tempfile::tempdir().unwrap();
+    let plane = make_plane(dir.path());
+    let mut ledger = Ledger::open(&plane.db_path()).unwrap();
+    std::env::set_var(SECRET_ENV, "hunter2");
+    let body = r#"{"action":"opened"}"#;
+    let timestamp = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
+    let signature = sign_hmac("hunter2", format!("{timestamp}.delivery-1.{body}").as_bytes());
+    let response = handle_webhook(
+        &plane,
+        &mut ledger,
+        "demo",
+        &[
+            ("X-Canary-Signature".into(), signature),
+            ("X-Timestamp".into(), timestamp),
+        ],
+        body,
+    )
+    .unwrap();
+    assert_eq!(response.status, 400);
+    assert!(response.body.contains("timestamped signature envelope"));
+    assert!(ledger.list_runs(Some("demo"), None).unwrap().is_empty());
 }

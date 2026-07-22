@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency
   ON runs(task, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS runs_pending_created
+  ON runs(state, created_at, id);
 
 CREATE TABLE IF NOT EXISTS external_runs (
   id TEXT PRIMARY KEY,
@@ -103,6 +105,8 @@ CREATE TABLE IF NOT EXISTS dead_letters (
   acknowledged_reason TEXT,
   acknowledged_at TEXT
 );
+CREATE INDEX IF NOT EXISTS dead_letters_attention
+  ON dead_letters(acknowledged_at, created_at, id);
 
 CREATE TABLE IF NOT EXISTS budget_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,6 +310,8 @@ CREATE TABLE IF NOT EXISTS workflow_run_status (
   started_at TEXT,
   updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS workflow_run_status_queue
+  ON workflow_run_status(state, updated_at, run_id);
 
 -- Every step attempt in a run group, in one dense sequence. `agent_json`
 -- is the pinned StepAgent snapshot that actually launched; `authority_json`
@@ -334,6 +340,8 @@ CREATE TABLE IF NOT EXISTS workflow_step_runs (
 );
 CREATE INDEX IF NOT EXISTS workflow_step_runs_run
   ON workflow_step_runs(run_id);
+CREATE INDEX IF NOT EXISTS workflow_step_runs_state
+  ON workflow_step_runs(run_id, state, attempt);
 
 -- Dynamic child agents an executing step declared (CHILD_AGENTS.json).
 -- Evidence rows under the parent step run only — children never become

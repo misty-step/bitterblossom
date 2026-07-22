@@ -1,8 +1,11 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
+use rusqlite::OptionalExtension;
 use sha2::Sha256;
-use time::OffsetDateTime;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+const DELIVERY_MAX_CLOCK_SKEW_SECONDS: i64 = 300;
 
 use crate::attention::{self, AttentionDebt};
 use crate::budget::{self, Violation};
@@ -20,17 +23,27 @@ struct AdmissionRefusal {
     #[serde(skip_serializing_if = "Option::is_none")]
     debt: Option<AttentionDebt>,
 }
-pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Option<(&'p Task, &'p TriggerSpec)> {
+pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Result<Option<(&'p Task, &'p TriggerSpec)>> {
+    let route = normalize_route(route);
+    let mut found = None;
     for task in plane.tasks.values() {
         for trigger in &task.spec.triggers {
             if let TriggerSpec::Webhook { route: r, .. } = trigger {
-                if r == route {
-                    return Some((task, trigger));
+                if normalize_route(r) != route {
+                    continue;
                 }
+                if found.is_some() {
+                    bail!("webhook route '{route}' is claimed by multiple tasks");
+                }
+                found = Some((task, trigger));
             }
         }
     }
-    None
+    Ok(found)
+}
+
+pub fn normalize_route(route: &str) -> String {
+    route.trim().trim_matches('/').to_ascii_lowercase()
 }
 pub fn handle_webhook(
     plane: &Plane,
@@ -39,7 +52,13 @@ pub fn handle_webhook(
     headers: &[(String, String)],
     body: &str,
 ) -> Result<WebhookResponse> {
-    let Some((task, trigger)) = webhook_target(plane, route) else {
+    let Some((task, trigger)) = (match webhook_target(plane, route) {
+        Ok(target) => target,
+        Err(_) => return Ok(WebhookResponse {
+            status: 409,
+            body: "{\"error\":\"webhook route is ambiguous\"}".to_string(),
+        }),
+    }) else {
         return Ok(WebhookResponse {
             status: 404,
             body: format!("{{\"error\":\"no webhook route '{route}'\"}}"),
@@ -78,33 +97,75 @@ pub fn handle_webhook(
             body: format!("{{\"error\":\"secret env '{secret_env}' not set on the plane\"}}"),
         });
     };
-    if !verify_delivery_hmac(&secret, headers, body) {
-        return Ok(WebhookResponse {
-            status: 401,
-            body: "{\"error\":\"invalid signature\"}".to_string(),
-        });
+    match verify_delivery_hmac(&secret, headers, body) {
+        DeliveryVerification::Valid => {}
+        DeliveryVerification::InvalidSignature => {
+            return Ok(WebhookResponse {
+                status: 401,
+                body: "{\"error\":\"invalid signature\"}".to_string(),
+            });
+        }
+        DeliveryVerification::Stale => {
+            return Ok(WebhookResponse {
+                status: 401,
+                body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
+            });
+        }
+        DeliveryVerification::MalformedTimestamp | DeliveryVerification::IncompleteTimestampedHeaders => {
+            return Ok(WebhookResponse {
+                status: 400,
+                body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
+            });
+        }
     }
-    if !filter.is_empty() {
-        let payload: serde_json::Value = match serde_json::from_str(body) {
-            Ok(v) => v,
-            Err(_) => {
-                return Ok(WebhookResponse {
-                    status: 200,
-                    body: "{\"filtered\":\"payload is not JSON\"}".to_string(),
-                })
-            }
-        };
-        for f in filter {
-            if let Some(reason) = f.reject_reason(&payload) {
-                return Ok(WebhookResponse {
-                    status: 200,
-                    body: serde_json::json!({ "filtered": reason }).to_string(),
-                });
-            }
+    let payload: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => {
+            ledger.record_guard_event(
+                "ingress_malformed",
+                Some(&task.name),
+                &format!("route={route} body is not valid JSON"),
+                1,
+            )?;
+            return Ok(WebhookResponse {
+                status: 400,
+                body: "{\"error\":\"webhook body must be valid JSON\"}".to_string(),
+            });
+        }
+    };
+    for f in filter {
+        if let Some(reason) = f.reject_reason(&payload) {
+            return Ok(WebhookResponse {
+                status: 200,
+                body: serde_json::json!({ "filtered": reason }).to_string(),
+            });
         }
     }
 
-    if let Some(refusal) = reflex_admission_refusal(plane, ledger, task, "webhook")? {
+    // Derive the key before admission guards. This lets the ledger preserve
+    // duplicate dispositions even while attention debt or queue pressure is active.
+    let derived = match dedupe_key {
+        Some(expr) => match derive_dedupe_key(expr, headers, body) {
+            Ok(value) => Some(value),
+            Err(_) => return Ok(WebhookResponse {
+                status: 400,
+                body: "{\"error\":\"invalid webhook dedupe key\"}".to_string(),
+            }),
+        },
+        None => Some(format!("body:{}", body_hash(body))),
+    };
+    let key = derived.map(|k| format!("wh:{}:{k}", normalize_route(route)));
+    let duplicate = match key.as_deref() {
+        Some(key) => ledger.conn.query_row(
+            "SELECT 1 FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+            rusqlite::params![task.name, key],
+            |_row| Ok(()),
+        ).optional()?.is_some(),
+        None => false,
+    };
+
+    if !duplicate {
+        if let Some(refusal) = reflex_admission_refusal(plane, ledger, task, "webhook")? {
         return Ok(WebhookResponse {
             status: 429,
             body: serde_json::json!({
@@ -115,23 +176,38 @@ pub fn handle_webhook(
             })
             .to_string(),
         });
+        }
     }
 
-    let derived = match dedupe_key {
-        Some(expr) => Some(derive_dedupe_key(expr, headers, body)?),
-        None => Some(format!("body:{}", body_hash(body))),
-    };
-    let key = derived.map(|k| format!("wh:{route}:{k}"));
-
     let source = header(headers, "x-github-delivery").or_else(|| header(headers, "x-delivery-id"));
-    let outcome = ledger.ingest(IngressRequest {
+    let outcome = match ledger.ingest(IngressRequest {
         task: &task.name,
         trigger_kind: "webhook",
         idempotency_key: key.as_deref(),
         source_event_id: source.as_deref(),
         payload: Some(body),
         parent_run_id: None,
-    })?;
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) if error.to_string().contains("queue backpressure") => {
+            ledger.record_guard_event(
+                "queue_backpressure",
+                Some(&task.name),
+                &format!("source=webhook {error}"),
+                1,
+            )?;
+            return Ok(WebhookResponse {
+                status: 429,
+                body: serde_json::json!({
+                    "error": "queue backpressure refused reflex admission",
+                    "task": task.name,
+                    "detail": error.to_string(),
+                })
+                .to_string(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
     if let Some(action) = action {
         start_submission_storm(
             plane,
@@ -169,46 +245,81 @@ pub fn handle_workflow_webhook(
             body: format!("{{\"error\":\"secret env '{secret_env}' not set on the plane\"}}"),
         });
     };
-    if !verify_delivery_hmac(&secret, headers, body) {
+    match verify_delivery_hmac(&secret, headers, body) {
+        DeliveryVerification::Valid => {}
+        DeliveryVerification::InvalidSignature => {
+            return Ok(WebhookResponse {
+                status: 401,
+                body: "{\"error\":\"invalid signature\"}".to_string(),
+            });
+        }
+        DeliveryVerification::Stale => {
+            return Ok(WebhookResponse {
+                status: 401,
+                body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
+            });
+        }
+        DeliveryVerification::MalformedTimestamp | DeliveryVerification::IncompleteTimestampedHeaders => {
+            return Ok(WebhookResponse {
+                status: 400,
+                body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
+            });
+        }
+    }
+    if serde_json::from_str::<serde_json::Value>(body).is_err() {
         return Ok(WebhookResponse {
-            status: 401,
-            body: "{\"error\":\"invalid signature\"}".to_string(),
+            status: 400,
+            body: "{\"error\":\"webhook body must be valid JSON\"}".to_string(),
         });
     }
     let derived = match &trigger.dedupe_key {
-        Some(expr) => derive_dedupe_key(expr, headers, body)?,
+        Some(expr) => match derive_dedupe_key(expr, headers, body) {
+            Ok(value) => value,
+            Err(_) => return Ok(WebhookResponse {
+                status: 400,
+                body: "{\"error\":\"invalid workflow dedupe key\"}".to_string(),
+            }),
+        },
         None => format!("body:{}", body_hash(body)),
     };
     let route = trigger.route.as_deref().unwrap_or_default();
+<<<<<<< HEAD
     let outcome = crate::workflow_runtime::accept(
         plane,
+=======
+    let outcome = match crate::workflow_runtime::accept(
+>>>>>>> 3250d56d (fix: harden workflow runtime admission and recovery)
         ledger,
         &crate::workflow_runtime::TriggerEnvelope {
             workflow: workflow.to_string(),
             source: crate::workflow_runtime::TriggerSource::External,
             payload: Some(body.to_string()),
-            dedupe_key: Some(format!("wh:{route}:{derived}")),
+            dedupe_key: Some(format!("wh:{}:{derived}", normalize_route(route))),
         },
-    )?;
-    use crate::workflow::AcceptOutcome;
-    let (status, body) = match &outcome {
-        AcceptOutcome::Accepted { run } => (
-            202,
-            serde_json::json!({"workflow_run_id": run.id, "duplicate": false}),
-        ),
-        AcceptOutcome::Duplicate { run } => (
-            202,
-            serde_json::json!({"workflow_run_id": run.id, "duplicate": true}),
-        ),
-        AcceptOutcome::Denied { workflow, reason } => (
-            429,
-            serde_json::json!({"denied": reason, "workflow": workflow}),
-        ),
-        AcceptOutcome::Suppressed { workflow, reason } => (
-            202,
-            serde_json::json!({"suppressed": reason, "workflow": workflow}),
-        ),
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) if error.to_string().contains("payload must be JSON") => return Ok(WebhookResponse {
+            status: 400,
+            body: "{\"error\":\"invalid workflow webhook payload\"}".to_string(),
+        }),
+        Err(error) => return Err(error),
     };
+    use crate::workflow::AcceptOutcome;
+    let body = match &outcome {
+        AcceptOutcome::Accepted { run } => {
+            serde_json::json!({"workflow_run_id": run.id, "duplicate": false})
+        }
+        AcceptOutcome::Duplicate { run } => {
+            serde_json::json!({"workflow_run_id": run.id, "duplicate": true})
+        }
+        AcceptOutcome::Suppressed { workflow, reason } => {
+            serde_json::json!({"suppressed": reason, "workflow": workflow})
+        }
+        AcceptOutcome::Denied { workflow, kind, reason } => {
+            serde_json::json!({"denied": reason, "kind": kind, "workflow": workflow})
+        }
+    };
+    let status = if matches!(outcome, AcceptOutcome::Denied { .. }) { 429 } else { 202 };
     Ok(WebhookResponse {
         status,
         body: body.to_string(),
@@ -239,17 +350,36 @@ fn start_submission_storm(
     let rev = derive_dedupe_key(rev, headers, body)?;
     let repo = derive_optional(repo, headers, body)?;
     let version = derive_optional(version, headers, body)?;
+    // Refuse before opening or superseding a submission when any required
+    // member queue is saturated; this prevents parent-only partial state.
+    for kind in &gate.required {
+        let task = plane.tasks.values().find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
+            .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
+        let depth: i64 = ledger.conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+            rusqlite::params![task.name], |row| row.get(0))?;
+        if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
+            bail!("queue backpressure: task '{}' has {depth} pending runs (limit {})", task.name, Ledger::MAX_PENDING_QUEUE_DEPTH);
+        }
+    }
     let Some(submission) =
         open_webhook_submission(ledger, &change, &rev, allow_supersede, version.as_deref())?
     else {
         return Ok(());
     };
+    let mut members = Vec::with_capacity(gate.required.len());
     for kind in &gate.required {
         let task = plane
             .tasks
             .values()
             .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
+        let depth: i64 = ledger.conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+            rusqlite::params![task.name], |row| row.get(0))?;
+        if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
+            bail!("queue backpressure: task '{}' has {depth} pending runs (limit {})", task.name, Ledger::MAX_PENDING_QUEUE_DEPTH);
+        }
         let key = format!("storm:{}:{kind}", submission.id);
         let mut payload = serde_json::json!({
             "submission": submission.id,
@@ -259,16 +389,17 @@ fn start_submission_storm(
         if let Some(repo) = &repo {
             payload["repo"] = repo.clone().into();
         }
-        let payload = payload.to_string();
-        let _ = ledger.ingest(IngressRequest {
-            task: &task.name,
-            trigger_kind: "webhook",
-            idempotency_key: Some(&key),
-            source_event_id: None,
-            payload: Some(&payload),
-            parent_run_id: Some(parent_run_id),
-        })?;
+        members.push((task.name.clone(), key, payload.to_string()));
     }
+    let requests: Vec<IngressRequest<'_>> = members.iter().map(|(task, key, payload)| IngressRequest {
+        task,
+        trigger_kind: "webhook",
+        idempotency_key: Some(key),
+        source_event_id: None,
+        payload: Some(payload),
+        parent_run_id: Some(parent_run_id),
+    }).collect();
+    let _ = ledger.ingest_batch(&requests)?;
     Ok(())
 }
 
@@ -436,22 +567,66 @@ pub fn verify_hmac(secret: &str, body: &[u8], signature_header: &str) -> bool {
     mac.verify_slice(&expected).is_ok()
 }
 
-fn verify_delivery_hmac(secret: &str, headers: &[(String, String)], body: &str) -> bool {
-    if let (Some(signature), Some(timestamp), Some(delivery_id)) = (
-        header(headers, "x-canary-signature"),
-        header(headers, "x-timestamp"),
-        header(headers, "x-delivery-id"),
-    ) {
-        let signed = format!("{timestamp}.{delivery_id}.{body}");
-        return verify_hmac(secret, signed.as_bytes(), &signature);
+#[derive(Debug, PartialEq, Eq)]
+enum DeliveryVerification {
+    Valid,
+    InvalidSignature,
+    Stale,
+    MalformedTimestamp,
+    IncompleteTimestampedHeaders,
+}
+
+fn verify_delivery_hmac(
+    secret: &str,
+    headers: &[(String, String)],
+    body: &str,
+) -> DeliveryVerification {
+    let canary_signature = header(headers, "x-canary-signature");
+    let timestamp_header = header(headers, "x-timestamp");
+    let delivery_id = header(headers, "x-delivery-id");
+    if canary_signature.is_some() || timestamp_header.is_some() {
+        let (Some(signature), Some(timestamp), Some(delivery_id)) =
+            (canary_signature, timestamp_header, delivery_id)
+        else {
+            // Never downgrade a partially supplied timestamped envelope to
+            // legacy body HMAC; doing so would bypass freshness/replay policy.
+            return DeliveryVerification::IncompleteTimestampedHeaders;
+        };
+        let timestamp_text = timestamp;
+        let timestamp = match parse_delivery_timestamp(&timestamp_text) {
+            Ok(timestamp) => timestamp,
+            Err(_) => return DeliveryVerification::MalformedTimestamp,
+        };
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        if (i128::from(now) - i128::from(timestamp)).abs() > i128::from(DELIVERY_MAX_CLOCK_SKEW_SECONDS) {
+            return DeliveryVerification::Stale;
+        }
+        let signed = format!("{timestamp_text}.{delivery_id}.{body}");
+        return if verify_hmac(secret, signed.as_bytes(), &signature) {
+            DeliveryVerification::Valid
+        } else {
+            DeliveryVerification::InvalidSignature
+        };
     }
 
     ["x-hub-signature-256", "x-signature-256", "x-signature"]
         .iter()
-        .any(|name| {
-            header(headers, name)
-                .is_some_and(|signature| verify_hmac(secret, body.as_bytes(), &signature))
+        .find_map(|name| header(headers, name))
+        .map(|signature| {
+            if verify_hmac(secret, body.as_bytes(), &signature) {
+                DeliveryVerification::Valid
+            } else {
+                DeliveryVerification::InvalidSignature
+            }
         })
+        .unwrap_or(DeliveryVerification::InvalidSignature)
+}
+
+fn parse_delivery_timestamp(value: &str) -> Result<i64> {
+    if let Ok(seconds) = value.trim().parse::<i64>() {
+        return Ok(seconds);
+    }
+    Ok(OffsetDateTime::parse(value.trim(), &Rfc3339)?.unix_timestamp())
 }
 
 pub fn sign_hmac(secret: &str, body: &[u8]) -> String {
@@ -510,6 +685,34 @@ pub fn due_fires(
     until: DateTime<Utc>,
 ) -> Vec<DateTime<Utc>> {
     schedule.after(&after).take_while(|t| *t <= until).collect()
+}
+
+pub fn due_fires_bounded_for_runtime(
+    schedule: &cron::Schedule,
+    after: DateTime<Utc>,
+    until: DateTime<Utc>,
+    max_fires: usize,
+) -> (Vec<DateTime<Utc>>, usize) {
+    due_fires_bounded(schedule, after, until, max_fires)
+}
+
+fn due_fires_bounded(
+    schedule: &cron::Schedule,
+    after: DateTime<Utc>,
+    until: DateTime<Utc>,
+    max_fires: usize,
+) -> (Vec<DateTime<Utc>>, usize) {
+    let cap = max_fires.max(1);
+    let mut retained = std::collections::VecDeque::with_capacity(cap);
+    let mut total = 0usize;
+    for fire in schedule.after(&after).take_while(|t| *t <= until) {
+        total = total.saturating_add(1);
+        if retained.len() == cap {
+            retained.pop_front();
+        }
+        retained.push_back(fire);
+    }
+    (retained.into_iter().collect(), total.saturating_sub(cap))
 }
 pub fn ingest_cron_fire(
     ledger: &mut Ledger,
@@ -573,7 +776,7 @@ fn cron_catchup_inner(
     now: DateTime<Utc>,
     max_fires: u32,
 ) -> Result<CronCatchupOutcome> {
-    let fires = due_fires(schedule, last, now);
+    let (fires, bounded_skipped) = due_fires_bounded(schedule, last, now, max_fires as usize);
     if fires.is_empty() {
         return Ok(CronCatchupOutcome::default());
     }
@@ -584,18 +787,13 @@ fn cron_catchup_inner(
         };
         if refused {
             return Ok(CronCatchupOutcome {
-                skipped: fires.len(),
+                skipped: fires.len() + bounded_skipped,
                 ..Default::default()
             });
         }
     }
-    let max = max_fires.max(1) as usize;
-    let (ingest_fires, skipped) = if fires.len() > max {
-        let skipped = fires.len() - max;
-        (fires[fires.len() - max..].to_vec(), skipped)
-    } else {
-        (fires.clone(), 0)
-    };
+    let ingest_fires = fires;
+    let skipped = bounded_skipped;
     let mut outcome = CronCatchupOutcome {
         skipped,
         ..Default::default()
@@ -604,6 +802,15 @@ fn cron_catchup_inner(
         match ingest_cron_fire(ledger, task, *fire) {
             Ok(o) if o.duplicate => outcome.duplicates += 1,
             Ok(_) => outcome.ingested += 1,
+            Err(e) if e.to_string().contains("queue backpressure") => {
+                outcome.skipped += 1;
+                ledger.record_guard_event(
+                    "queue_backpressure",
+                    Some(task),
+                    &format!("source=cron {e}"),
+                    1,
+                )?;
+            }
             Err(e) => return Err(e),
         }
     }
@@ -611,7 +818,7 @@ fn cron_catchup_inner(
         ledger.record_guard_event(
             "cron_collapse",
             Some(task),
-            &format!("skipped={skipped} fired={}", fires.len()),
+            &format!("skipped={skipped} fired={}", ingest_fires.len() + skipped),
             skipped as i64,
         )?;
     }

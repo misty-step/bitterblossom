@@ -59,7 +59,7 @@ pub fn serve(root: &Path) -> Result<()> {
     }
     // Workflow runs inherited mid-execution are classified, never blindly
     // re-executed: a step attempt may already have external side effects.
-    for r in &crate::workflow_runtime::recover_inherited_workflow_runs(&ledger)? {
+    for r in &crate::workflow_runtime::recover_inherited_workflow_runs(&plane, &ledger)? {
         eprintln!(
             "recovered workflow run {} workflow={} step={} -> {}",
             r.run_id,
@@ -828,9 +828,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     if method == "POST" && path_no_query == "/api/asks" {
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
-        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-            Ok(body) => body,
-            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+            Ok(Ok(body)) => body,
+            Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
         let req: AskRaiseRequest = match serde_json::from_str(&body) {
             Ok(req) => req,
@@ -897,9 +898,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             if !read_authorized(request) {
                 return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
             }
-            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-                Ok(body) => body,
-                Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+                Ok(Ok(body)) => body,
+                Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
             };
             let req: AskAnswerRequest = match serde_json::from_str(&body) {
                 Ok(req) => req,
@@ -1069,9 +1071,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
-        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-            Ok(body) => body,
-            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+            Ok(Ok(body)) => body,
+            Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
         if method == "POST" {
             let input: ExternalRunCreate = match serde_json::from_str(&body) {
@@ -1139,9 +1142,10 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         }
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
-        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-            Ok(body) => body,
-            Err(bytes) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+        let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+            Ok(Ok(body)) => body,
+            Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
         return workflow_post(&plane, &ledger, &path_no_query, &body);
     }
@@ -1152,12 +1156,14 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let pending = ledger.runs_in_state("pending")?;
         let running = ledger.runs_in_state("running")?;
         let oldest_pending = pending.last().map(|r| r.created_at.clone());
+        let workflow_runtime = ledger.workflow_freshness_summary(300)?;
         return Ok((
             200,
             serde_json::json!({
                 "pending": pending.len(),
                 "running": running.len(),
                 "oldest_pending": oldest_pending,
+                "workflow_runtime": workflow_runtime,
             })
             .to_string(),
         ));
@@ -1165,7 +1171,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
 
     if method == "POST" {
         if let Some(route) = url.strip_prefix("/hooks/") {
-            let route = route.trim_end_matches('/').to_string();
+            let route = crate::ingress::normalize_route(route);
             let headers: Vec<(String, String)> = request
                 .headers()
                 .iter()
@@ -1177,25 +1183,40 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 })
                 .collect();
             let plane = Plane::load(root)?;
-            let task_route = ingress::webhook_target(&plane, &route).is_some();
-            // Database-defined workflows own a route only when no
-            // file-defined task claims it (migration precedence: files are
-            // the source being migrated away from, but existing routes keep
-            // working unchanged until their tasks are removed).
-            let workflow_target = if task_route {
-                None
-            } else {
-                let ledger = Ledger::open(&plane.db_path())?;
-                crate::workflow_runtime::webhook_workflow_target(&ledger, &route)?
+            let task_target = match ingress::webhook_target(&plane, &route) {
+                Ok(target) => target,
+                Err(_) => return Ok((409, serde_json::json!({
+                    "error": "webhook route is ambiguous",
+                    "route": route,
+                }).to_string())),
             };
-            if !task_route && workflow_target.is_none() {
+            let ledger = Ledger::open(&plane.db_path())?;
+            let workflow_target = match crate::workflow_runtime::webhook_workflow_target(&ledger, &route) {
+                Ok(target) => target,
+                Err(error) => {
+                    // Never choose one owner when active workflow routes are
+                    // ambiguous. Refuse before reading or accepting the body.
+                    return Ok((409, serde_json::json!({
+                        "error": "webhook route is ambiguous",
+                        "route": route,
+                        "detail": error.to_string(),
+                    }).to_string()));
+                }
+            };
+            if task_target.is_some() && workflow_target.is_some() {
+                return Ok((409, serde_json::json!({
+                    "error": "webhook route is claimed by both task and workflow",
+                    "route": route,
+                }).to_string()));
+            }
+            if task_target.is_none() && workflow_target.is_none() {
                 return Ok((404, format!("{{\"error\":\"no webhook route '{route}'\"}}")));
             }
-            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes)? {
-                Ok(body) => body,
-                Err(bytes) => {
-                    let ledger = Ledger::open(&plane.db_path())?;
-                    let owner = ingress::webhook_target(&plane, &route)
+            let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
+            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+                Ok(Ok(body)) => body,
+                Ok(Err(bytes)) => {
+                    let owner = task_target
                         .map(|(task, _)| task.name.clone())
                         .or_else(|| workflow_target.as_ref().map(|(name, _)| name.clone()));
                     if let Some(owner) = owner {
@@ -1212,7 +1233,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                     return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes));
                 }
             };
-            let mut ledger = Ledger::open(&plane.db_path())?;
+            let mut ledger = ledger;
             let resp = if let Some((workflow, trigger)) = &workflow_target {
                 ingress::handle_workflow_webhook(
                     &plane, &ledger, workflow, trigger, &headers, &body,
@@ -1434,6 +1455,7 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 workflow::AcceptOutcome::Duplicate { .. } => 200,
                 workflow::AcceptOutcome::Denied { .. } => 429,
                 workflow::AcceptOutcome::Suppressed { .. } => 202,
+                workflow::AcceptOutcome::Denied { .. } => 429,
             };
             Ok((status, serde_json::to_value(outcome)?))
         }

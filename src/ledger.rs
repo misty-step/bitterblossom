@@ -269,6 +269,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 pub const LEDGER_SCHEMA_VERSION: i64 = 1;
 
 impl Ledger {
+    pub const MAX_PENDING_QUEUE_DEPTH: i64 = 256;
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -328,6 +329,23 @@ impl Ledger {
             "estimated_cost_usd",
             "REAL NOT NULL DEFAULT 1.0",
         )?;
+        // Backfill store-era workflow runs that predate the mutable status table.
+        // Runs with step evidence are conservative operator debt; untouched runs
+        // remain queued and therefore visible to the bounded worker queue.
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_run_status (run_id, state, detail, updated_at)
+             SELECT r.id,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM workflow_step_runs s WHERE s.run_id = r.id
+                    ) THEN 'needs_attention' ELSE 'queued' END,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM workflow_step_runs s WHERE s.run_id = r.id
+                    ) THEN 'legacy run had step evidence but no status row' ELSE NULL END,
+                    r.created_at
+             FROM workflow_runs r
+             WHERE NOT EXISTS (SELECT 1 FROM workflow_run_status s WHERE s.run_id = r.id)",
+            [],
+        )?;
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS workflow_runs_dedupe
                ON workflow_runs(workflow_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
@@ -358,10 +376,38 @@ impl Ledger {
     }
 
     pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
+        // Dedupe and queue admission share one immediate transaction. The
+        // write lock makes the pending-depth check authoritative under a
+        // concurrent storm, while the duplicate lookup runs first so a
+        // redelivery remains an honest duplicate even when the queue is full.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let ts = now();
+        let existing: Option<String> = if let Some(key) = req.idempotency_key {
+            tx.query_row(
+                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                params![req.task, key],
+                |r| r.get(0),
+            )
+            .optional()?
+        } else {
+            None
+        };
+        if existing.is_none() {
+            let depth: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+                params![req.task],
+                |r| r.get(0),
+            )?;
+            if depth >= Self::MAX_PENDING_QUEUE_DEPTH {
+                bail!(
+                    "queue backpressure: task '{}' has {depth} pending runs (limit {})",
+                    req.task,
+                    Self::MAX_PENDING_QUEUE_DEPTH
+                );
+            }
+        }
 
         let candidate_id = new_id();
         let trace_id = new_id();
@@ -430,6 +476,51 @@ impl Ledger {
             duplicate,
             state,
         })
+    }
+
+    pub fn ingest_batch(&mut self, requests: &[IngressRequest<'_>]) -> Result<Vec<IngressOutcome>> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ts = now();
+        let mut accepted = Vec::with_capacity(requests.len());
+        for req in requests {
+            let existing: Option<String> = req.idempotency_key.and_then(|key| tx.query_row(
+                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                params![req.task, key], |r| r.get(0)).optional().transpose()).transpose()?;
+            if existing.is_none() {
+                let depth: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+                    params![req.task], |r| r.get(0))?;
+                if depth >= Self::MAX_PENDING_QUEUE_DEPTH {
+                    bail!("queue backpressure: task '{}' has {depth} pending runs (limit {})", req.task, Self::MAX_PENDING_QUEUE_DEPTH);
+                }
+            }
+            let candidate_id = new_id();
+            let trace_id = new_id();
+            let parked: Option<String> = tx.query_row(
+                "SELECT reason FROM parked_tasks WHERE task = ?1", params![req.task], |r| r.get(0)).optional()?;
+            let (state, reason) = match parked {
+                Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+                None => ("pending", None),
+            };
+            let inserted = tx.execute(
+                "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state, state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                 ON CONFLICT(task, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+                params![candidate_id, req.task, req.trigger_kind, req.idempotency_key, state, reason, trace_id, req.parent_run_id, req.payload, ts])?;
+            let (run_id, duplicate) = if inserted == 1 { (candidate_id, false) } else {
+                let key = req.idempotency_key.context("batch conflict requires idempotency key")?;
+                (tx.query_row("SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2", params![req.task, key], |r| r.get(0))?, true)
+            };
+            tx.execute(
+                "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id, dedupe_key, payload_hash, duplicate, received_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![run_id, req.task, req.trigger_kind, req.source_event_id, req.idempotency_key, req.payload.map(payload_hash), duplicate as i64, ts])?;
+            accepted.push((run_id, duplicate));
+        }
+        tx.commit()?;
+        accepted.into_iter().map(|(run_id, duplicate)| Ok(IngressOutcome {
+            state: self.run_state(&run_id)?, run_id, duplicate,
+        })).collect()
     }
 
     pub fn run_state(&self, run_id: &str) -> Result<String> {
@@ -784,6 +875,14 @@ impl Ledger {
         Ok(())
     }
 
+    /// Release every lease owned by a run, even when its task/workflow
+    /// declaration was renamed or removed after the process crashed.
+    pub fn release_host_leases_for_run(&self, run_id: &str) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM host_leases WHERE run_id = ?1", params![run_id])?)
+    }
+
     pub fn lease_holder(&self, host: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -836,14 +935,36 @@ impl Ledger {
             .with_context(|| format!("dead letter {id} not found"))
     }
 
+    /// Return a bounded newest-first DLQ page. Attention admission only needs
+    /// counts; operator views can request a separate bounded page explicitly.
     pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("{DLQ_SELECT} ORDER BY id DESC"))?;
+        self.list_dead_letters_page(200)
+    }
+
+    pub fn list_dead_letters_page(&self, limit: i64) -> Result<Vec<DeadLetterRow>> {
+        let limit = limit.clamp(1, 200);
+        let mut stmt = self.conn.prepare(&format!(
+            "{DLQ_SELECT} ORDER BY id DESC LIMIT ?1"
+        ))?;
         let rows = stmt
-            .query_map([], row_to_dlq)?
+            .query_map(params![limit], row_to_dlq)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn open_dead_letter_count(&self, task: Option<&str>) -> Result<i64> {
+        let mut sql = String::from("SELECT COUNT(*) FROM dead_letters WHERE acknowledged_at IS NULL");
+        let mut args = Vec::new();
+        if let Some(task) = task {
+            sql.push_str(" AND task = ?1");
+            args.push(task.to_string());
+        }
+        let count = self.conn.query_row(
+            &sql,
+            rusqlite::params_from_iter(args),
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
     pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
         let changed = self.conn.execute(
@@ -1338,14 +1459,44 @@ impl Ledger {
     pub fn runs_in_state(&self, state: &str) -> Result<Vec<RunRow>> {
         self.list_runs(None, Some(state))
     }
+    pub const DISPATCH_QUEUE_BATCH: i64 = 64;
+
     pub fn pending_runs_oldest_first(&self) -> Result<Vec<RunRow>> {
         let mut stmt = self.conn.prepare(&format!(
-            "{RUN_SELECT} WHERE state = 'pending' ORDER BY created_at ASC"
+            "{RUN_SELECT} WHERE state = 'pending' ORDER BY created_at ASC, id ASC LIMIT ?1"
         ))?;
         let rows = stmt
-            .query_map([], row_to_run)?
+            .query_map(params![Self::DISPATCH_QUEUE_BATCH], row_to_run)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn pending_run_depth(&self, task: Option<&str>) -> Result<i64> {
+        let mut sql = String::from("SELECT COUNT(*) FROM runs WHERE state = 'pending'");
+        let mut args = Vec::new();
+        if let Some(task) = task {
+            sql.push_str(" AND task = ?1");
+            args.push(task.to_string());
+        }
+        Ok(self.conn.query_row(
+            &sql,
+            rusqlite::params_from_iter(args),
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn oldest_pending_run_at(&self, task: Option<&str>) -> Result<Option<String>> {
+        let mut sql = String::from("SELECT created_at FROM runs WHERE state = 'pending'");
+        let mut args = Vec::new();
+        if let Some(task) = task {
+            sql.push_str(" AND task = ?1");
+            args.push(task.to_string());
+        }
+        sql.push_str(" ORDER BY created_at, id LIMIT 1");
+        Ok(self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))
+            .optional()?)
     }
 
     pub fn attempts(&self, run_id: &str) -> Result<Vec<AttemptRow>> {

@@ -263,10 +263,10 @@ pub fn post_run_check(task: &Task, cost_usd: Option<f64>) -> Option<Violation> {
     let (Some(max), Some(cost)) = (task.spec.budget.max_cost_per_run_usd, cost_usd) else {
         return None;
     };
-    if cost > max {
+    if cost >= max {
         return Some(Violation {
             kind: "max_cost_per_run",
-            detail: format!("run cost ${cost:.4} > max_cost_per_run_usd ${max:.2}"),
+            detail: format!("run cost ${cost:.4} >= max_cost_per_run_usd ${max:.2}"),
         });
     }
     None

@@ -345,6 +345,19 @@ enum WorkflowCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Resolve a recovered workflow run after inspecting side effects. This
+    /// explicit path releases any retained host lease before recording the
+    /// operator-selected terminal disposition.
+    Resolve {
+        run_id: String,
+        /// Terminal disposition: succeeded, failed, or stopped.
+        #[arg(long)]
+        state: String,
+        #[arg(long, default_value = "resolved by operator")]
+        reason: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Execute one accepted (queued) workflow run to a terminal state:
     /// steps commission their pinned agents, results route, guards bound
     /// cycles. Same executor the `bb serve` workflow runner uses.
@@ -1592,10 +1605,19 @@ fn run() -> Result<()> {
         }
         Command::Recover { json } => {
             let reports = recovery::recover_inherited_runs(&plane, &mut ledger)?;
+            let workflow_reports =
+                bitterblossom::workflow_runtime::recover_inherited_workflow_runs(&plane, &ledger)?;
             let output = if json {
-                serde_json::to_string_pretty(&reports)?
+                let mut all = Vec::with_capacity(reports.len() + workflow_reports.len());
+                all.extend(reports.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>()?);
+                all.extend(workflow_reports.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>()?);
+                serde_json::to_string_pretty(&all)?
             } else {
-                format!("recovered {}", reports.len())
+                format!(
+                    "recovered {} task run(s), {} workflow run(s)",
+                    reports.len(),
+                    workflow_reports.len()
+                )
             };
             println!("{output}");
         }
@@ -1929,13 +1951,31 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                     AcceptOutcome::Suppressed { workflow, reason } => {
                         println!("suppressed on '{workflow}': {reason}")
                     }
+                    AcceptOutcome::Denied { workflow, kind, reason } => {
+                        println!("denied on '{workflow}' ({kind}): {reason}")
+                    }
                 }
             }
-            if matches!(
-                outcome,
-                AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }
-            ) {
+            if matches!(outcome, AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }) {
                 std::process::exit(3);
+            }
+        }
+        WorkflowCommand::Resolve {
+            run_id,
+            state,
+            reason,
+            json,
+        } => {
+            let status = bitterblossom::workflow_runtime::resolve_workflow_run(
+                &ledger,
+                &run_id,
+                &state,
+                &reason,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("workflow run {run_id} resolved to {state}: {reason}");
             }
         }
         WorkflowCommand::Execute { run_id, json } => {
