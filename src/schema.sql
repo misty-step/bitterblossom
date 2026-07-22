@@ -245,6 +245,22 @@ CREATE TABLE IF NOT EXISTS workflow_revisions (
 -- Audit trail: every lifecycle act (created/revised/activated/paused/
 -- resumed/archived/rolled_back) plus run acceptance and paused-workflow
 -- event suppression dispositions.
+-- Immutable, activation-time launch materialization. Runtime reads this as
+-- evidence; workflow composition owns the snapshot contents and digest.
+CREATE TABLE IF NOT EXISTS workflow_step_launch_snapshots (
+  workflow_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  step TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (workflow_id, revision, step),
+  FOREIGN KEY (workflow_id, revision)
+    REFERENCES workflow_revisions(workflow_id, revision)
+);
+CREATE INDEX IF NOT EXISTS workflow_step_launch_snapshots_revision
+  ON workflow_step_launch_snapshots(workflow_id, revision);
+
 CREATE TABLE IF NOT EXISTS workflow_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workflow_id TEXT NOT NULL REFERENCES workflows(id),
