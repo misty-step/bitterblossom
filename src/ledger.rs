@@ -423,13 +423,19 @@ impl Ledger {
     }
 
     pub fn ingest(&mut self, req: IngressRequest<'_>) -> Result<IngressOutcome> {
-        // Dedupe and queue admission share one immediate transaction. The
-        // write lock makes the pending-depth check authoritative under a
-        // concurrent storm, while the duplicate lookup runs first so a
-        // redelivery remains an honest duplicate even when the queue is full.
+        // Dedupe and queue admission share one immediate transaction.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let outcome = Self::ingest_in_transaction(&tx, req)?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    fn ingest_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        req: IngressRequest<'_>,
+    ) -> Result<IngressOutcome> {
         let ts = now();
         let existing: Option<String> = if let Some(key) = req.idempotency_key {
             tx.query_row(
@@ -516,14 +522,53 @@ impl Ledger {
                 ts
             ],
         )?;
-        tx.commit()?;
 
-        let state = self.run_state(&run_id)?;
+        let state: String = tx.query_row(
+            "SELECT state FROM runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )?;
         Ok(IngressOutcome {
             run_id,
             duplicate,
             state,
         })
+    }
+
+    /// Answer a parked ask and enqueue its resume as one transaction. Queue
+    /// pressure rolls back both mutations, leaving the ask retryable.
+    pub fn answer_ask_and_resume(
+        &mut self,
+        id: &str,
+        answer: &str,
+        answered_by: &str,
+        resume: IngressRequest<'_>,
+    ) -> Result<(AskRow, IngressOutcome)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE asks SET answer = ?2, answered_at = ?3, answered_by = ?4,
+               state = 'answered', updated_at = ?3
+             WHERE id = ?1 AND answer IS NULL",
+            params![id, answer, now(), answered_by],
+        )?;
+        if changed != 1 {
+            let current = tx.query_row(
+                &format!("{ASK_SELECT} WHERE id = ?1"),
+                params![id],
+                row_to_ask,
+            )?;
+            bail!("ask {id} already answered at {:?}", current.answered_at);
+        }
+        let ask = tx.query_row(
+            &format!("{ASK_SELECT} WHERE id = ?1"),
+            params![id],
+            row_to_ask,
+        )?;
+        let outcome = Self::ingest_in_transaction(&tx, resume)?;
+        tx.commit()?;
+        Ok((ask, outcome))
     }
 
     /// Admit a webhook submission storm as one write transaction.

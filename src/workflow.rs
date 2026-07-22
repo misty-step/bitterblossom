@@ -358,10 +358,10 @@ impl WorkflowDoc {
         if self
             .policies
             .max_cost_per_run_usd
-            .is_some_and(|cost| !cost.is_finite() || cost <= 0.0)
+            .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
         {
             bail!(
-                "workflow '{}': policies.max_cost_per_run_usd must be finite and > 0",
+                "workflow '{}': policies.max_cost_per_run_usd must be finite and >= 0",
                 self.name
             );
         }
@@ -1199,6 +1199,9 @@ impl Ledger {
                 }
             };
             let deny = |kind: &str, reason: String| -> Result<AcceptOutcome> {
+                if kind == "workflow_daily_ceiling" {
+                    self.workflow_audit(&wf.id, kind, Some(&reason))?;
+                }
                 self.workflow_audit(&wf.id, "run_denied", Some(&format!("kind={kind} {reason}")))?;
                 Ok(AcceptOutcome::Denied {
                     workflow: wf.name.clone(),

@@ -1681,11 +1681,11 @@ fn final_spend_breach(
         .workflow_run_status(&run.id)?
         .and_then(|status| status.cost_usd)
         .unwrap_or(current_cost);
-    if total <= max_cost {
+    if total < max_cost {
         return Ok(None);
     }
     Ok(Some(format!(
-        "spend guard: observed run total ${:.4} (workflow final cost cap {}: current step ${:.4}) > max_cost_per_run_usd ${:.2}", total, side_effect_policy, current_cost, max_cost
+        "spend guard: observed run total ${:.4} (workflow final cost cap {}: current step ${:.4}) >= max_cost_per_run_usd ${:.2}", total, side_effect_policy, current_cost, max_cost
     )))
 }
 
