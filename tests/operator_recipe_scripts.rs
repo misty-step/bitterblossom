@@ -699,6 +699,7 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
     set_mode(&env_file, 0o644);
 
     let launch_log = dir.path().join("launchctl.log");
+    let plutil_log = dir.path().join("plutil.log");
     let launchctl = fake_bin.join("launchctl");
     fs::write(
         &launchctl,
@@ -706,6 +707,16 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
     )
     .unwrap();
     make_executable(&launchctl);
+    let uname = fake_bin.join("uname");
+    fs::write(&uname, "#!/bin/sh\nprintf '%s\\n' Linux\n").unwrap();
+    make_executable(&uname);
+    let plutil = fake_bin.join("plutil");
+    fs::write(
+        &plutil,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BB_PLUTIL_LOG\"\nexit 127\n",
+    )
+    .unwrap();
+    make_executable(&plutil);
     let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap());
     let install_dir = home.join(".local/libexec/bitterblossom");
     let installer = repo.join("scripts/install-bb-local-primary.sh");
@@ -718,6 +729,7 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
             .env("BB_INSTALL_DIR", &install_dir)
             .env("BB_LOG_DIR", home.join(".local/state/bitterblossom"))
             .env("BB_LAUNCH_LOG", &launch_log)
+            .env("BB_PLUTIL_LOG", &plutil_log)
             .env("PATH", &path)
             .output()
             .unwrap()
@@ -742,6 +754,42 @@ fn local_primary_installer_stages_release_atomically_and_requires_explicit_legac
     assert!(rendered.contains("BB_LOCAL_PRIMARY_BIN"));
     assert!(rendered.contains(&install_dir.join("bb").display().to_string()));
     assert!(rendered.contains("repo&amp;xml"));
+    assert!(
+        !plutil_log.exists(),
+        "Linux validation must not invoke plutil: {}",
+        fs::read_to_string(&plutil_log).unwrap_or_default()
+    );
+
+    let serve_template = repo.join("deploy/launchd/com.misty-step.bb-serve.plist.template");
+    let valid_serve_template = fs::read(&serve_template).unwrap();
+    fs::write(&serve_template, "<plist><dict>").unwrap();
+    fs::remove_file(&launch_log).unwrap();
+    let malformed = run(&[]);
+    assert!(!malformed.status.success());
+    assert!(String::from_utf8_lossy(&malformed.stderr).contains("invalid launchd plist"));
+    assert!(
+        !launch_log.exists() || fs::read_to_string(&launch_log).unwrap().is_empty(),
+        "malformed plist must fail before launchctl mutation"
+    );
+    fs::write(&serve_template, valid_serve_template).unwrap();
+
+    fs::write(&uname, "#!/bin/sh\nprintf '%s\\n' Darwin\n").unwrap();
+    fs::write(
+        &plutil,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BB_PLUTIL_LOG\"\nexit 0\n",
+    )
+    .unwrap();
+    let macos_check = run(&[]);
+    assert!(
+        macos_check.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&macos_check.stdout),
+        String::from_utf8_lossy(&macos_check.stderr)
+    );
+    let plutil_calls = fs::read_to_string(&plutil_log).unwrap();
+    assert!(plutil_calls.contains("-lint"));
+    assert!(plutil_calls.contains("com.misty-step.bb-serve.plist"));
+    assert!(plutil_calls.contains("com.misty-step.bb-plane-litestream.plist"));
 
     let legacy = home.join("Library/LaunchAgents/com.misty-step.bb-dashboard.plist");
     fs::write(&legacy, "legacy").unwrap();

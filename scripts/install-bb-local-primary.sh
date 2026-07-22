@@ -67,7 +67,9 @@ tmp_bin=
 python3 - "$repo_dir" "$log_dir" "$plist_dir" "$install_bin" <<'PY'
 import os
 import pathlib
+import plistlib
 import sys
+from xml.parsers.expat import ExpatError
 from xml.sax.saxutils import escape
 repo, log_dir, plist_dir, install_bin = map(pathlib.Path, sys.argv[1:])
 source = repo / "deploy" / "launchd"
@@ -76,6 +78,7 @@ replacements = {
     "__BB_LOG_DIR__": escape(str(log_dir)),
     "__BB_INSTALL_BIN__": escape(str(install_bin)),
 }
+rendered_plists = []
 for name in ("com.misty-step.bb-serve", "com.misty-step.bb-plane-litestream"):
     template = (source / f"{name}.plist.template").read_text()
     rendered = template
@@ -84,20 +87,37 @@ for name in ("com.misty-step.bb-serve", "com.misty-step.bb-plane-litestream"):
     destination = pathlib.Path(plist_dir) / f"{name}.plist"
     temporary = destination.with_name(destination.name + ".tmp")
     temporary.write_text(rendered)
+    rendered_plists.append((destination, temporary))
+for destination, temporary in rendered_plists:
+    try:
+        with temporary.open("rb") as stream:
+            plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException, ExpatError, ValueError) as error:
+        for _, candidate in rendered_plists:
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                pass
+        print(
+            f"install local-primary: invalid launchd plist {destination}: {error}; "
+            "fix the rendered XML before bootout",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+for destination, temporary in rendered_plists:
     os.replace(temporary, destination)
 PY
 
-uid=$(id -u)
+if [ "$(uname -s)" = "Darwin" ] && command -v plutil >/dev/null 2>&1; then
+  for plist in "$plist_dir/com.misty-step.bb-serve.plist" "$plist_dir/com.misty-step.bb-plane-litestream.plist"; do
+    plutil -lint "$plist" >/dev/null || {
+      echo "install local-primary: invalid launchd plist $plist; fix the rendered XML before bootout" >&2
+      exit 2
+    }
+  done
+fi
 
-lint_plist() {
-  plist=$1
-  plutil -lint "$plist" >/dev/null || {
-    echo "install local-primary: invalid launchd plist $plist; fix the rendered XML before bootout" >&2
-    exit 2
-  }
-}
-lint_plist "$plist_dir/com.misty-step.bb-serve.plist"
-lint_plist "$plist_dir/com.misty-step.bb-plane-litestream.plist"
+uid=$(id -u)
 wait_for_bootout() {
   label=$1
   attempts=0
