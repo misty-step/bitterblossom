@@ -62,7 +62,9 @@ fn legacy_resolve_closes_open_attempt_and_releases_lease() {
         .unwrap();
     let attempt_id = ledger.attempts(&run_id).unwrap()[0].id;
     ledger.set_attempt_phase(attempt_id, "executing").unwrap();
-    assert!(ledger.try_acquire_host_lease("legacy-host", &run_id).unwrap());
+    assert!(ledger
+        .try_acquire_host_lease("legacy-host", &run_id)
+        .unwrap());
 
     ledger
         .resolve_run(&run_id, "failure", "operator resolved after restart")
@@ -139,15 +141,17 @@ fn legacy_workflow_event_table_backfills_run_id_for_readback() {
     };
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("DROP TABLE workflow_events;
+        conn.execute_batch(
+            "DROP TABLE workflow_events;
             CREATE TABLE workflow_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 workflow_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 data TEXT,
                 at TEXT NOT NULL
-            );")
-            .unwrap();
+            );",
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO workflow_events (workflow_id, kind, data, at) VALUES (?1, 'legacy', 'old', '2026-01-01T00:00:00Z')",
             params![workflow_id],
@@ -346,7 +350,10 @@ fn task_workflow_route_collision_fails_at_activation() {
             &["/shared-route/".to_string()],
         )
         .unwrap_err();
-    assert!(error.to_string().contains("already owned by a task"), "{error:#}");
+    assert!(
+        error.to_string().contains("already owned by a task"),
+        "{error:#}"
+    );
 }
 
 #[test]

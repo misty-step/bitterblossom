@@ -225,7 +225,10 @@ fn run_cron_tick(
         ) {
             Ok(o) => {
                 if o.skipped > 0 {
-                    eprintln!("cron: task {task} refused/collapsed {} skipped fires", o.skipped);
+                    eprintln!(
+                        "cron: task {task} refused/collapsed {} skipped fires",
+                        o.skipped
+                    );
                 }
                 last_by_task.insert(task, now);
             }

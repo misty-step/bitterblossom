@@ -48,7 +48,10 @@ impl Substrate for LocalSubstrate {
         let Ok(pid) = lines.next().unwrap_or_default().trim().parse::<i32>() else {
             return ProbeResult::Unknown("unparseable pidfile".into());
         };
-        let identity = lines.next().map(str::trim).filter(|value| !value.is_empty());
+        let identity = lines
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let errno = unsafe { libc::kill(pid, 0) };
         if errno == 0 {
             if let Some(expected) = identity {
@@ -65,7 +68,10 @@ impl Substrate for LocalSubstrate {
         } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
             ProbeResult::Dead
         } else {
-            ProbeResult::Unknown(format!("pid probe failed: {}", std::io::Error::last_os_error()))
+            ProbeResult::Unknown(format!(
+                "pid probe failed: {}",
+                std::io::Error::last_os_error()
+            ))
         }
     }
 }
