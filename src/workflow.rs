@@ -236,6 +236,33 @@ impl LaunchSnapshot {
         }
         Ok(())
     }
+
+    /// Resolve one ordered fallback into a run-local launch snapshot. Index 0
+    /// is the primary composition; fallback entries are numbered from 1.
+    /// The immutable activation row is never changed. The resolved clone keeps
+    /// the original fallback list for audit and recomputes its own digest.
+    pub(crate) fn resolve_fallback(&self, index: usize) -> Result<Self> {
+        if index > self.fallbacks.len() {
+            bail!(
+                "fallback index {index} is out of range ({} declared)",
+                self.fallbacks.len()
+            );
+        }
+        let mut resolved = self.clone();
+        if index > 0 {
+            let fallback = &self.fallbacks[index - 1];
+            resolved.provider = fallback.provider.clone().or_else(|| self.provider.clone());
+            resolved.model = fallback.model.clone();
+            resolved.effort = fallback.effort.clone();
+            resolved.skills = fallback.skills.clone();
+            resolved.mcps = fallback.mcps.clone();
+            resolved.tool_rules = fallback.tool_rules.clone();
+            resolved.context_inputs = fallback.context_inputs.clone();
+            resolved.fallback_index = index;
+            resolved.digest = resolved.digest_without_self()?;
+        }
+        Ok(resolved)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

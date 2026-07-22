@@ -1305,6 +1305,9 @@ enum StepDisposition {
         outcome: Option<String>,
         summary: Option<String>,
     },
+    /// The launch never reached adapter execution; an ordered fallback may
+    /// consume this bounded attempt without replaying post-start work.
+    PreExecFailed(String),
     Failed(String),
     Incomplete(String),
     Stopped(String),
@@ -1509,6 +1512,9 @@ fn execute_claimed(
 
         let snapshot = load_launch_snapshot(ledger, run, &step.name)?;
         match run_step(plane, ledger, run, &doc, step, &snapshot)? {
+            StepDisposition::PreExecFailed(error) => {
+                break ("failed", Some(error), "workflow_run_failed");
+            }
             StepDisposition::Failed(error) => {
                 break ("failed", Some(error), "workflow_run_failed");
             }
@@ -1833,6 +1839,36 @@ fn run_step(
     step: &WorkflowStep,
     snapshot: &LaunchSnapshot,
 ) -> Result<StepDisposition> {
+    for index in 0..=snapshot.fallbacks.len() {
+        let resolved = snapshot.resolve_fallback(index)?;
+        match run_step_once(plane, ledger, run, doc, step, &resolved)? {
+            StepDisposition::PreExecFailed(error) if index < snapshot.fallbacks.len() => {
+                let next = index + 1;
+                ledger.record_guard_event(
+                    "workflow_fallback_selected",
+                    Some(&run.workflow),
+                    &format!(
+                        "step '{}' launch failed at composition index {index}; selected fallback index {next}: {error}",
+                        step.name
+                    ),
+                    1,
+                )?;
+            }
+            StepDisposition::PreExecFailed(error) => return Ok(StepDisposition::Failed(error)),
+            disposition => return Ok(disposition),
+        }
+    }
+    unreachable!("fallback loop always returns a disposition")
+}
+
+fn run_step_once(
+    plane: &Plane,
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    doc: &WorkflowDoc,
+    step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
+) -> Result<StepDisposition> {
     let attempt = ledger.next_workflow_attempt(&run.id)?;
     let attempt_dir = plane
         .root
@@ -1852,7 +1888,7 @@ fn run_step(
     )?;
     ledger.set_workflow_run_current_step(&run.id, &step.name)?;
 
-    let fail = |error: String, stats: &AttemptStats| -> Result<StepDisposition> {
+    let fail_terminal = |error: String, stats: &AttemptStats| -> Result<StepDisposition> {
         ledger.finish_workflow_step_run(
             &step_run_id,
             "failed",
@@ -1867,6 +1903,34 @@ fn run_step(
             step.name
         )))
     };
+    let fail_pre_exec = |error: String| -> Result<StepDisposition> {
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "failed",
+            None,
+            None,
+            Some(&error),
+            None,
+            &AttemptStats::default(),
+        )?;
+        Ok(StepDisposition::PreExecFailed(format!(
+            "step '{}' attempt {attempt}: {error}",
+            step.name
+        )))
+    };
+    let fail_stopped = |error: String, stats: &AttemptStats| -> Result<StepDisposition> {
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "failed",
+            None,
+            None,
+            Some(&error),
+            None,
+            stats,
+        )?;
+        ledger.record_guard_event("workflow_guard_spend_invalid", Some(&run.workflow), &error, 1)?;
+        Ok(StepDisposition::Stopped(format!("step '{}' attempt {attempt}: {error}", step.name)))
+    };
     let none = AttemptStats::default();
     if let Some(v) = budget::metered_parent_key_violation(
         &step.agent.name,
@@ -1877,7 +1941,7 @@ fn run_step(
         None,
         None,
     ) {
-        return fail(v.detail, &none);
+        return fail_pre_exec(v.detail);
     }
     let stop = |reason: String| -> Result<StepDisposition> {
         ledger.finish_workflow_step_run(
@@ -1897,13 +1961,13 @@ fn run_step(
 
     let bundle = match load_bundle(snapshot) {
         Ok(b) => b,
-        Err(e) => return fail(format!("{e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("{e:#}")),
     };
     let agent = agent_spec_from(snapshot);
     let hermetic = match agent.auth_class() {
         Ok(AuthClass::Api) => true,
         Ok(AuthClass::Subscription) => false,
-        Err(e) => return fail(format!("{e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("{e:#}")),
     };
     let budget = TaskBudget {
         timeout_minutes: Some(
@@ -1915,28 +1979,27 @@ fn run_step(
     };
     let cmd = match harness::build_command(&agent, &budget) {
         Ok(c) => c,
-        Err(e) => return fail(format!("build_command: {e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("build_command: {e:#}")),
     };
     let mut secrets = Vec::new();
     for name in &snapshot.secret_refs {
         match std::env::var(name) {
             Ok(value) => secrets.push((name.clone(), value)),
-            Err(_) => return fail(format!("secret env var '{name}' not set"), &none),
+            Err(_) => return fail_pre_exec(format!("secret env var '{name}' not set")),
         }
     }
 
     let substrate_kind = doc.policies.substrate.as_deref().unwrap_or("local");
     if substrate_kind == "local" && !plane.spec.dev && !plane.spec.allow_local_substrate {
-        return fail(
+        return fail_pre_exec(
             "substrate 'local' requires `allow_local_substrate = true` in production \
              or `dev = true` for development/test"
                 .to_string(),
-            &none,
         );
     }
     let substrate = match substrate::for_task(substrate_kind) {
         Ok(s) => s,
-        Err(e) => return fail(format!("{e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("{e:#}")),
     };
     let host = step
         .host
@@ -1964,9 +2027,8 @@ fn run_step(
         }
         if lease_started.elapsed() >= lease_wait {
             let holder = ledger.lease_holder(&host)?;
-            return fail(
+            return fail_pre_exec(
                 format!("host lease '{host}' is held by run {holder:?} after bounded wait"),
-                &none,
             );
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -1978,7 +2040,7 @@ fn run_step(
     };
     let mut session = match substrate.acquire(&host, &attempt_dir) {
         Ok(s) => s,
-        Err(e) => return fail(format!("acquire: {e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("acquire: {e:#}")),
     };
 
     let card = commission(doc, step, snapshot, bundle.as_ref().map(|(text, _)| text.as_str()));
@@ -2017,7 +2079,7 @@ fn run_step(
     };
     if let Err(e) = session.prepare(&plan) {
         let _ = session.release();
-        return fail(format!("prepare: {e:#}"), &none);
+        return fail_pre_exec(format!("prepare: {e:#}"));
     }
 
     let timeout = Duration::from_secs(60 * budget.timeout_minutes.unwrap_or(1));
@@ -2057,7 +2119,7 @@ fn run_step(
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
-            return fail(format!("execute: {e:#}"), &none);
+            return fail_terminal(format!("execute: {e:#}"), &none);
         }
     };
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;
@@ -2150,7 +2212,7 @@ fn run_step(
     }
     if let Some(cost) = parsed.stats.cost_usd {
         if !cost.is_finite() || cost < 0.0 {
-            return fail(
+            return fail_stopped(
                 format!("harness reported unusable cost_usd {cost}"),
                 &parsed.stats,
             );
@@ -2190,7 +2252,7 @@ fn run_step(
     if children_path.exists() {
         let size = std::fs::metadata(&children_path)?.len();
         if size > MAX_CONTRACT_FILE_BYTES {
-            return fail(
+            return fail_terminal(
                 format!("{CHILD_AGENTS_FILENAME} is {size} bytes (max {MAX_CONTRACT_FILE_BYTES})"),
                 &parsed.stats,
             );
@@ -2199,7 +2261,7 @@ fn run_step(
         let decls: Vec<ChildDecl> = match serde_json::from_str(&text) {
             Ok(d) => d,
             Err(e) => {
-                return fail(
+                return fail_terminal(
                     format!("malformed {CHILD_AGENTS_FILENAME}: {e}"),
                     &parsed.stats,
                 )
@@ -2207,7 +2269,7 @@ fn run_step(
         };
         for decl in &decls {
             if decl.name.trim().is_empty() {
-                return fail(
+                return fail_terminal(
                     format!("{CHILD_AGENTS_FILENAME}: child agent name is required"),
                     &parsed.stats,
                 );
@@ -2216,7 +2278,7 @@ fn run_step(
                 // Declared spend only ever adds: a negative entry would
                 // silently offset siblings' costs inside the enforced sum.
                 if cost < 0.0 || !cost.is_finite() {
-                    return fail(
+                    return fail_terminal(
                         format!(
                             "{CHILD_AGENTS_FILENAME}: child agent '{}' declares negative \
                              cost_usd {cost}; declared spend only ever adds",
@@ -2230,7 +2292,7 @@ fn run_step(
                 None => (snapshot.authority.clone(), true),
                 Some(declared) => {
                     if let Some(excess) = declared.iter().find(|a| !snapshot.authority.contains(a)) {
-                        return fail(
+                        return fail_terminal(
                             format!(
                                 "child agent '{}' declares authority {excess:?} beyond its \
                                  parent step grant {:?}; children inherit or narrow, never broaden",

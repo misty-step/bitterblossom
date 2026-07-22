@@ -1601,22 +1601,17 @@ echo spun"#,
         )
         .unwrap();
     }
-    let run_id = accept_test_run(root, "prerule");
-
-    let refused = bb(root, &["workflow", "execute", &run_id]);
-    assert!(
-        !refused.status.success(),
-        "a pinned revision failing current validation executed anyway"
-    );
-    let view = bb_json(root, &["workflow", "run-show", &run_id, "--json"]);
-    assert_eq!(view["status"]["state"], "failed", "{view}");
-    let detail = view["status"]["detail"].as_str().unwrap();
-    assert!(detail.contains("validation"), "{detail}");
-    assert_eq!(
-        view["steps"].as_array().unwrap().len(),
-        0,
-        "no step may execute under a doc failing current validation: {view}"
-    );
+    // Invalid current validation is denied at acceptance because the
+    // revision has no verified executable snapshot. No run row is created.
+    let refused = bb(root, &["workflow", "accept", "prerule", "--trigger", "test", "--json"]);
+    assert!(!refused.status.success(), "invalid pinned revision was accepted");
+    let denied: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(denied["disposition"], "denied", "{denied}");
+    assert_eq!(denied["kind"], "launch_snapshot", "{denied}");
+    assert!(denied["reason"].as_str().unwrap().contains("validation"), "{denied}");
+    let run_count: i64 = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap()
+        .query_row("SELECT COUNT(*) FROM workflow_runs WHERE workflow_id = (SELECT id FROM workflows WHERE name = 'prerule')", [], |r| r.get(0)).unwrap();
+    assert_eq!(run_count, 0, "denied acceptance must not create a run");
 }
 
 /// BLOCKER 2 (defense-in-depth): even when every declared guard is huge, the
@@ -1989,7 +1984,7 @@ bin = "{}"
     create_and_activate(root, &doc, "refund");
     let run_id = accept_test_run(root, "refund");
     let view = execute(root, &run_id);
-    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
     let detail = view["status"]["detail"].as_str().unwrap();
     assert!(detail.contains("negative"), "{detail}");
     assert!(detail.contains("helper"), "{detail}");
@@ -2253,7 +2248,7 @@ bin = "{}"
     let refused = bb(root, &["workflow", "execute", run_id, "--json"]);
     assert!(!refused.status.success(), "legacy execution unexpectedly launched");
     let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(stderr.contains("activate the revision"), "{stderr}");
+    assert!(stderr.contains("reactivation"), "{stderr}");
     assert!(stderr.contains("launch snapshot"), "{stderr}");
 
     bb_ok(root, &["workflow", "pause", "elder"]);
