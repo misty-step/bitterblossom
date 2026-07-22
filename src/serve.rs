@@ -603,8 +603,16 @@ fn handle_one_request(root: &Path, mut request: tiny_http::Request) {
     let (status, body) = match response {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            report_runtime_error("http request", "bb.http.request", &e);
-            (500, format!("{{\"error\":\"{e}\"}}"))
+            if let Some(client) = e.downcast_ref::<ingress::IngressClientError>() {
+                let status = match client {
+                    ingress::IngressClientError::BadRequest(_) => 400,
+                    ingress::IngressClientError::Backpressure(_) => 429,
+                };
+                (status, json_error(client.to_string()))
+            } else {
+                report_runtime_error("http request", "bb.http.request", &e);
+                (500, json_error(e.to_string()))
+            }
         }
         Err(panic) => {
             let payload = panic
@@ -829,7 +837,12 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
-            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+            Err(error) => {
+                return Ok((
+                    400,
+                    json_error(format!("request body must be valid UTF-8: {error}")),
+                ))
+            }
             Ok(Ok(body)) => body,
             Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
@@ -899,9 +912,16 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
             }
             let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
-            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+                Err(error) => {
+                    return Ok((
+                        400,
+                        json_error(format!("request body must be valid UTF-8: {error}")),
+                    ))
+                }
                 Ok(Ok(body)) => body,
-                Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
+                Ok(Err(bytes)) => {
+                    return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes))
+                }
             };
             let req: AskAnswerRequest = match serde_json::from_str(&body) {
                 Ok(req) => req,
@@ -1072,7 +1092,12 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let ledger = Ledger::open(&plane.db_path())?;
         let path = url.split('?').next().unwrap_or(&url);
         let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
-            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+            Err(error) => {
+                return Ok((
+                    400,
+                    json_error(format!("request body must be valid UTF-8: {error}")),
+                ))
+            }
             Ok(Ok(body)) => body,
             Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
@@ -1143,7 +1168,12 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
-            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+            Err(error) => {
+                return Ok((
+                    400,
+                    json_error(format!("request body must be valid UTF-8: {error}")),
+                ))
+            }
             Ok(Ok(body)) => body,
             Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
@@ -1185,51 +1215,57 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             let plane = Plane::load(root)?;
             let task_target = match ingress::webhook_target(&plane, &route) {
                 Ok(target) => target,
-                Err(_) => return Ok((409, serde_json::json!({
-                    "error": "webhook route is ambiguous",
-                    "route": route,
-                }).to_string())),
-            };
-            let ledger = Ledger::open(&plane.db_path())?;
-            let workflow_target = match crate::workflow_runtime::webhook_workflow_target(&ledger, &route) {
-                Ok(target) => target,
-                Err(error) => {
-                    // Never choose one owner when active workflow routes are
-                    // ambiguous. Refuse before reading or accepting the body.
-                    return Ok((409, serde_json::json!({
-                        "error": "webhook route is ambiguous",
-                        "route": route,
-                        "detail": error.to_string(),
-                    }).to_string()));
+                Err(_) => {
+                    return Ok((
+                        409,
+                        serde_json::json!({
+                            "error": "webhook route is ambiguous",
+                            "route": route,
+                        })
+                        .to_string(),
+                    ))
                 }
             };
+            let ledger = Ledger::open(&plane.db_path())?;
+            let workflow_target =
+                match crate::workflow_runtime::webhook_workflow_target(&ledger, &route) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        // Never choose one owner when active workflow routes are
+                        // ambiguous. Refuse before reading or accepting the body.
+                        return Ok((
+                            409,
+                            serde_json::json!({
+                                "error": "webhook route is ambiguous",
+                                "route": route,
+                                "detail": error.to_string(),
+                            })
+                            .to_string(),
+                        ));
+                    }
+                };
             if task_target.is_some() && workflow_target.is_some() {
-                return Ok((409, serde_json::json!({
-                    "error": "webhook route is claimed by both task and workflow",
-                    "route": route,
-                }).to_string()));
+                return Ok((
+                    409,
+                    serde_json::json!({
+                        "error": "webhook route is claimed by both task and workflow",
+                        "route": route,
+                    })
+                    .to_string(),
+                ));
             }
             if task_target.is_none() && workflow_target.is_none() {
                 return Ok((404, format!("{{\"error\":\"no webhook route '{route}'\"}}")));
             }
             let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
-            Err(error) => return Ok((400, json_error(format!("request body must be valid UTF-8: {error}")))),
+                Err(error) => {
+                    return Ok((
+                        400,
+                        json_error(format!("request body must be valid UTF-8: {error}")),
+                    ))
+                }
                 Ok(Ok(body)) => body,
                 Ok(Err(bytes)) => {
-                    let owner = task_target
-                        .map(|(task, _)| task.name.clone())
-                        .or_else(|| workflow_target.as_ref().map(|(name, _)| name.clone()));
-                    if let Some(owner) = owner {
-                        ledger.record_guard_event(
-                            "ingress_oversized",
-                            Some(&owner),
-                            &format!(
-                                "route={route} bytes={bytes} max={}",
-                                plane.spec.ingress.max_body_bytes
-                            ),
-                            1,
-                        )?;
-                    }
                     return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes));
                 }
             };
@@ -1401,7 +1437,11 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
             let revision = args.get("revision").and_then(|v| v.as_i64());
             Ok((
                 200,
-                serde_json::to_value(ledger.activate_workflow(name, revision)?)?,
+                serde_json::to_value(ledger.activate_workflow_with_reserved_routes(
+                    name,
+                    revision,
+                    &ingress::task_webhook_routes(plane),
+                )?)?,
             ))
         }
         "pause" => {
@@ -1414,14 +1454,24 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 serde_json::to_value(ledger.pause_workflow(name, reason)?)?,
             ))
         }
-        "resume" => Ok((200, serde_json::to_value(ledger.resume_workflow(name)?)?)),
+        "resume" => Ok((
+            200,
+            serde_json::to_value(ledger.resume_workflow_with_reserved_routes(
+                name,
+                &ingress::task_webhook_routes(plane),
+            )?)?,
+        )),
         "archive" => Ok((200, serde_json::to_value(ledger.archive_workflow(name)?)?)),
         "rollback" => {
             let to = args
                 .get("to")
                 .and_then(|v| v.as_i64())
                 .context("pass {\"to\": <revision>}")?;
-            let (wf, revision) = ledger.rollback_workflow(name, to)?;
+            let (wf, revision) = ledger.rollback_workflow_with_reserved_routes(
+                name,
+                to,
+                &ingress::task_webhook_routes(plane),
+            )?;
             Ok((
                 200,
                 serde_json::json!({ "workflow": wf, "revision": revision }),

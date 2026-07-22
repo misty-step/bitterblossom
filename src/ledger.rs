@@ -329,6 +329,7 @@ impl Ledger {
             "estimated_cost_usd",
             "REAL NOT NULL DEFAULT 1.0",
         )?;
+        ensure_column(&conn, "workflow_events", "run_id", "TEXT")?;
         // Backfill store-era workflow runs that predate the mutable status table.
         // Runs with step evidence are conservative operator debt; untouched runs
         // remain queued and therefore visible to the bounded worker queue.
@@ -478,26 +479,78 @@ impl Ledger {
         })
     }
 
+    /// Remove a newly admitted submission storm tree when member admission
+    /// fails. Parent, members, ingress events, and the opened submission are
+    /// deleted in one transaction so no partial irreversible admission remains.
+    pub fn rollback_ingress_storm(
+        &mut self,
+        parent_run_id: &str,
+        submission_id: Option<&str>,
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM ingress_events
+             WHERE run_id = ?1 OR run_id IN (SELECT id FROM runs WHERE parent_run_id = ?1)",
+            params![parent_run_id],
+        )?;
+        if let Some(submission_id) = submission_id {
+            tx.execute(
+                "DELETE FROM submissions WHERE id = ?1",
+                params![submission_id],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM runs WHERE id = ?1 OR parent_run_id = ?1",
+            params![parent_run_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn ingest_batch(&mut self, requests: &[IngressRequest<'_>]) -> Result<Vec<IngressOutcome>> {
-        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let ts = now();
         let mut accepted = Vec::with_capacity(requests.len());
         for req in requests {
-            let existing: Option<String> = req.idempotency_key.and_then(|key| tx.query_row(
-                "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
-                params![req.task, key], |r| r.get(0)).optional().transpose()).transpose()?;
+            let existing: Option<String> = req
+                .idempotency_key
+                .and_then(|key| {
+                    tx.query_row(
+                        "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                        params![req.task, key],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .transpose()
+                })
+                .transpose()?;
             if existing.is_none() {
                 let depth: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-                    params![req.task], |r| r.get(0))?;
+                    params![req.task],
+                    |r| r.get(0),
+                )?;
                 if depth >= Self::MAX_PENDING_QUEUE_DEPTH {
-                    bail!("queue backpressure: task '{}' has {depth} pending runs (limit {})", req.task, Self::MAX_PENDING_QUEUE_DEPTH);
+                    bail!(
+                        "queue backpressure: task '{}' has {depth} pending runs (limit {})",
+                        req.task,
+                        Self::MAX_PENDING_QUEUE_DEPTH
+                    );
                 }
             }
             let candidate_id = new_id();
             let trace_id = new_id();
-            let parked: Option<String> = tx.query_row(
-                "SELECT reason FROM parked_tasks WHERE task = ?1", params![req.task], |r| r.get(0)).optional()?;
+            let parked: Option<String> = tx
+                .query_row(
+                    "SELECT reason FROM parked_tasks WHERE task = ?1",
+                    params![req.task],
+                    |r| r.get(0),
+                )
+                .optional()?;
             let (state, reason) = match parked {
                 Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
                 None => ("pending", None),
@@ -507,9 +560,20 @@ impl Ledger {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
                  ON CONFLICT(task, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
                 params![candidate_id, req.task, req.trigger_kind, req.idempotency_key, state, reason, trace_id, req.parent_run_id, req.payload, ts])?;
-            let (run_id, duplicate) = if inserted == 1 { (candidate_id, false) } else {
-                let key = req.idempotency_key.context("batch conflict requires idempotency key")?;
-                (tx.query_row("SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2", params![req.task, key], |r| r.get(0))?, true)
+            let (run_id, duplicate) = if inserted == 1 {
+                (candidate_id, false)
+            } else {
+                let key = req
+                    .idempotency_key
+                    .context("batch conflict requires idempotency key")?;
+                (
+                    tx.query_row(
+                        "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                        params![req.task, key],
+                        |r| r.get(0),
+                    )?,
+                    true,
+                )
             };
             tx.execute(
                 "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id, dedupe_key, payload_hash, duplicate, received_at)
@@ -518,9 +582,16 @@ impl Ledger {
             accepted.push((run_id, duplicate));
         }
         tx.commit()?;
-        accepted.into_iter().map(|(run_id, duplicate)| Ok(IngressOutcome {
-            state: self.run_state(&run_id)?, run_id, duplicate,
-        })).collect()
+        accepted
+            .into_iter()
+            .map(|(run_id, duplicate)| {
+                Ok(IngressOutcome {
+                    state: self.run_state(&run_id)?,
+                    run_id,
+                    duplicate,
+                })
+            })
+            .collect()
     }
 
     pub fn run_state(&self, run_id: &str) -> Result<String> {
@@ -935,17 +1006,24 @@ impl Ledger {
             .with_context(|| format!("dead letter {id} not found"))
     }
 
-    /// Return a bounded newest-first DLQ page. Attention admission only needs
-    /// counts; operator views can request a separate bounded page explicitly.
+    /// Return the complete newest-first DLQ view for operators. Callers that
+    /// need bounded work (for example, API widgets) use the explicit page
+    /// method; the primary CLI/API list must not silently hide older rows.
     pub fn list_dead_letters(&self) -> Result<Vec<DeadLetterRow>> {
-        self.list_dead_letters_page(200)
+        let mut stmt = self
+            .conn
+            .prepare(&format!("{DLQ_SELECT} ORDER BY id DESC"))?;
+        let rows = stmt
+            .query_map([], row_to_dlq)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn list_dead_letters_page(&self, limit: i64) -> Result<Vec<DeadLetterRow>> {
         let limit = limit.clamp(1, 200);
-        let mut stmt = self.conn.prepare(&format!(
-            "{DLQ_SELECT} ORDER BY id DESC LIMIT ?1"
-        ))?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("{DLQ_SELECT} ORDER BY id DESC LIMIT ?1"))?;
         let rows = stmt
             .query_map(params![limit], row_to_dlq)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -953,17 +1031,18 @@ impl Ledger {
     }
 
     pub fn open_dead_letter_count(&self, task: Option<&str>) -> Result<i64> {
-        let mut sql = String::from("SELECT COUNT(*) FROM dead_letters WHERE acknowledged_at IS NULL");
+        let mut sql = String::from(
+            "SELECT COUNT(*) FROM dead_letters
+             WHERE acknowledged_at IS NULL AND replayed_run_id IS NULL",
+        );
         let mut args = Vec::new();
         if let Some(task) = task {
             sql.push_str(" AND task = ?1");
             args.push(task.to_string());
         }
-        let count = self.conn.query_row(
-            &sql,
-            rusqlite::params_from_iter(args),
-            |row| row.get(0),
-        )?;
+        let count = self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))?;
         Ok(count)
     }
     pub fn mark_dead_letter_replayed(&self, id: i64, new_run_id: &str) -> Result<bool> {
@@ -1478,11 +1557,9 @@ impl Ledger {
             sql.push_str(" AND task = ?1");
             args.push(task.to_string());
         }
-        Ok(self.conn.query_row(
-            &sql,
-            rusqlite::params_from_iter(args),
-            |row| row.get(0),
-        )?)
+        Ok(self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(args), |row| row.get(0))?)
     }
 
     pub fn oldest_pending_run_at(&self, task: Option<&str>) -> Result<Option<String>> {

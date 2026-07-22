@@ -1218,7 +1218,6 @@ fn webhook_submission_storm_opens_newer_head_after_settle() {
     assert_eq!(ledger.list_runs(Some("security"), None).unwrap().len(), 2);
 }
 
-
 #[test]
 fn duplicate_redelivery_survives_atomic_queue_saturation() {
     let dir = tempfile::tempdir().unwrap();
@@ -1248,7 +1247,10 @@ fn duplicate_redelivery_survives_atomic_queue_saturation() {
         })
         .unwrap();
     assert!(duplicate.duplicate);
-    assert_eq!(ledger.pending_run_depth(Some("demo")).unwrap(), Ledger::MAX_PENDING_QUEUE_DEPTH);
+    assert_eq!(
+        ledger.pending_run_depth(Some("demo")).unwrap(),
+        Ledger::MAX_PENDING_QUEUE_DEPTH
+    );
     let refused = ledger.ingest(bitterblossom::ledger::IngressRequest {
         task: "demo",
         trigger_kind: "webhook",
@@ -1271,7 +1273,10 @@ fn partial_timestamped_signature_cannot_downgrade_to_legacy_hmac() {
     std::env::set_var(SECRET_ENV, "hunter2");
     let body = r#"{"action":"opened"}"#;
     let timestamp = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
-    let signature = sign_hmac("hunter2", format!("{timestamp}.delivery-1.{body}").as_bytes());
+    let signature = sign_hmac(
+        "hunter2",
+        format!("{timestamp}.delivery-1.{body}").as_bytes(),
+    );
     let response = handle_webhook(
         &plane,
         &mut ledger,

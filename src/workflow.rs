@@ -246,8 +246,9 @@ impl WorkflowDoc {
                         );
                     }
                     if let Some(expr) = &trigger.dedupe_key {
-                        crate::ingress::validate_dedupe_key_expression(expr)
-                            .with_context(|| format!("workflow '{}': invalid webhook dedupe_key", self.name))?;
+                        crate::ingress::validate_dedupe_key_expression(expr).with_context(
+                            || format!("workflow '{}': invalid webhook dedupe_key", self.name),
+                        )?;
                     }
                 }
                 other => bail!(
@@ -343,17 +344,26 @@ impl WorkflowDoc {
             }
         }
         if self.policies.max_runs_per_day == Some(0) {
-            bail!("workflow '{}': policies.max_runs_per_day must be >= 1", self.name);
+            bail!(
+                "workflow '{}': policies.max_runs_per_day must be >= 1",
+                self.name
+            );
         }
         if self.policies.concurrency == Some(0) {
-            bail!("workflow '{}': policies.concurrency must be >= 1", self.name);
+            bail!(
+                "workflow '{}': policies.concurrency must be >= 1",
+                self.name
+            );
         }
         if self
             .policies
             .max_cost_per_run_usd
             .is_some_and(|cost| !cost.is_finite() || cost <= 0.0)
         {
-            bail!("workflow '{}': policies.max_cost_per_run_usd must be finite and > 0", self.name);
+            bail!(
+                "workflow '{}': policies.max_cost_per_run_usd must be finite and > 0",
+                self.name
+            );
         }
         if self.policies.max_rounds == Some(0) {
             bail!("workflow '{}': policies.max_rounds must be >= 1", self.name);
@@ -627,6 +637,8 @@ pub struct WorkflowRevisionRow {
 pub struct WorkflowEventRow {
     pub id: i64,
     pub workflow_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub kind: String,
     pub data: Option<String>,
     pub at: String,
@@ -874,7 +886,12 @@ impl Ledger {
         })
     }
 
-    fn validate_activation_routes(&self, workflow_id: &str, doc: &WorkflowDoc) -> Result<()> {
+    fn validate_activation_routes(
+        &self,
+        workflow_id: &str,
+        doc: &WorkflowDoc,
+        reserved_routes: &[String],
+    ) -> Result<()> {
         let mut candidate_routes = std::collections::BTreeSet::new();
         for route in doc
             .triggers
@@ -887,19 +904,35 @@ impl Ledger {
                 bail!("workflow contains duplicate or empty webhook route '{normalized}'");
             }
         }
+        for route in reserved_routes {
+            if candidate_routes.contains(&crate::ingress::normalize_route(route)) {
+                bail!("webhook route '{route}' is already owned by a task webhook");
+            }
+        }
         for other in self.list_workflows()? {
-            if other.id == workflow_id || other.state != "active" {
+            if other.id == workflow_id || !matches!(other.state.as_str(), "active" | "paused") {
                 continue;
             }
             let Some(revision) = other.active_revision else {
-                self.workflow_audit(&other.id, "workflow_needs_attention", Some("active workflow has no active revision"))?;
+                self.workflow_audit(
+                    &other.id,
+                    "workflow_needs_attention",
+                    Some("active workflow has no active revision"),
+                )?;
                 continue;
             };
             let row = match self.workflow_revision_row(&other.id, revision) {
                 Ok(row) => row,
                 Err(error) => {
-                    self.workflow_audit(&other.id, "workflow_needs_attention", Some("active workflow revision is missing"))?;
-                    eprintln!("workflow '{}' skipped during route collision scan: {error:#}", other.name);
+                    self.workflow_audit(
+                        &other.id,
+                        "workflow_needs_attention",
+                        Some("active workflow revision is missing"),
+                    )?;
+                    eprintln!(
+                        "workflow '{}' skipped during route collision scan: {error:#}",
+                        other.name
+                    );
                     continue;
                 }
             };
@@ -911,7 +944,10 @@ impl Ledger {
                     // A poisoned active sibling is isolated by ingress/cron;
                     // activation must not revive the old plane-wide outage by
                     // making every healthy workflow impossible to activate.
-                    eprintln!("workflow '{}' skipped during route collision scan: {error:#}", other.name);
+                    eprintln!(
+                        "workflow '{}' skipped during route collision scan: {error:#}",
+                        other.name
+                    );
                     continue;
                 }
             };
@@ -923,7 +959,7 @@ impl Ledger {
             {
                 if candidate_routes.contains(&crate::ingress::normalize_route(route)) {
                     bail!(
-                        "webhook route '{route}' is already owned by active workflow '{}'",
+                        "webhook route '{route}' is already owned by active workflow or paused workflow '{}'",
                         other.name
                     );
                 }
@@ -935,6 +971,15 @@ impl Ledger {
     /// Activate one revision (default: latest). New acceptances pin the new
     /// revision; existing runs keep the revision they pinned at acceptance.
     pub fn activate_workflow(&self, name: &str, revision: Option<i64>) -> Result<WorkflowRow> {
+        self.activate_workflow_with_reserved_routes(name, revision, &[])
+    }
+
+    pub fn activate_workflow_with_reserved_routes(
+        &self,
+        name: &str,
+        revision: Option<i64>,
+        reserved_routes: &[String],
+    ) -> Result<WorkflowRow> {
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
             if !lifecycle_allowed(&wf.state, "active") {
@@ -950,8 +995,10 @@ impl Ledger {
             let snapshot = self.workflow_revision_row(&wf.id, revision)?;
             let document = WorkflowDoc::from_canonical_json(&snapshot.document)
                 .and_then(|doc| doc.validate().map(|()| doc))
-                .with_context(|| format!("workflow '{name}' revision {revision} fails current validation"))?;
-            self.validate_activation_routes(&wf.id, &document)?;
+                .with_context(|| {
+                    format!("workflow '{name}' revision {revision} fails current validation")
+                })?;
+            self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             self.conn.execute(
                 "UPDATE workflows SET state = 'active', active_revision = ?2, updated_at = ?3
                  WHERE id = ?1",
@@ -964,19 +1011,27 @@ impl Ledger {
 
     /// Pause suppresses new run acceptance; active work elsewhere finishes.
     pub fn pause_workflow(&self, name: &str, reason: &str) -> Result<WorkflowRow> {
-        self.workflow_lifecycle(name, "paused", "paused", Some(reason))
+        self.workflow_lifecycle(name, "paused", "paused", Some(reason), &[])
     }
 
     /// Resume re-enables acceptance on the already-active revision. It never
     /// replays events suppressed while paused; those stay audit dispositions.
     pub fn resume_workflow(&self, name: &str) -> Result<WorkflowRow> {
-        self.workflow_lifecycle(name, "active", "resumed", None)
+        self.resume_workflow_with_reserved_routes(name, &[])
+    }
+
+    pub fn resume_workflow_with_reserved_routes(
+        &self,
+        name: &str,
+        reserved_routes: &[String],
+    ) -> Result<WorkflowRow> {
+        self.workflow_lifecycle(name, "active", "resumed", None, reserved_routes)
     }
 
     /// Archived workflows are frozen, never deleted: historical runs keep
     /// their revision referents readable forever.
     pub fn archive_workflow(&self, name: &str) -> Result<WorkflowRow> {
-        self.workflow_lifecycle(name, "archived", "archived", None)
+        self.workflow_lifecycle(name, "archived", "archived", None, &[])
     }
 
     fn workflow_lifecycle(
@@ -985,6 +1040,7 @@ impl Ledger {
         to: &str,
         audit_kind: &str,
         data: Option<&str>,
+        reserved_routes: &[String],
     ) -> Result<WorkflowRow> {
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
@@ -997,12 +1053,18 @@ impl Ledger {
                 bail!("workflow '{name}' is {}; cannot move to {to}", wf.state);
             }
             if to == "active" {
-                let revision = wf.active_revision.context("paused workflow has no active revision")?;
+                let revision = wf
+                    .active_revision
+                    .context("paused workflow has no active revision")?;
                 let snapshot = self.workflow_revision_row(&wf.id, revision)?;
                 let document = WorkflowDoc::from_canonical_json(&snapshot.document)
                     .and_then(|doc| doc.validate().map(|()| doc))
-                    .with_context(|| format!("workflow '{name}' active revision {revision} fails current validation"))?;
-                self.validate_activation_routes(&wf.id, &document)?;
+                    .with_context(|| {
+                        format!(
+                            "workflow '{name}' active revision {revision} fails current validation"
+                        )
+                    })?;
+                self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             }
             self.conn.execute(
                 "UPDATE workflows SET state = ?2, updated_at = ?3 WHERE id = ?1",
@@ -1016,6 +1078,15 @@ impl Ledger {
     /// Rollback re-activates an earlier snapshot as a NEW revision — history
     /// is never rewritten. The workflow must already have an activation.
     pub fn rollback_workflow(&self, name: &str, to_revision: i64) -> Result<(WorkflowRow, i64)> {
+        self.rollback_workflow_with_reserved_routes(name, to_revision, &[])
+    }
+
+    pub fn rollback_workflow_with_reserved_routes(
+        &self,
+        name: &str,
+        to_revision: i64,
+        reserved_routes: &[String],
+    ) -> Result<(WorkflowRow, i64)> {
         self.workflow_tx(|| {
             let wf = self.workflow_by_name(name)?;
             if !matches!(wf.state.as_str(), "active" | "paused") {
@@ -1037,7 +1108,7 @@ impl Ledger {
                          it cannot be re-activated by rollback"
                     )
                 })?;
-            self.validate_activation_routes(&wf.id, &document)?;
+            self.validate_activation_routes(&wf.id, &document, reserved_routes)?;
             let revision = self.insert_revision(
                 &wf.id,
                 &snapshot.document,
@@ -1323,7 +1394,7 @@ impl Ledger {
     pub fn workflow_events(&self, name: &str) -> Result<Vec<WorkflowEventRow>> {
         let wf = self.workflow_by_name(name)?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, workflow_id, kind, data, at FROM workflow_events
+            "SELECT id, workflow_id, run_id, kind, data, at FROM workflow_events
              WHERE workflow_id = ?1 ORDER BY id",
         )?;
         let rows = stmt
@@ -1331,9 +1402,30 @@ impl Ledger {
                 Ok(WorkflowEventRow {
                     id: r.get(0)?,
                     workflow_id: r.get(1)?,
-                    kind: r.get(2)?,
-                    data: r.get(3)?,
-                    at: r.get(4)?,
+                    run_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    data: r.get(4)?,
+                    at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn workflow_run_events(&self, run_id: &str) -> Result<Vec<WorkflowEventRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workflow_id, run_id, kind, data, at FROM workflow_events
+             WHERE run_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![run_id], |r| {
+                Ok(WorkflowEventRow {
+                    id: r.get(0)?,
+                    workflow_id: r.get(1)?,
+                    run_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    data: r.get(4)?,
+                    at: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -145,32 +145,52 @@ pub fn webhook_workflow_target(
             continue;
         }
         let Some(revision) = wf.active_revision else {
-            ledger.record_workflow_runtime_event_by_workflow(&wf.id, "workflow_needs_attention", Some("active workflow has no active revision"))?;
             continue;
         };
         let row = match ledger.workflow_revision(&wf.name, revision) {
             Ok(row) => row,
             Err(error) => {
-                ledger.record_workflow_runtime_event_by_workflow(&wf.id, "workflow_needs_attention", Some("active workflow revision is missing"))?;
-                eprintln!("workflow '{}' skipped: missing active revision ({error:#})", wf.name);
+                eprintln!(
+                    "workflow '{}' skipped: missing active revision ({error:#})",
+                    wf.name
+                );
                 continue;
             }
         };
-        let doc = match WorkflowDoc::from_canonical_json(&row.document).and_then(|doc| doc.validate().map(|()| doc)) {
+        let doc = match WorkflowDoc::from_canonical_json(&row.document)
+            .and_then(|doc| doc.validate().map(|()| doc))
+        {
             Ok(doc) => doc,
             Err(error) => {
-                ledger.record_workflow_runtime_event_by_workflow(&wf.id, "workflow_needs_attention", Some("active workflow revision is invalid"))?;
-                eprintln!("workflow '{}' skipped: invalid active revision ({error:#})", wf.name);
+                eprintln!(
+                    "workflow '{}' skipped: invalid active revision ({error:#})",
+                    wf.name
+                );
                 continue;
             }
         };
         for trigger in &doc.triggers {
-            if trigger.kind != "webhook" || trigger.route.as_deref().map(crate::ingress::normalize_route).as_deref() != Some(route.as_str()) {
+            if trigger.kind != "webhook"
+                || trigger
+                    .route
+                    .as_deref()
+                    .map(crate::ingress::normalize_route)
+                    .as_deref()
+                    != Some(route.as_str())
+            {
                 continue;
             }
-            let slot = if wf.state == "active" { &mut active } else { &mut paused };
+            let slot = if wf.state == "active" {
+                &mut active
+            } else {
+                &mut paused
+            };
             if let Some((owner, _)) = slot {
-                bail!("webhook route '{route}' is claimed by active workflows '{}' and '{}'", owner, wf.name);
+                bail!(
+                    "webhook route '{route}' is claimed by active workflows '{}' and '{}'",
+                    owner,
+                    wf.name
+                );
             }
             *slot = Some((wf.name.clone(), trigger.clone()));
         }
@@ -220,31 +240,49 @@ pub fn workflow_cron_tick(
             .entry(wf.name.clone())
             .or_insert(default_last);
         let mut fires = Vec::new();
+        let mut discarded = 0usize;
+        let mut fired_total = 0usize;
         for trigger in &doc.triggers {
             if trigger.kind != "cron" {
                 continue;
             }
-            let schedule = match crate::ingress::parse_schedule(trigger.schedule.as_deref().unwrap_or("")) {
-                Ok(schedule) => schedule,
-                Err(error) => {
-                    skip_unloadable_workflow(&wf.name, &error);
-                    continue 'workflow;
-                }
-            };
-            let (bounded, _) = crate::ingress::due_fires_bounded_for_runtime(&schedule, last, now_utc, max_fires as usize);
+            let schedule =
+                match crate::ingress::parse_schedule(trigger.schedule.as_deref().unwrap_or("")) {
+                    Ok(schedule) => schedule,
+                    Err(error) => {
+                        skip_unloadable_workflow(&wf.name, &error);
+                        continue 'workflow;
+                    }
+                };
+            let (bounded, skipped) = crate::ingress::due_fires_bounded_for_runtime(
+                &schedule,
+                last,
+                now_utc,
+                max_fires as usize,
+            );
+            fired_total = fired_total
+                .saturating_add(bounded.len())
+                .saturating_add(skipped);
+            discarded = discarded.saturating_add(skipped);
             fires.extend(bounded);
         }
         fires.sort();
         let max = max_fires.max(1) as usize;
         if fires.len() > max {
             let skipped = fires.len() - max;
+            discarded = discarded.saturating_add(skipped);
+            fires = fires.split_off(skipped);
+        }
+        // Record every discarded fire from every trigger before advancing the
+        // workflow cursor. Otherwise multi-trigger catch-up silently loses the
+        // oldest per-trigger fires and a restart cannot explain the gap.
+        if discarded > 0 {
             ledger.record_guard_event(
                 "workflow_cron_collapse",
                 Some(&wf.name),
-                &format!("skipped={skipped} fired={}", fires.len()),
-                skipped as i64,
+                &format!("skipped={discarded} fired={fired_total}"),
+                discarded as i64,
             )?;
-            fires = fires.split_off(skipped);
         }
         for fire in fires {
             let scheduled = fire.to_rfc3339();
@@ -309,11 +347,16 @@ pub const RUN_STATES: &[&str] = &[
 ];
 
 fn workflow_transition_allowed(from: &str, to: &str) -> bool {
-    from == to || matches!((from, to),
-        ("queued", "running")
-            | ("running", "succeeded" | "failed" | "incomplete" | "stopped" | "needs_attention")
-            | ("needs_attention", "succeeded" | "failed" | "stopped")
-    )
+    from == to
+        || matches!(
+            (from, to),
+            ("queued", "running")
+                | (
+                    "running",
+                    "succeeded" | "failed" | "incomplete" | "stopped" | "needs_attention"
+                )
+                | ("needs_attention", "succeeded" | "failed" | "stopped")
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -435,11 +478,15 @@ impl Ledger {
         if !RUN_STATES.contains(&state) {
             bail!("unknown workflow run state '{state}'");
         }
-        let current: String = self.conn.query_row(
-            "SELECT state FROM workflow_run_status WHERE run_id = ?1",
-            params![run_id],
-            |r| r.get(0),
-        ).optional()?.with_context(|| format!("workflow run status row missing for {run_id}"))?;
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT state FROM workflow_run_status WHERE run_id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .with_context(|| format!("workflow run status row missing for {run_id}"))?;
         if !workflow_transition_allowed(&current, state) {
             bail!("invalid workflow run transition {current} -> {state}");
         }
@@ -480,10 +527,14 @@ impl Ledger {
     ) -> Result<WorkflowRunStatusRow> {
         // Touching the run proves it exists (workflow_run errors otherwise).
         self.workflow_run(run_id)?;
-        let current = self.workflow_run_status(run_id)?
+        let current = self
+            .workflow_run_status(run_id)?
             .context("workflow run status row missing")?;
         if !matches!(current.state.as_str(), "queued" | "running") {
-            bail!("cannot request stop for workflow run {run_id} in state {}", current.state);
+            bail!(
+                "cannot request stop for workflow run {run_id} in state {}",
+                current.state
+            );
         }
         let ts = now();
         self.conn.execute(
@@ -524,20 +575,41 @@ impl Ledger {
         Ok(ids)
     }
 
-    pub fn workflow_freshness_summary(&self, stale_after_seconds: i64) -> Result<serde_json::Value> {
-        let threshold = (Utc::now() - chrono::Duration::seconds(stale_after_seconds.max(0))).to_rfc3339();
-        let queued: i64 = self.conn.query_row("SELECT COUNT(*) FROM workflow_run_status WHERE state = 'queued'", [], |r| r.get(0))?;
-        let running: i64 = self.conn.query_row("SELECT COUNT(*) FROM workflow_run_status WHERE state = 'running'", [], |r| r.get(0))?;
-        let needs_attention: i64 = self.conn.query_row("SELECT COUNT(*) FROM workflow_run_status WHERE state = 'needs_attention'", [], |r| r.get(0))?;
+    pub fn workflow_freshness_summary(
+        &self,
+        stale_after_seconds: i64,
+    ) -> Result<serde_json::Value> {
+        let threshold =
+            (Utc::now() - chrono::Duration::seconds(stale_after_seconds.max(0))).to_rfc3339();
+        let queued: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'queued'",
+            [],
+            |r| r.get(0),
+        )?;
+        let running: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'running'",
+            [],
+            |r| r.get(0),
+        )?;
+        let needs_attention: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'needs_attention'",
+            [],
+            |r| r.get(0),
+        )?;
         let stale_running: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM workflow_run_status WHERE state = 'running' AND updated_at < ?1",
-            params![threshold], |r| r.get(0)
+            params![threshold],
+            |r| r.get(0),
         )?;
         let oldest_queued: Option<String> = self.conn.query_row(
-            "SELECT MIN(updated_at) FROM workflow_run_status WHERE state = 'queued'", [], |r| r.get(0)
+            "SELECT MIN(updated_at) FROM workflow_run_status WHERE state = 'queued'",
+            [],
+            |r| r.get(0),
         )?;
         let oldest_running: Option<String> = self.conn.query_row(
-            "SELECT MIN(updated_at) FROM workflow_run_status WHERE state = 'running'", [], |r| r.get(0)
+            "SELECT MIN(updated_at) FROM workflow_run_status WHERE state = 'running'",
+            [],
+            |r| r.get(0),
         )?;
         Ok(serde_json::json!({
             "queued": queued,
@@ -572,8 +644,13 @@ impl Ledger {
 
     fn running_workflow_run_ids(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT run_id FROM workflow_run_status
-             WHERE state = 'running' ORDER BY updated_at, run_id",
+            "SELECT DISTINCT s.run_id FROM workflow_run_status s
+             WHERE s.state = 'running'
+                OR (s.state = 'needs_attention' AND EXISTS (
+                    SELECT 1 FROM workflow_step_runs wsr
+                    WHERE wsr.run_id = s.run_id
+                ))
+             ORDER BY s.updated_at, s.run_id",
         )?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
@@ -664,11 +741,7 @@ impl Ledger {
     /// Close a step row left running by a crash. Recovery intentionally writes
     /// a failure/uncertainty explanation instead of pretending the outcome is
     /// known; the run status carries the operator-facing disposition.
-    pub fn close_workflow_step_for_recovery(
-        &self,
-        step_run_id: &str,
-        error: &str,
-    ) -> Result<()> {
+    pub fn close_workflow_step_for_recovery(&self, step_run_id: &str, error: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE workflow_step_runs
              SET state = 'failed', error = ?2, ended_at = ?3
@@ -700,8 +773,8 @@ impl Ledger {
         data: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO workflow_events (workflow_id, kind, data, at)
-             SELECT workflow_id, ?2, ?3, ?4 FROM workflow_runs WHERE id = ?1",
+            "INSERT INTO workflow_events (workflow_id, run_id, kind, data, at)
+             SELECT workflow_id, id, ?2, ?3, ?4 FROM workflow_runs WHERE id = ?1",
             params![run_id, kind, data, now()],
         )?;
         Ok(())
@@ -890,7 +963,10 @@ fn workflow_recovery_report(
 /// Classify workflow runs inherited in running state at boot. Terminal step
 /// evidence is reconciled first; an in-flight step is probed before recovery
 /// closes its row. No path blindly re-executes work that may have side effects.
-pub fn recover_inherited_workflow_runs(plane: &Plane, ledger: &Ledger) -> Result<Vec<WorkflowRecoveryReport>> {
+pub fn recover_inherited_workflow_runs(
+    plane: &Plane,
+    ledger: &Ledger,
+) -> Result<Vec<WorkflowRecoveryReport>> {
     let mut reports = Vec::new();
     for run_id in ledger.running_workflow_run_ids()? {
         let run = ledger.workflow_run(&run_id)?;
@@ -909,45 +985,38 @@ pub fn recover_inherited_workflow_runs(plane: &Plane, ledger: &Ledger) -> Result
         }
 
         if let Some(step) = current {
-            let probe = match load_document(ledger, &run.workflow, run.revision)
-                .and_then(|doc| {
-                    let spec = doc
-                        .steps
-                        .iter()
-                        .find(|candidate| candidate.name == step.step)
-                        .with_context(|| format!("current step '{}' missing from pinned document", step.step))?;
-                    let substrate_kind = doc.policies.substrate.as_deref().unwrap_or("local");
-                    let substrate = substrate::for_task(substrate_kind)?;
-                    let host = spec
-                        .host
-                        .clone()
-                        .unwrap_or_else(|| format!("wf-{}", run.id));
-                    let attempt_dir = step
-                        .artifact_dir
-                        .as_deref()
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|| {
-                            plane
-                                .root
-                                .join(".bb/workflow-runs")
-                                .join(&run.id)
-                                .join(format!("attempt-{}-{}", step.attempt, step.step))
-                        });
-                    Ok(substrate.probe(
-                        &host,
-                        &attempt_dir,
-                        &format!("bb-{}", step.id),
-                    ))
-                }) {
+            let probe = match load_document(ledger, &run.workflow, run.revision).and_then(|doc| {
+                let spec = doc
+                    .steps
+                    .iter()
+                    .find(|candidate| candidate.name == step.step)
+                    .with_context(|| {
+                        format!("current step '{}' missing from pinned document", step.step)
+                    })?;
+                let substrate_kind = doc.policies.substrate.as_deref().unwrap_or("local");
+                let substrate = substrate::for_task(substrate_kind)?;
+                let host = spec
+                    .host
+                    .clone()
+                    .unwrap_or_else(|| format!("wf-{}", run.id));
+                let attempt_dir = step
+                    .artifact_dir
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        plane
+                            .root
+                            .join(".bb/workflow-runs")
+                            .join(&run.id)
+                            .join(format!("attempt-{}-{}", step.attempt, step.step))
+                    });
+                Ok(substrate.probe(&host, &attempt_dir, &format!("bb-{}", step.id)))
+            }) {
                 Ok(probe) => probe,
                 Err(error) => crate::substrate::ProbeResult::Unknown(error.to_string()),
             };
             let probe_desc = probe.description();
-            ledger.record_workflow_runtime_event(
-                &run.id,
-                "boot_probe",
-                Some(&probe_desc),
-            )?;
+            ledger.record_workflow_runtime_event(&run.id, "boot_probe", Some(&probe_desc))?;
             match probe {
                 crate::substrate::ProbeResult::Alive => {
                     let detail = format!(
@@ -974,7 +1043,8 @@ pub fn recover_inherited_workflow_runs(plane: &Plane, ledger: &Ledger) -> Result
                     );
                     ledger.close_workflow_step_for_recovery(&step.id, &detail)?;
                     ledger.set_workflow_run_state(&run.id, "needs_attention", Some(&detail))?;
-                    let lease_disposition = if matches!(probe, crate::substrate::ProbeResult::Dead) {
+                    let lease_disposition = if matches!(probe, crate::substrate::ProbeResult::Dead)
+                    {
                         ledger.release_host_leases_for_run(&run.id)?;
                         "released"
                     } else {
@@ -999,26 +1069,45 @@ pub fn recover_inherited_workflow_runs(plane: &Plane, ledger: &Ledger) -> Result
             Some(step) if step.state == "succeeded" => {
                 let terminal = load_document(ledger, &run.workflow, run.revision)
                     .ok()
-                    .and_then(|doc| doc.steps.into_iter().find(|candidate| candidate.name == step.step))
+                    .and_then(|doc| {
+                        doc.steps
+                            .into_iter()
+                            .find(|candidate| candidate.name == step.step)
+                    })
                     .map(|spec| {
                         let target = match step.outcome.as_deref() {
                             Some(outcome) => spec.routes.get(outcome).map(String::as_str),
-                            None if spec.routes.len() <= 1 => spec.routes.values().next().map(String::as_str),
+                            None if spec.routes.len() <= 1 => {
+                                spec.routes.values().next().map(String::as_str)
+                            }
                             None => None,
                         };
-                        target.is_none() || target == Some(ROUTE_DONE)
+                        spec.routes.is_empty() || target == Some(ROUTE_DONE)
                     })
                     .unwrap_or(false);
                 if terminal {
                     ("succeeded", "recovered terminal workflow step evidence")
                 } else {
-                    ("needs_attention", "workflow step succeeded but route/finalization evidence is incomplete")
+                    (
+                        "needs_attention",
+                        "workflow step succeeded but route/finalization evidence is incomplete",
+                    )
                 }
             }
-            Some(step) if step.state == "failed" => ("failed", "recovered failed workflow step evidence"),
-            Some(step) if step.state == "incomplete" => ("incomplete", "recovered incomplete workflow step evidence"),
-            Some(_) => ("needs_attention", "workflow has no running step but terminal evidence is ambiguous"),
-            None => ("needs_attention", "workflow run has no step evidence; outcome is unknown"),
+            Some(step) if step.state == "failed" => {
+                ("failed", "recovered failed workflow step evidence")
+            }
+            Some(step) if step.state == "incomplete" => {
+                ("incomplete", "recovered incomplete workflow step evidence")
+            }
+            Some(_) => (
+                "needs_attention",
+                "workflow has no running step but terminal evidence is ambiguous",
+            ),
+            None => (
+                "needs_attention",
+                "workflow run has no step evidence; outcome is unknown",
+            ),
         };
         ledger.set_workflow_run_state(&run.id, disposition, Some(detail))?;
         ledger.release_host_leases_for_run(&run.id)?;
@@ -1055,6 +1144,15 @@ pub fn resolve_workflow_run(
             "workflow run {run_id} is {}, not needs_attention; resolve only recovered uncertainty",
             current.state
         );
+    }
+    // A live probe is still an uncertain execution outcome. Resolve the
+    // operator-visible step row before the terminal run transition so no
+    // recovered attempt remains falsely in flight after resolution.
+    let step_detail = format!("operator resolved recovered step: {reason}");
+    for step in ledger.workflow_step_runs(run_id)? {
+        if step.state == "running" {
+            ledger.close_workflow_step_for_recovery(&step.id, &step_detail)?;
+        }
     }
     ledger.release_host_leases_for_run(run_id)?;
     ledger.set_workflow_run_state(run_id, state, Some(reason))?;
@@ -1710,11 +1808,24 @@ fn run_step(
         .host
         .clone()
         .unwrap_or_else(|| format!("wf-{}", run.id));
-    if !ledger.try_acquire_host_lease(&host, &run.id)? {
-        return fail(
-            format!("host lease '{host}' is held by another run"),
-            &none,
-        );
+    // Workflow runs sharing a declared host serialize, but admission must wait
+    // for the bounded lease window rather than failing a valid concurrent run
+    // before its isolated workspace is created.
+    let lease_wait =
+        Duration::from_secs(60 * budget.timeout_minutes.unwrap_or(1)).max(Duration::from_secs(60));
+    let lease_started = Instant::now();
+    loop {
+        if ledger.try_acquire_host_lease(&host, &run.id)? {
+            break;
+        }
+        if lease_started.elapsed() >= lease_wait {
+            let holder = ledger.lease_holder(&host)?;
+            return fail(
+                format!("host lease '{host}' is held by run {holder:?}"),
+                &none,
+            );
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
     let _lease = WorkflowLease {
         ledger,
@@ -2133,6 +2244,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
             .document,
     )?;
     let status = ledger.workflow_run_status(run_id)?;
+    let events = ledger.workflow_run_events(run_id)?;
     let steps = ledger
         .workflow_step_runs(run_id)?
         .into_iter()
@@ -2147,6 +2259,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
         "run": run,
         "document": document,
         "status": status,
+        "events": events,
         "steps": steps,
     }))
 }

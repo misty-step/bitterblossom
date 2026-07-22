@@ -1236,7 +1236,9 @@ fn concurrent_revisions_activations_and_accepts_never_lose_or_fork_history() {
                     {
                         AcceptOutcome::Accepted { run } => accepted.push((run.id, run.revision)),
                         AcceptOutcome::Duplicate { .. } => unreachable!("no dedupe key supplied"),
-                        AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. } => unreachable!("never paused"),
+                        AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. } => {
+                            unreachable!("never paused")
+                        }
                     }
                 }
                 accepted

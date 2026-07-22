@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use rusqlite::OptionalExtension;
 use sha2::Sha256;
+use std::fmt;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const DELIVERY_MAX_CLOCK_SKEW_SECONDS: i64 = 300;
@@ -16,6 +17,22 @@ pub struct WebhookResponse {
     pub body: String,
 }
 
+#[derive(Debug)]
+pub enum IngressClientError {
+    BadRequest(String),
+    Backpressure(String),
+}
+
+impl fmt::Display for IngressClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadRequest(detail) => write!(f, "{detail}"),
+            Self::Backpressure(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+impl std::error::Error for IngressClientError {}
+
 #[derive(serde::Serialize)]
 struct AdmissionRefusal {
     kind: String,
@@ -23,7 +40,10 @@ struct AdmissionRefusal {
     #[serde(skip_serializing_if = "Option::is_none")]
     debt: Option<AttentionDebt>,
 }
-pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Result<Option<(&'p Task, &'p TriggerSpec)>> {
+pub fn webhook_target<'p>(
+    plane: &'p Plane,
+    route: &str,
+) -> Result<Option<(&'p Task, &'p TriggerSpec)>> {
     let route = normalize_route(route);
     let mut found = None;
     for task in plane.tasks.values() {
@@ -45,6 +65,18 @@ pub fn webhook_target<'p>(plane: &'p Plane, route: &str) -> Result<Option<(&'p T
 pub fn normalize_route(route: &str) -> String {
     route.trim().trim_matches('/').to_ascii_lowercase()
 }
+
+pub fn task_webhook_routes(plane: &Plane) -> Vec<String> {
+    plane
+        .tasks
+        .values()
+        .flat_map(|task| task.spec.triggers.iter())
+        .filter_map(|trigger| match trigger {
+            TriggerSpec::Webhook { route, .. } => Some(normalize_route(route)),
+            _ => None,
+        })
+        .collect()
+}
 pub fn handle_webhook(
     plane: &Plane,
     ledger: &mut Ledger,
@@ -54,10 +86,12 @@ pub fn handle_webhook(
 ) -> Result<WebhookResponse> {
     let Some((task, trigger)) = (match webhook_target(plane, route) {
         Ok(target) => target,
-        Err(_) => return Ok(WebhookResponse {
-            status: 409,
-            body: "{\"error\":\"webhook route is ambiguous\"}".to_string(),
-        }),
+        Err(_) => {
+            return Ok(WebhookResponse {
+                status: 409,
+                body: "{\"error\":\"webhook route is ambiguous\"}".to_string(),
+            })
+        }
     }) else {
         return Ok(WebhookResponse {
             status: 404,
@@ -66,12 +100,6 @@ pub fn handle_webhook(
     };
     let max_body = plane.spec.ingress.max_body_bytes;
     if body.len() > max_body {
-        ledger.record_guard_event(
-            "ingress_oversized",
-            Some(&task.name),
-            &format!("route={route} bytes={} max={max_body}", body.len()),
-            1,
-        )?;
         return Ok(WebhookResponse {
             status: 413,
             body: format!(
@@ -111,7 +139,8 @@ pub fn handle_webhook(
                 body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
             });
         }
-        DeliveryVerification::MalformedTimestamp | DeliveryVerification::IncompleteTimestampedHeaders => {
+        DeliveryVerification::MalformedTimestamp
+        | DeliveryVerification::IncompleteTimestampedHeaders => {
             return Ok(WebhookResponse {
                 status: 400,
                 body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
@@ -147,38 +176,47 @@ pub fn handle_webhook(
     let derived = match dedupe_key {
         Some(expr) => match derive_dedupe_key(expr, headers, body) {
             Ok(value) => Some(value),
-            Err(_) => return Ok(WebhookResponse {
-                status: 400,
-                body: "{\"error\":\"invalid webhook dedupe key\"}".to_string(),
-            }),
+            Err(_) => {
+                return Ok(WebhookResponse {
+                    status: 400,
+                    body: "{\"error\":\"invalid webhook dedupe key\"}".to_string(),
+                })
+            }
         },
         None => Some(format!("body:{}", body_hash(body))),
     };
     let key = derived.map(|k| format!("wh:{}:{k}", normalize_route(route)));
     let duplicate = match key.as_deref() {
-        Some(key) => ledger.conn.query_row(
-            "SELECT 1 FROM runs WHERE task = ?1 AND idempotency_key = ?2",
-            rusqlite::params![task.name, key],
-            |_row| Ok(()),
-        ).optional()?.is_some(),
+        Some(key) => ledger
+            .conn
+            .query_row(
+                "SELECT 1 FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                rusqlite::params![task.name, key],
+                |_row| Ok(()),
+            )
+            .optional()?
+            .is_some(),
         None => false,
     };
 
     if !duplicate {
         if let Some(refusal) = reflex_admission_refusal(plane, ledger, task, "webhook")? {
-        return Ok(WebhookResponse {
-            status: 429,
-            body: serde_json::json!({
-                "error": "attention debt brake refused reflex admission",
-                "task": task.name,
-                "debt": refusal.debt.as_ref(),
-                "refusal": refusal,
-            })
-            .to_string(),
-        });
+            return Ok(WebhookResponse {
+                status: 429,
+                body: serde_json::json!({
+                    "error": "attention debt brake refused reflex admission",
+                    "task": task.name,
+                    "debt": refusal.debt.as_ref(),
+                    "refusal": refusal,
+                })
+                .to_string(),
+            });
         }
     }
 
+    if let Some(action) = action {
+        preflight_submission_storm(plane, ledger, headers, body, action)?;
+    }
     let source = header(headers, "x-github-delivery").or_else(|| header(headers, "x-delivery-id"));
     let outcome = match ledger.ingest(IngressRequest {
         task: &task.name,
@@ -209,7 +247,7 @@ pub fn handle_webhook(
         Err(error) => return Err(error),
     };
     if let Some(action) = action {
-        start_submission_storm(
+        if let Err(error) = start_submission_storm(
             plane,
             ledger,
             &outcome.run_id,
@@ -217,7 +255,12 @@ pub fn handle_webhook(
             body,
             action,
             !outcome.duplicate,
-        )?;
+        ) {
+            if !outcome.duplicate {
+                ledger.rollback_ingress_storm(&outcome.run_id, None)?;
+            }
+            return Err(error);
+        }
     }
     Ok(WebhookResponse {
         status: 202,
@@ -259,7 +302,8 @@ pub fn handle_workflow_webhook(
                 body: "{\"error\":\"signature timestamp outside allowed clock skew\"}".to_string(),
             });
         }
-        DeliveryVerification::MalformedTimestamp | DeliveryVerification::IncompleteTimestampedHeaders => {
+        DeliveryVerification::MalformedTimestamp
+        | DeliveryVerification::IncompleteTimestampedHeaders => {
             return Ok(WebhookResponse {
                 status: 400,
                 body: "{\"error\":\"malformed timestamped signature envelope\"}".to_string(),
@@ -275,10 +319,12 @@ pub fn handle_workflow_webhook(
     let derived = match &trigger.dedupe_key {
         Some(expr) => match derive_dedupe_key(expr, headers, body) {
             Ok(value) => value,
-            Err(_) => return Ok(WebhookResponse {
-                status: 400,
-                body: "{\"error\":\"invalid workflow dedupe key\"}".to_string(),
-            }),
+            Err(_) => {
+                return Ok(WebhookResponse {
+                    status: 400,
+                    body: "{\"error\":\"invalid workflow dedupe key\"}".to_string(),
+                })
+            }
         },
         None => format!("body:{}", body_hash(body)),
     };
@@ -298,10 +344,6 @@ pub fn handle_workflow_webhook(
         },
     ) {
         Ok(outcome) => outcome,
-        Err(error) if error.to_string().contains("payload must be JSON") => return Ok(WebhookResponse {
-            status: 400,
-            body: "{\"error\":\"invalid workflow webhook payload\"}".to_string(),
-        }),
         Err(error) => return Err(error),
     };
     use crate::workflow::AcceptOutcome;
@@ -315,15 +357,85 @@ pub fn handle_workflow_webhook(
         AcceptOutcome::Suppressed { workflow, reason } => {
             serde_json::json!({"suppressed": reason, "workflow": workflow})
         }
-        AcceptOutcome::Denied { workflow, kind, reason } => {
+        AcceptOutcome::Denied {
+            workflow,
+            kind,
+            reason,
+        } => {
             serde_json::json!({"denied": reason, "kind": kind, "workflow": workflow})
         }
     };
-    let status = if matches!(outcome, AcceptOutcome::Denied { .. }) { 429 } else { 202 };
+    let status = if matches!(outcome, AcceptOutcome::Denied { .. }) {
+        429
+    } else {
+        202
+    };
     Ok(WebhookResponse {
         status,
         body: body.to_string(),
     })
+}
+
+fn preflight_submission_storm(
+    plane: &Plane,
+    ledger: &mut Ledger,
+    headers: &[(String, String)],
+    body: &str,
+    action: &WebhookActionSpec,
+) -> Result<()> {
+    let WebhookActionSpec::SubmissionStorm {
+        change,
+        rev,
+        repo,
+        version,
+    } = action;
+    let gate = plane
+        .spec
+        .gate
+        .as_ref()
+        .context("submission_storm action requires [gate]")?;
+    let derive = |expr: &str| {
+        derive_dedupe_key(expr, headers, body).map_err(|_| {
+            anyhow::Error::new(IngressClientError::BadRequest(
+                "submission_storm action field must resolve to a non-empty value".into(),
+            ))
+        })
+    };
+    derive(change)?;
+    derive(rev)?;
+    if let Some(expr) = repo {
+        derive(expr)?;
+    }
+    if let Some(expr) = version {
+        derive(expr)?;
+    }
+    for kind in &gate.required {
+        let task = plane
+            .tasks
+            .values()
+            .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
+            .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
+        let depth: i64 = ledger.conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+            rusqlite::params![task.name],
+            |row| row.get(0),
+        )?;
+        if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
+            let detail = format!(
+                "queue backpressure: task '{}' has {depth} pending runs (limit {})",
+                task.name,
+                Ledger::MAX_PENDING_QUEUE_DEPTH
+            );
+            ledger.record_guard_event(
+                "submission_storm_member_backpressure",
+                Some(&task.name),
+                &detail,
+                1,
+            )?;
+            return Err(IngressClientError::Backpressure(detail).into());
+        }
+    }
+    Ok(())
 }
 
 fn start_submission_storm(
@@ -346,20 +458,43 @@ fn start_submission_storm(
         .gate
         .as_ref()
         .context("submission_storm action requires [gate]")?;
-    let change = derive_dedupe_key(change, headers, body)?;
-    let rev = derive_dedupe_key(rev, headers, body)?;
-    let repo = derive_optional(repo, headers, body)?;
-    let version = derive_optional(version, headers, body)?;
+    let derive = |expr: &str| {
+        derive_dedupe_key(expr, headers, body).map_err(|_| {
+            anyhow::Error::new(IngressClientError::BadRequest(
+                "submission_storm action field must resolve to a non-empty value".into(),
+            ))
+        })
+    };
+    let change = derive(change)?;
+    let rev = derive(rev)?;
+    let repo = repo.as_deref().map(derive).transpose()?;
+    let version = version.as_deref().map(derive).transpose()?;
     // Refuse before opening or superseding a submission when any required
     // member queue is saturated; this prevents parent-only partial state.
     for kind in &gate.required {
-        let task = plane.tasks.values().find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
+        let task = plane
+            .tasks
+            .values()
+            .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
         let depth: i64 = ledger.conn.query_row(
             "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-            rusqlite::params![task.name], |row| row.get(0))?;
+            rusqlite::params![task.name],
+            |row| row.get(0),
+        )?;
         if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
-            bail!("queue backpressure: task '{}' has {depth} pending runs (limit {})", task.name, Ledger::MAX_PENDING_QUEUE_DEPTH);
+            let detail = format!(
+                "queue backpressure: task '{}' has {depth} pending runs (limit {})",
+                task.name,
+                Ledger::MAX_PENDING_QUEUE_DEPTH
+            );
+            ledger.record_guard_event(
+                "submission_storm_member_backpressure",
+                Some(&task.name),
+                &detail,
+                1,
+            )?;
+            return Err(IngressClientError::Backpressure(detail).into());
         }
     }
     let Some(submission) =
@@ -376,9 +511,15 @@ fn start_submission_storm(
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
         let depth: i64 = ledger.conn.query_row(
             "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-            rusqlite::params![task.name], |row| row.get(0))?;
+            rusqlite::params![task.name],
+            |row| row.get(0),
+        )?;
         if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
-            bail!("queue backpressure: task '{}' has {depth} pending runs (limit {})", task.name, Ledger::MAX_PENDING_QUEUE_DEPTH);
+            bail!(
+                "queue backpressure: task '{}' has {depth} pending runs (limit {})",
+                task.name,
+                Ledger::MAX_PENDING_QUEUE_DEPTH
+            );
         }
         let key = format!("storm:{}:{kind}", submission.id);
         let mut payload = serde_json::json!({
@@ -391,26 +532,22 @@ fn start_submission_storm(
         }
         members.push((task.name.clone(), key, payload.to_string()));
     }
-    let requests: Vec<IngressRequest<'_>> = members.iter().map(|(task, key, payload)| IngressRequest {
-        task,
-        trigger_kind: "webhook",
-        idempotency_key: Some(key),
-        source_event_id: None,
-        payload: Some(payload),
-        parent_run_id: Some(parent_run_id),
-    }).collect();
-    let _ = ledger.ingest_batch(&requests)?;
+    let requests: Vec<IngressRequest<'_>> = members
+        .iter()
+        .map(|(task, key, payload)| IngressRequest {
+            task,
+            trigger_kind: "webhook",
+            idempotency_key: Some(key),
+            source_event_id: None,
+            payload: Some(payload),
+            parent_run_id: Some(parent_run_id),
+        })
+        .collect();
+    if let Err(error) = ledger.ingest_batch(&requests) {
+        ledger.rollback_ingress_storm(parent_run_id, Some(&submission.id))?;
+        return Err(error);
+    }
     Ok(())
-}
-
-fn derive_optional(
-    expr: &Option<String>,
-    headers: &[(String, String)],
-    body: &str,
-) -> Result<Option<String>> {
-    expr.as_deref()
-        .map(|expr| derive_dedupe_key(expr, headers, body))
-        .transpose()
 }
 
 fn open_webhook_submission(
@@ -538,8 +675,10 @@ pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -
                 serde_json::Value::String(s) if s.trim().is_empty() => {
                     bail!("dedupe pointer '{value}' resolved to an empty string")
                 }
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
+                serde_json::Value::String(s) => s.trim().to_string(),
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::Bool(value) => value.to_string(),
+                _ => bail!("dedupe pointer '{value}' must resolve to a scalar"),
             }
         }
         _ => unreachable!("validated dedupe expression kind"),
@@ -553,7 +692,7 @@ fn header(headers: &[(String, String)], name: &str) -> Option<String> {
     headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.clone())
+        .map(|(_, v)| v.trim().to_string())
 }
 pub fn verify_hmac(secret: &str, body: &[u8], signature_header: &str) -> bool {
     let Some(hex_sig) = signature_header.strip_prefix("sha256=") else {
@@ -598,7 +737,9 @@ fn verify_delivery_hmac(
             Err(_) => return DeliveryVerification::MalformedTimestamp,
         };
         let now = OffsetDateTime::now_utc().unix_timestamp();
-        if (i128::from(now) - i128::from(timestamp)).abs() > i128::from(DELIVERY_MAX_CLOCK_SKEW_SECONDS) {
+        if (i128::from(now) - i128::from(timestamp)).abs()
+            > i128::from(DELIVERY_MAX_CLOCK_SKEW_SECONDS)
+        {
             return DeliveryVerification::Stale;
         }
         let signed = format!("{timestamp_text}.{delivery_id}.{body}");

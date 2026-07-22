@@ -1,9 +1,14 @@
 use bitterblossom::ledger::Ledger;
 use bitterblossom::workflow::WorkflowDoc;
-use bitterblossom::workflow_runtime::{accept, TriggerEnvelope, TriggerSource};
+use bitterblossom::workflow_runtime::{
+    accept, resolve_workflow_run, TriggerEnvelope, TriggerSource,
+};
+use chrono::{TimeZone, Utc};
+use rusqlite::params;
 
 fn doc(name: &str, route: &str, policy: &str) -> WorkflowDoc {
-    WorkflowDoc::from_toml(&format!(r#"
+    WorkflowDoc::from_toml(&format!(
+        r#"
 name = "{name}"
 goal = "exercise runtime admission"
 
@@ -27,7 +32,9 @@ name = "stub"
 version = 1
 harness = "command"
 model = "stub"
-"#)).unwrap()
+"#
+    ))
+    .unwrap()
 }
 
 fn store() -> (tempfile::TempDir, Ledger) {
@@ -39,29 +46,50 @@ fn store() -> (tempfile::TempDir, Ledger) {
 #[test]
 fn workflow_admission_denial_is_atomic_and_audited() {
     let (_dir, ledger) = store();
-    let workflow = doc("bounded", "bounded-hook", "max_runs_per_day = 1
-concurrency = 1");
+    let workflow = doc(
+        "bounded",
+        "bounded-hook",
+        "max_runs_per_day = 1
+concurrency = 1",
+    );
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
-    let accepted = accept(&ledger, &TriggerEnvelope {
-        workflow: row.name.clone(),
-        source: TriggerSource::Manual,
-        payload: Some(r#"{"id":"one"}"#.into()),
-        dedupe_key: Some("manual:one".into()),
-    }).unwrap();
-    assert!(matches!(accepted, bitterblossom::workflow::AcceptOutcome::Accepted { .. }));
-    let denied = accept(&ledger, &TriggerEnvelope {
-        workflow: row.name.clone(),
-        source: TriggerSource::Manual,
-        payload: Some(r#"{"id":"two"}"#.into()),
-        dedupe_key: Some("manual:two".into()),
-    }).unwrap();
+    let accepted = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"one"}"#.into()),
+            dedupe_key: Some("manual:one".into()),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        accepted,
+        bitterblossom::workflow::AcceptOutcome::Accepted { .. }
+    ));
+    let denied = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"two"}"#.into()),
+            dedupe_key: Some("manual:two".into()),
+        },
+    )
+    .unwrap();
     match denied {
-        bitterblossom::workflow::AcceptOutcome::Denied { kind, .. } => assert_eq!(kind, "max_runs_per_day"),
+        bitterblossom::workflow::AcceptOutcome::Denied { kind, .. } => {
+            assert_eq!(kind, "max_runs_per_day")
+        }
         other => panic!("expected denial, got {other:?}"),
     }
     assert_eq!(ledger.workflow_runs(&row.name).unwrap().len(), 1);
-    assert!(ledger.workflow_events(&row.name).unwrap().iter().any(|e| e.kind == "run_denied"));
+    assert!(ledger
+        .workflow_events(&row.name)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "run_denied"));
 }
 
 #[test]
@@ -78,13 +106,21 @@ fn active_workflow_route_collision_fails_closed() {
     let (_dir, ledger) = store();
     let first = doc("first", "same-hook", "");
     let (first_row, first_revision) = ledger.create_workflow(&first, "test", None).unwrap();
-    ledger.activate_workflow(&first_row.name, Some(first_revision)).unwrap();
+    ledger
+        .activate_workflow(&first_row.name, Some(first_revision))
+        .unwrap();
     let second = doc("second", "same-hook", "");
     let (second_row, second_revision) = ledger.create_workflow(&second, "test", None).unwrap();
-    let error = ledger.activate_workflow(&second_row.name, Some(second_revision)).unwrap_err();
-    assert!(error.to_string().contains("already owned by active workflow"), "{error:#}");
+    let error = ledger
+        .activate_workflow(&second_row.name, Some(second_revision))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already owned by active workflow"),
+        "{error:#}"
+    );
 }
-
 
 #[test]
 fn duplicate_workflow_routes_are_rejected_on_activation() {
@@ -92,8 +128,15 @@ fn duplicate_workflow_routes_are_rejected_on_activation() {
     let mut workflow = doc("duplicate-routes", "same", "");
     workflow.triggers.push(workflow.triggers[0].clone());
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
-    let error = ledger.activate_workflow(&row.name, Some(revision)).unwrap_err();
-    assert!(error.to_string().contains("duplicate or empty webhook route"), "{error:#}");
+    let error = ledger
+        .activate_workflow(&row.name, Some(revision))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate or empty webhook route"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -102,17 +145,35 @@ fn paused_workflow_redelivery_is_duplicate_not_suppressed() {
     let workflow = doc("paused-dedupe", "paused", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
-    let first = accept(&ledger, &TriggerEnvelope {
-        workflow: row.name.clone(), source: TriggerSource::Manual,
-        payload: Some(r#"{"id":"same"}"#.into()), dedupe_key: Some("same".into()),
-    }).unwrap();
-    assert!(matches!(first, bitterblossom::workflow::AcceptOutcome::Accepted { .. }));
+    let first = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"same"}"#.into()),
+            dedupe_key: Some("same".into()),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        first,
+        bitterblossom::workflow::AcceptOutcome::Accepted { .. }
+    ));
     ledger.pause_workflow(&row.name, "operator test").unwrap();
-    let replay = accept(&ledger, &TriggerEnvelope {
-        workflow: row.name.clone(), source: TriggerSource::Manual,
-        payload: Some(r#"{"id":"same"}"#.into()), dedupe_key: Some("same".into()),
-    }).unwrap();
-    assert!(matches!(replay, bitterblossom::workflow::AcceptOutcome::Duplicate { .. }));
+    let replay = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"same"}"#.into()),
+            dedupe_key: Some("same".into()),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        replay,
+        bitterblossom::workflow::AcceptOutcome::Duplicate { .. }
+    ));
 }
 
 #[test]
@@ -121,17 +182,36 @@ fn workflow_terminal_transitions_and_stop_requests_are_fail_closed() {
     let workflow = doc("transitions", "transitions", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
-    let accepted = accept(&ledger, &TriggerEnvelope {
-        workflow: row.name.clone(), source: TriggerSource::Manual,
-        payload: Some(r#"{"id":"transition"}"#.into()), dedupe_key: Some("transition".into()),
-    }).unwrap();
-    let run_id = match accepted { bitterblossom::workflow::AcceptOutcome::Accepted { run } => run.id, other => panic!("{other:?}") };
-    assert!(ledger.set_workflow_run_state(&run_id, "stopped", Some("bad shortcut")).is_err());
-    ledger.request_workflow_run_stop(&run_id, "operator stop").unwrap();
+    let accepted = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"transition"}"#.into()),
+            dedupe_key: Some("transition".into()),
+        },
+    )
+    .unwrap();
+    let run_id = match accepted {
+        bitterblossom::workflow::AcceptOutcome::Accepted { run } => run.id,
+        other => panic!("{other:?}"),
+    };
+    assert!(ledger
+        .set_workflow_run_state(&run_id, "stopped", Some("bad shortcut"))
+        .is_err());
+    ledger
+        .request_workflow_run_stop(&run_id, "operator stop")
+        .unwrap();
     assert!(ledger.claim_workflow_run(&run_id).unwrap());
-    ledger.set_workflow_run_state(&run_id, "stopped", Some("stopped")).unwrap();
-    assert!(ledger.request_workflow_run_stop(&run_id, "late stop").is_err());
-    assert!(ledger.set_workflow_run_state(&run_id, "succeeded", Some("invalid")).is_err());
+    ledger
+        .set_workflow_run_state(&run_id, "stopped", Some("stopped"))
+        .unwrap();
+    assert!(ledger
+        .request_workflow_run_stop(&run_id, "late stop")
+        .is_err());
+    assert!(ledger
+        .set_workflow_run_state(&run_id, "succeeded", Some("invalid"))
+        .is_err());
 }
 
 #[test]
@@ -140,17 +220,161 @@ fn workflow_freshness_reports_queued_running_and_attention() {
     let workflow = doc("freshness", "freshness", "");
     let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
     ledger.activate_workflow(&row.name, Some(revision)).unwrap();
-    let accepted = accept(&ledger, &TriggerEnvelope {
-        workflow: row.name.clone(), source: TriggerSource::Manual,
-        payload: Some(r#"{"id":"fresh"}"#.into()), dedupe_key: Some("fresh".into()),
-    }).unwrap();
-    let run_id = match accepted { bitterblossom::workflow::AcceptOutcome::Accepted { run } => run.id, other => panic!("{other:?}") };
+    let accepted = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"fresh"}"#.into()),
+            dedupe_key: Some("fresh".into()),
+        },
+    )
+    .unwrap();
+    let run_id = match accepted {
+        bitterblossom::workflow::AcceptOutcome::Accepted { run } => run.id,
+        other => panic!("{other:?}"),
+    };
     let queued = ledger.workflow_freshness_summary(300).unwrap();
     assert_eq!(queued["queued"], 1);
     assert_eq!(queued["running"], 0);
     assert_eq!(queued["needs_attention"], 0);
     assert!(ledger.claim_workflow_run(&run_id).unwrap());
-    ledger.set_workflow_run_state(&run_id, "needs_attention", Some("probe unknown")).unwrap();
+    ledger
+        .set_workflow_run_state(&run_id, "needs_attention", Some("probe unknown"))
+        .unwrap();
     let attention = ledger.workflow_freshness_summary(300).unwrap();
     assert_eq!(attention["needs_attention"], 1);
+}
+
+#[test]
+fn dead_letter_open_count_excludes_replayed_rows_and_list_is_complete() {
+    let (_dir, ledger) = store();
+    let mut ids = Vec::new();
+    for n in 0..205 {
+        ids.push(
+            ledger
+                .record_dead_letter(&format!("run-{n}"), "demo", Some("{}"), "test")
+                .unwrap(),
+        );
+    }
+    assert!(ledger
+        .mark_dead_letter_replayed(ids[0], "replay-run")
+        .unwrap());
+    assert_eq!(ledger.open_dead_letter_count(None).unwrap(), 204);
+    assert_eq!(ledger.list_dead_letters().unwrap().len(), 205);
+    assert_eq!(ledger.list_dead_letters_page(200).unwrap().len(), 200);
+}
+
+#[test]
+fn paused_workflow_keeps_normalized_route_reserved() {
+    let (_dir, ledger) = store();
+    let first = doc("paused-owner", "retained-route", "");
+    let (first_row, first_revision) = ledger.create_workflow(&first, "test", None).unwrap();
+    ledger
+        .activate_workflow(&first_row.name, Some(first_revision))
+        .unwrap();
+    ledger
+        .pause_workflow(&first_row.name, "operator maintenance")
+        .unwrap();
+
+    let second = doc("new-owner", " RETAINED-ROUTE ", "");
+    let (second_row, second_revision) = ledger.create_workflow(&second, "test", None).unwrap();
+    let error = ledger
+        .activate_workflow(&second_row.name, Some(second_revision))
+        .unwrap_err();
+    assert!(error.to_string().contains("paused workflow"), "{error:#}");
+}
+
+#[test]
+fn workflow_cron_collapse_accumulates_each_trigger_before_cursor_advance() {
+    let (_dir, ledger) = store();
+    let workflow = WorkflowDoc::from_toml(
+        r#"
+name = "multi-cron"
+goal = "record every discarded catch-up fire"
+
+[[trigger]]
+kind = "cron"
+schedule = "*/5 * * * *"
+
+[[trigger]]
+kind = "cron"
+schedule = "*/7 * * * *"
+
+[[step]]
+name = "work"
+goal = "ack"
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "stub"
+"#,
+    )
+    .unwrap();
+    let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
+    ledger.activate_workflow(&row.name, Some(revision)).unwrap();
+    let last = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 7, 21, 12, 30, 0).unwrap();
+    let mut cursors = std::collections::HashMap::new();
+    let accepted =
+        bitterblossom::workflow_runtime::workflow_cron_tick(&ledger, &mut cursors, last, now, 2)
+            .unwrap();
+    assert_eq!(accepted.len(), 2, "{accepted:?}");
+    let collapse = ledger
+        .guard_event_counts()
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "workflow_cron_collapse")
+        .expect("workflow cron collapse event");
+    // Each trigger discarded four fires and the workflow-level cap discarded
+    // two of the four retained candidates.
+    assert_eq!(collapse.total, 8);
+    assert_eq!(cursors.get(&row.name), Some(&now));
+}
+
+#[test]
+fn resolving_recovered_run_closes_alive_step_before_terminal_state() {
+    let (dir, ledger) = store();
+    let workflow = doc("resolve-alive", "resolve-alive", "");
+    let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
+    ledger.activate_workflow(&row.name, Some(revision)).unwrap();
+    let accepted = accept(
+        &ledger,
+        &TriggerEnvelope {
+            workflow: row.name.clone(),
+            source: TriggerSource::Manual,
+            payload: Some(r#"{"id":"alive"}"#.into()),
+            dedupe_key: Some("alive".into()),
+        },
+    )
+    .unwrap();
+    let run_id = match accepted {
+        bitterblossom::workflow::AcceptOutcome::Accepted { run } => run.id,
+        other => panic!("{other:?}"),
+    };
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("plane.db")).unwrap();
+        conn.execute(
+            "INSERT INTO workflow_step_runs
+             (id, run_id, step, attempt, agent_json, goal, state, artifact_dir, authority_json, started_at)
+             VALUES (?1, ?2, 'work', 1, '{}', 'ack', 'running', NULL, '[]', ?3)",
+            params!["step-alive", run_id, "2026-07-21T00:00:00Z"],
+        ).unwrap();
+        conn.execute(
+            "UPDATE workflow_run_status SET state = 'needs_attention', detail = 'probe alive', updated_at = ?2 WHERE run_id = ?1",
+            params![run_id, "2026-07-21T00:00:01Z"],
+        ).unwrap();
+    }
+    let status =
+        resolve_workflow_run(&ledger, &run_id, "succeeded", "operator verified effect").unwrap();
+    assert_eq!(status.state, "succeeded");
+    let steps = ledger.workflow_step_runs(&run_id).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].state, "failed");
+    assert!(steps[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("operator resolved recovered step"));
 }

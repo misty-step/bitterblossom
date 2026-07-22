@@ -268,6 +268,7 @@ CREATE INDEX IF NOT EXISTS workflow_step_launch_snapshots_revision
 CREATE TABLE IF NOT EXISTS workflow_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workflow_id TEXT NOT NULL REFERENCES workflows(id),
+  run_id TEXT REFERENCES workflow_runs(id),
   kind TEXT NOT NULL,
   data TEXT,
   at TEXT NOT NULL

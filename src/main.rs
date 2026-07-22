@@ -7,8 +7,8 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use bitterblossom::{
-    artifacts, ask, budget, canary, dispatch, ledger, mcp, provider_keys, reap, recovery, serve,
-    spec,
+    artifacts, ask, budget, canary, dispatch, ingress, ledger, mcp, provider_keys, reap, recovery,
+    serve, spec,
 };
 use clap::{Parser, Subcommand};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -140,9 +140,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Classify runs inherited from a dead plane (probe, no orphaning):
-    /// transitions `running`/`pending` into `awaiting_recovery` for operator
-    /// resolution. Read-only inspection.
+    /// Reconcile runs inherited from a dead plane (probe, evidence, and
+    /// bounded recovery): transitions or dead-letters inherited rows, closes
+    /// uncertain steps, and releases leases when recovery proves it is safe.
     Recover {
         #[arg(long)]
         json: bool,
@@ -1609,8 +1609,18 @@ fn run() -> Result<()> {
                 bitterblossom::workflow_runtime::recover_inherited_workflow_runs(&plane, &ledger)?;
             let output = if json {
                 let mut all = Vec::with_capacity(reports.len() + workflow_reports.len());
-                all.extend(reports.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>()?);
-                all.extend(workflow_reports.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>()?);
+                all.extend(
+                    reports
+                        .iter()
+                        .map(serde_json::to_value)
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                );
+                all.extend(
+                    workflow_reports
+                        .iter()
+                        .map(serde_json::to_value)
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                );
                 serde_json::to_string_pretty(&all)?
             } else {
                 format!(
@@ -1845,7 +1855,8 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             revision,
             json,
         } => {
-            let wf = ledger.activate_workflow(&name, revision)?;
+            let routes = ingress::task_webhook_routes(&plane);
+            let wf = ledger.activate_workflow_with_reserved_routes(&name, revision, &routes)?;
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Pause { name, reason, json } => {
@@ -1853,7 +1864,8 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Resume { name, json } => {
-            let wf = ledger.resume_workflow(&name)?;
+            let routes = ingress::task_webhook_routes(&plane);
+            let wf = ledger.resume_workflow_with_reserved_routes(&name, &routes)?;
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Archive { name, json } => {
@@ -1861,7 +1873,9 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Rollback { name, to, json } => {
-            let (wf, revision) = ledger.rollback_workflow(&name, to)?;
+            let routes = ingress::task_webhook_routes(&plane);
+            let (wf, revision) =
+                ledger.rollback_workflow_with_reserved_routes(&name, to, &routes)?;
             print_revision(&wf, revision, "rolled back to snapshot as", json)?;
         }
         WorkflowCommand::Import { file, note, json } => {
@@ -1899,7 +1913,14 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                 Some(&format!("from task '{}'", task.name)),
             )?;
             let wf = if activate {
-                ledger.activate_workflow(&wf.name, Some(revision))?
+                {
+                    let routes = ingress::task_webhook_routes(&plane);
+                    ledger.activate_workflow_with_reserved_routes(
+                        &wf.name,
+                        Some(revision),
+                        &routes,
+                    )?
+                }
             } else {
                 wf
             };
@@ -1951,12 +1972,19 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                     AcceptOutcome::Suppressed { workflow, reason } => {
                         println!("suppressed on '{workflow}': {reason}")
                     }
-                    AcceptOutcome::Denied { workflow, kind, reason } => {
+                    AcceptOutcome::Denied {
+                        workflow,
+                        kind,
+                        reason,
+                    } => {
                         println!("denied on '{workflow}' ({kind}): {reason}")
                     }
                 }
             }
-            if matches!(outcome, AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }) {
+            if matches!(
+                outcome,
+                AcceptOutcome::Suppressed { .. } | AcceptOutcome::Denied { .. }
+            ) {
                 std::process::exit(3);
             }
         }
@@ -1967,10 +1995,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             json,
         } => {
             let status = bitterblossom::workflow_runtime::resolve_workflow_run(
-                &ledger,
-                &run_id,
-                &state,
-                &reason,
+                ledger, &run_id, &state, &reason,
             )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
