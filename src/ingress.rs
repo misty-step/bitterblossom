@@ -221,54 +221,76 @@ pub fn handle_webhook(
         }
     }
 
-    if let Some(action) = action {
-        preflight_submission_storm(plane, ledger, headers, body, action)?;
-    }
+    let storm_plan = action
+        .as_ref()
+        .map(|action| prepare_submission_storm(plane, headers, body, action))
+        .transpose()?;
     let source = header(headers, "x-github-delivery").or_else(|| header(headers, "x-delivery-id"));
-    let outcome = match ledger.ingest(IngressRequest {
-        task: &task.name,
-        trigger_kind: "webhook",
-        idempotency_key: key.as_deref(),
-        source_event_id: source.as_deref(),
-        payload: Some(body),
-        parent_run_id: None,
-    }) {
-        Ok(outcome) => outcome,
-        Err(error) if error.to_string().contains("queue backpressure") => {
-            ledger.record_guard_event(
-                "queue_backpressure",
-                Some(&task.name),
-                &format!("source=webhook {error}"),
-                1,
-            )?;
-            return Ok(WebhookResponse {
-                status: 429,
-                body: serde_json::json!({
-                    "error": "queue backpressure refused reflex admission",
-                    "task": task.name,
-                    "detail": error.to_string(),
-                })
-                .to_string(),
-            });
-        }
-        Err(error) => return Err(error),
-    };
-    if let Some(action) = action {
-        if let Err(error) = start_submission_storm(
-            plane,
-            ledger,
-            &outcome.run_id,
-            headers,
-            body,
-            action,
-            !outcome.duplicate,
+    let outcome = if let Some((change, rev, version, members)) = storm_plan {
+        match ledger.ingest_submission_storm(
+            IngressRequest {
+                task: &task.name,
+                trigger_kind: "webhook",
+                idempotency_key: key.as_deref(),
+                source_event_id: source.as_deref(),
+                payload: Some(body),
+                parent_run_id: None,
+            },
+            &change,
+            &rev,
+            version.as_deref(),
+            &members,
         ) {
-            if !outcome.duplicate {
-                ledger.rollback_ingress_storm(&outcome.run_id, None)?;
+            Ok(outcome) => outcome,
+            Err(error) if error.to_string().contains("queue backpressure") => {
+                ledger.record_guard_event(
+                    "queue_backpressure",
+                    Some(&task.name),
+                    &format!("source=webhook {error}"),
+                    1,
+                )?;
+                return Ok(WebhookResponse {
+                    status: 429,
+                    body: serde_json::json!({
+                        "error": "queue backpressure refused reflex admission",
+                        "task": task.name,
+                        "detail": error.to_string(),
+                    })
+                    .to_string(),
+                });
             }
-            return Err(error);
+            Err(error) => return Err(error),
         }
-    }
+    } else {
+        match ledger.ingest(IngressRequest {
+            task: &task.name,
+            trigger_kind: "webhook",
+            idempotency_key: key.as_deref(),
+            source_event_id: source.as_deref(),
+            payload: Some(body),
+            parent_run_id: None,
+        }) {
+            Ok(outcome) => outcome,
+            Err(error) if error.to_string().contains("queue backpressure") => {
+                ledger.record_guard_event(
+                    "queue_backpressure",
+                    Some(&task.name),
+                    &format!("source=webhook {error}"),
+                    1,
+                )?;
+                return Ok(WebhookResponse {
+                    status: 429,
+                    body: serde_json::json!({
+                        "error": "queue backpressure refused reflex admission",
+                        "task": task.name,
+                        "detail": error.to_string(),
+                    })
+                    .to_string(),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    };
     Ok(WebhookResponse {
         status: 202,
         body: serde_json::json!({"run_id": outcome.run_id, "duplicate": outcome.duplicate})
@@ -383,77 +405,17 @@ pub fn handle_workflow_webhook(
     })
 }
 
-fn preflight_submission_storm(
+fn prepare_submission_storm(
     plane: &Plane,
-    ledger: &mut Ledger,
     headers: &[(String, String)],
     body: &str,
     action: &WebhookActionSpec,
-) -> Result<()> {
-    let WebhookActionSpec::SubmissionStorm {
-        change,
-        rev,
-        repo,
-        version,
-    } = action;
-    let gate = plane
-        .spec
-        .gate
-        .as_ref()
-        .context("submission_storm action requires [gate]")?;
-    let derive = |expr: &str| {
-        derive_dedupe_key(expr, headers, body).map_err(|_| {
-            anyhow::Error::new(IngressClientError::BadRequest(
-                "submission_storm action field must resolve to a non-empty value".into(),
-            ))
-        })
-    };
-    derive(change)?;
-    derive(rev)?;
-    if let Some(expr) = repo {
-        derive(expr)?;
-    }
-    if let Some(expr) = version {
-        derive(expr)?;
-    }
-    for kind in &gate.required {
-        let task = plane
-            .tasks
-            .values()
-            .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
-            .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
-        let depth: i64 = ledger.conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-            rusqlite::params![task.name],
-            |row| row.get(0),
-        )?;
-        if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
-            let detail = format!(
-                "queue backpressure: task '{}' has {depth} pending runs (limit {})",
-                task.name,
-                Ledger::MAX_PENDING_QUEUE_DEPTH
-            );
-            ledger.record_guard_event(
-                "submission_storm_member_backpressure",
-                Some(&task.name),
-                &detail,
-                1,
-            )?;
-            return Err(IngressClientError::Backpressure(detail).into());
-        }
-    }
-    Ok(())
-}
-
-fn start_submission_storm(
-    plane: &Plane,
-    ledger: &mut Ledger,
-    parent_run_id: &str,
-    headers: &[(String, String)],
-    body: &str,
-    action: &WebhookActionSpec,
-    allow_supersede: bool,
-) -> Result<()> {
+) -> Result<(
+    String,
+    String,
+    Option<String>,
+    Vec<(String, String, String)>,
+)> {
     let WebhookActionSpec::SubmissionStorm {
         change,
         rev,
@@ -476,39 +438,6 @@ fn start_submission_storm(
     let rev = derive(rev)?;
     let repo = repo.as_deref().map(derive).transpose()?;
     let version = version.as_deref().map(derive).transpose()?;
-    // Refuse before opening or superseding a submission when any required
-    // member queue is saturated; this prevents parent-only partial state.
-    for kind in &gate.required {
-        let task = plane
-            .tasks
-            .values()
-            .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
-            .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
-        let depth: i64 = ledger.conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-            rusqlite::params![task.name],
-            |row| row.get(0),
-        )?;
-        if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
-            let detail = format!(
-                "queue backpressure: task '{}' has {depth} pending runs (limit {})",
-                task.name,
-                Ledger::MAX_PENDING_QUEUE_DEPTH
-            );
-            ledger.record_guard_event(
-                "submission_storm_member_backpressure",
-                Some(&task.name),
-                &detail,
-                1,
-            )?;
-            return Err(IngressClientError::Backpressure(detail).into());
-        }
-    }
-    let Some(submission) =
-        open_webhook_submission(ledger, &change, &rev, allow_supersede, version.as_deref())?
-    else {
-        return Ok(());
-    };
     let mut members = Vec::with_capacity(gate.required.len());
     for kind in &gate.required {
         let task = plane
@@ -516,112 +445,17 @@ fn start_submission_storm(
             .values()
             .find(|task| task.spec.verdict.as_deref() == Some(kind.as_str()))
             .with_context(|| format!("no task declares verdict = \"{kind}\""))?;
-        let depth: i64 = ledger.conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
-            rusqlite::params![task.name],
-            |row| row.get(0),
-        )?;
-        if depth >= Ledger::MAX_PENDING_QUEUE_DEPTH {
-            bail!(
-                "queue backpressure: task '{}' has {depth} pending runs (limit {})",
-                task.name,
-                Ledger::MAX_PENDING_QUEUE_DEPTH
-            );
-        }
-        let key = format!("storm:{}:{kind}", submission.id);
+        let key = kind.clone();
         let mut payload = serde_json::json!({
-            "submission": submission.id,
-            "change": submission.change_key,
-            "rev": submission.rev,
+            "change": change,
+            "rev": rev,
         });
         if let Some(repo) = &repo {
             payload["repo"] = repo.clone().into();
         }
         members.push((task.name.clone(), key, payload.to_string()));
     }
-    let requests: Vec<IngressRequest<'_>> = members
-        .iter()
-        .map(|(task, key, payload)| IngressRequest {
-            task,
-            trigger_kind: "webhook",
-            idempotency_key: Some(key),
-            source_event_id: None,
-            payload: Some(payload),
-            parent_run_id: Some(parent_run_id),
-        })
-        .collect();
-    if let Err(error) = ledger.ingest_batch(&requests) {
-        ledger.rollback_ingress_storm(parent_run_id, Some(&submission.id))?;
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn open_webhook_submission(
-    ledger: &mut Ledger,
-    change: &str,
-    rev: &str,
-    allow_supersede: bool,
-    version: Option<&str>,
-) -> Result<Option<crate::submit::SubmissionRow>> {
-    // `open_submission` errors only when a submission is already open, so a redelivery
-    // that lands after one settles would re-open and re-storm. Decide from the latest
-    // submission's head and state instead.
-    match ledger.latest_submission(change)? {
-        // Same head we already handled: reuse an open submission (the member loop
-        // repairs missing rows); a settled one is an idempotent no-op.
-        Some(l) if l.rev == rev => {
-            if l.state == "open" {
-                return Ok(Some(l));
-            }
-            return Ok(None);
-        }
-        // Different head while one is open: supersede only on a non-duplicate, strictly
-        // newer delivery.
-        Some(l) if l.state == "open" => {
-            if !allow_supersede
-                || version
-                    .zip(submission_head_version(&l))
-                    .is_some_and(|(new, old)| new <= old)
-            {
-                return Ok(None);
-            }
-            ledger.settle_submission(&l.id, "abandoned", "{}")?;
-        }
-        // Different head after settle: open only when it is newer than the last
-        // processed head.
-        Some(l)
-            if version
-                .zip(l.head_version.as_deref())
-                .is_some_and(|(new, old)| new <= old) =>
-        {
-            return Ok(None);
-        }
-        // No prior submission, or a settled one with a newer or unversioned head: open
-        // the next round below.
-        _ => {}
-    }
-    let mut submission = ledger.open_submission(change, rev, None)?;
-    remember_submission_version(ledger, &submission.id, version)?;
-    submission.head_version = version.map(ToOwned::to_owned);
-    Ok(Some(submission))
-}
-
-fn remember_submission_version(ledger: &mut Ledger, id: &str, version: Option<&str>) -> Result<()> {
-    if let Some(version) = version {
-        ledger.conn.execute(
-            "UPDATE submissions SET head_version = ?2 WHERE id = ?1 AND state = 'open'",
-            rusqlite::params![id, version],
-        )?;
-    }
-    Ok(())
-}
-
-fn submission_head_version(submission: &crate::submit::SubmissionRow) -> Option<&str> {
-    submission
-        .head_version
-        .as_deref()
-        .or(submission.report_json.as_deref())
+    Ok((change, rev, version, members))
 }
 
 /// Validate the canonical trigger dedupe expression before activation.
@@ -844,6 +678,8 @@ pub fn due_fires_bounded_for_runtime(
     due_fires_bounded(schedule, after, until, max_fires)
 }
 
+const MAX_CRON_SCAN_FIRES: usize = 10_000;
+
 fn due_fires_bounded(
     schedule: &cron::Schedule,
     after: DateTime<Utc>,
@@ -851,16 +687,23 @@ fn due_fires_bounded(
     max_fires: usize,
 ) -> (Vec<DateTime<Utc>>, usize) {
     let cap = max_fires.max(1);
-    let mut retained = std::collections::VecDeque::with_capacity(cap);
-    let mut total = 0usize;
-    for fire in schedule.after(&after).take_while(|t| *t <= until) {
-        total = total.saturating_add(1);
+    let scan_cap = MAX_CRON_SCAN_FIRES.max(cap).min(MAX_CRON_SCAN_FIRES);
+    let mut retained = std::collections::VecDeque::with_capacity(cap.min(scan_cap));
+    let mut scanned = 0usize;
+    for fire in schedule
+        .after(&after)
+        .take_while(|t| *t <= until)
+        .take(scan_cap.saturating_add(1))
+    {
+        scanned = scanned.saturating_add(1);
         if retained.len() == cap {
             retained.pop_front();
         }
         retained.push_back(fire);
     }
-    (retained.into_iter().collect(), total.saturating_sub(cap))
+    // Once the scan cap is reached this is a lower bound. We retain the
+    // newest fires and never spend unbounded CPU counting an ancient backlog.
+    (retained.into_iter().collect(), scanned.saturating_sub(cap))
 }
 pub fn ingest_cron_fire(
     ledger: &mut Ledger,
@@ -915,6 +758,37 @@ pub fn cron_catchup_guarded(
     cron_catchup_inner(Some(plane), ledger, task, schedule, last, now, max_fires)
 }
 
+/// Ingest one task's cron triggers together. Advancing the task cursor once
+/// after this call prevents a second trigger from losing its own catch-up
+/// window. Equal timestamps share the task's idempotency key and are kept as
+/// one fire.
+pub fn cron_catchup_guarded_multi(
+    plane: &Plane,
+    ledger: &mut Ledger,
+    task: &str,
+    schedules: &[&cron::Schedule],
+    last: DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_fires: u32,
+) -> Result<CronCatchupOutcome> {
+    let cap = max_fires.max(1) as usize;
+    let mut fires = Vec::new();
+    let mut skipped = 0usize;
+    for schedule in schedules {
+        let (mut retained, collapsed) = due_fires_bounded(schedule, last, now, cap);
+        fires.append(&mut retained);
+        skipped = skipped.saturating_add(collapsed);
+    }
+    fires.sort_unstable();
+    fires.dedup();
+    if fires.len() > cap {
+        let drop_count = fires.len() - cap;
+        fires.drain(..drop_count);
+        skipped = skipped.saturating_add(drop_count);
+    }
+    cron_catchup_fires(Some(plane), ledger, task, fires, skipped)
+}
+
 fn cron_catchup_inner(
     plane: Option<&Plane>,
     ledger: &mut Ledger,
@@ -925,7 +799,17 @@ fn cron_catchup_inner(
     max_fires: u32,
 ) -> Result<CronCatchupOutcome> {
     let (fires, bounded_skipped) = due_fires_bounded(schedule, last, now, max_fires as usize);
-    if fires.is_empty() {
+    cron_catchup_fires(plane, ledger, task, fires, bounded_skipped)
+}
+
+fn cron_catchup_fires(
+    plane: Option<&Plane>,
+    ledger: &mut Ledger,
+    task: &str,
+    ingest_fires: Vec<DateTime<Utc>>,
+    skipped: usize,
+) -> Result<CronCatchupOutcome> {
+    if ingest_fires.is_empty() {
         return Ok(CronCatchupOutcome::default());
     }
     if let Some(plane) = plane {
@@ -934,14 +818,14 @@ fn cron_catchup_inner(
             Err(_) => attention_debt_brake(plane, ledger, task, "cron")?.is_some(),
         };
         if refused {
+            // Refused fires are not collapsed: preserve the distinction in
+            // the returned counters and guard stream.
             return Ok(CronCatchupOutcome {
-                skipped: fires.len() + bounded_skipped,
+                skipped: ingest_fires.len() + skipped,
                 ..Default::default()
             });
         }
     }
-    let ingest_fires = fires;
-    let skipped = bounded_skipped;
     let mut outcome = CronCatchupOutcome {
         skipped,
         ..Default::default()

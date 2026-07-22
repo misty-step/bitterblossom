@@ -107,9 +107,13 @@ impl Substrate for TailnetSubstrate {
         // literal) so it expands remotely regardless of the connecting
         // account's home directory.
         let script = format!(
-            "pid=\"$(cat \"$HOME/.bb-tailnet/{marker}.pid\" 2>/dev/null)\" || exit 3; \
+            "raw=\"$(cat \"$HOME/.bb-tailnet/{marker}.pid\" 2>/dev/null)\" || exit 3; \
+             pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; \
              case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; \
-             kill -0 \"$pid\" 2>/dev/null && exit 0 || exit 4"
+             kill -0 \"$pid\" 2>/dev/null || exit 4; \
+             if [ \"$expected\" = \"$raw\" ] || [ -z \"$expected\" ]; then exit 0; fi; \
+             actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; \
+             [ \"$actual\" = \"$expected\" ] && exit 0 || exit 6"
         );
         match remote_shell(host, &script, Duration::from_secs(30)) {
             Ok(out) => match out.exit_code {
@@ -120,6 +124,9 @@ impl Substrate for TailnetSubstrate {
                 )),
                 5 => ProbeResult::Unknown(format!(
                     "malformed pidfile $HOME/.bb-tailnet/{marker}.pid on {host}"
+                )),
+                6 => ProbeResult::Unknown(format!(
+                    "pid identity does not match marker $HOME/.bb-tailnet/{marker}.pid on {host}"
                 )),
                 code => ProbeResult::Unknown(format!(
                     "probe exit {code}: {}",
@@ -287,7 +294,7 @@ impl Session for TailnetSession {
             ""
         };
         let script = format!(
-            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho $$ > ~/.bb-tailnet/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
+            "cd {ws} || exit 1\nmkdir -p ~/.bb-tailnet\necho \"$|$(ps -p $ -o lstart=)\" > ~/.bb-tailnet/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
             ws = shell_quote(&self.workspace),
             marker = self.marker,
         );

@@ -204,19 +204,30 @@ fn run_cron_tick(
     now: DateTime<Utc>,
     max_fires: u32,
 ) {
-    let mut seen = HashSet::new();
-    // Backlog 083: cron catch-up is bounded per task. A task that catches up
-    // advances independently; a task that fails retries its own window without
-    // rewinding successful tasks and duplicating their collapse counts.
+    let mut grouped: HashMap<String, Vec<&Schedule>> = HashMap::new();
     for (task, schedule) in schedules {
+        grouped.entry(task.clone()).or_default().push(schedule);
+    }
+    let mut seen = HashSet::new();
+    // Catch up all triggers for one task before advancing its one cursor.
+    // Advancing once per trigger silently drops later trigger windows.
+    for (task, task_schedules) in grouped {
         seen.insert(task.clone());
         let last = *last_by_task.entry(task.clone()).or_insert(*default_last);
-        match ingress::cron_catchup_guarded(plane, ledger, task, schedule, last, now, max_fires) {
+        match ingress::cron_catchup_guarded_multi(
+            plane,
+            ledger,
+            &task,
+            &task_schedules,
+            last,
+            now,
+            max_fires,
+        ) {
             Ok(o) => {
                 if o.skipped > 0 {
-                    eprintln!("cron: task {task} collapsed {} skipped fires", o.skipped);
+                    eprintln!("cron: task {task} refused/collapsed {} skipped fires", o.skipped);
                 }
-                last_by_task.insert(task.clone(), now);
+                last_by_task.insert(task, now);
             }
             Err(e) => {
                 eprintln!("cron: task {task}: {e:#}");

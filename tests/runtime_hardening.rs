@@ -1,4 +1,4 @@
-use bitterblossom::ledger::Ledger;
+use bitterblossom::ledger::{IngressRequest, Ledger};
 use bitterblossom::workflow::WorkflowDoc;
 use bitterblossom::workflow_runtime::{
     accept, resolve_workflow_run, TriggerEnvelope, TriggerSource,
@@ -44,6 +44,39 @@ fn store() -> (tempfile::TempDir, Ledger) {
 }
 
 #[test]
+fn legacy_resolve_closes_open_attempt_and_releases_lease() {
+    let (_dir, mut ledger) = store();
+    let accepted = ledger
+        .ingest(IngressRequest {
+            task: "legacy",
+            trigger_kind: "manual",
+            idempotency_key: Some("legacy-1"),
+            source_event_id: None,
+            payload: Some("{}"),
+            parent_run_id: None,
+        })
+        .unwrap();
+    let run_id = accepted.run_id.to_string();
+    ledger
+        .create_attempt(&run_id, 1, "agent", 1, "harness", "model")
+        .unwrap();
+    let attempt_id = ledger.attempts(&run_id).unwrap()[0].id;
+    ledger.set_attempt_phase(attempt_id, "executing").unwrap();
+    assert!(ledger.try_acquire_host_lease("legacy-host", &run_id).unwrap());
+
+    ledger
+        .resolve_run(&run_id, "failure", "operator resolved after restart")
+        .unwrap();
+
+    let attempt = &ledger.attempts(&run_id).unwrap()[0];
+    assert_eq!(attempt.phase, "released");
+    assert_eq!(attempt.outcome.as_deref(), Some("failure"));
+    assert!(attempt.ended_at.is_some());
+    assert!(ledger.lease_holder("legacy-host").unwrap().is_none());
+    assert_eq!(ledger.run(&run_id).unwrap().state, "failure");
+}
+
+#[test]
 fn workflow_admission_denial_is_atomic_and_audited() {
     let (_dir, ledger) = store();
     let workflow = doc(
@@ -64,10 +97,12 @@ concurrency = 1",
         },
     )
     .unwrap();
-    assert!(matches!(
-        accepted,
-        bitterblossom::workflow::AcceptOutcome::Accepted { .. }
-    ));
+    let accepted_id = match &accepted {
+        bitterblossom::workflow::AcceptOutcome::Accepted { run } => run.id.clone(),
+        other => panic!("expected acceptance, got {other:?}"),
+    };
+    let run_events = ledger.workflow_run_events(&accepted_id).unwrap();
+    assert!(run_events.iter().any(|event| event.kind == "run_accepted"));
     let denied = accept(
         &ledger,
         &TriggerEnvelope {
@@ -90,6 +125,40 @@ concurrency = 1",
         .unwrap()
         .iter()
         .any(|e| e.kind == "run_denied"));
+}
+
+#[test]
+fn legacy_workflow_event_table_backfills_run_id_for_readback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy-events.db");
+    let (workflow_id, workflow_name) = {
+        let ledger = Ledger::open(&path).unwrap();
+        let workflow = doc("legacy-events", "legacy-events-hook", "");
+        let (row, _) = ledger.create_workflow(&workflow, "test", None).unwrap();
+        (row.id, row.name)
+    };
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE workflow_events;
+            CREATE TABLE workflow_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                data TEXT,
+                at TEXT NOT NULL
+            );")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO workflow_events (workflow_id, kind, data, at) VALUES (?1, 'legacy', 'old', '2026-01-01T00:00:00Z')",
+            params![workflow_id],
+        )
+        .unwrap();
+    }
+    let ledger = Ledger::open(&path).unwrap();
+    let events = ledger.workflow_events(&workflow_name).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "legacy");
+    assert!(events[0].run_id.is_none());
 }
 
 #[test]
@@ -263,6 +332,21 @@ fn dead_letter_open_count_excludes_replayed_rows_and_list_is_complete() {
     assert_eq!(ledger.open_dead_letter_count(None).unwrap(), 204);
     assert_eq!(ledger.list_dead_letters().unwrap().len(), 205);
     assert_eq!(ledger.list_dead_letters_page(200).unwrap().len(), 200);
+}
+
+#[test]
+fn task_workflow_route_collision_fails_at_activation() {
+    let (_dir, ledger) = store();
+    let workflow = doc("workflow-owner", " Shared-Route ", "");
+    let (row, revision) = ledger.create_workflow(&workflow, "test", None).unwrap();
+    let error = ledger
+        .activate_workflow_with_reserved_routes(
+            &row.name,
+            Some(revision),
+            &["/shared-route/".to_string()],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("already owned by a task"), "{error:#}");
 }
 
 #[test]

@@ -1014,8 +1014,7 @@ fn run() -> Result<()> {
                     outcome,
                     reason,
                 } => {
-                    ledger.transition(&run_id, &outcome, Some(&reason))?;
-                    ledger.release_leases_for_run(&run_id)?;
+                    ledger.resolve_run(&run_id, &outcome, &reason)?;
                     println!("run {run_id} resolved: {outcome}");
                 }
                 RunsCommand::Release { run_id, reason } => {

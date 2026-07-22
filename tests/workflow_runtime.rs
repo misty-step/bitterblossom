@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
+use rusqlite::{params, Connection};
 
 fn write_plane(root: &Path) {
     fs::write(
@@ -1353,6 +1354,18 @@ bin = "{}"
 
     // hard-kill the plane mid-execution (SIGKILL: no graceful shutdown)
     serve.kill_hard();
+
+    // Simulate a store-era row with step evidence but no mutable status row.
+    // Ledger::open must backfill it as needs_attention, then boot recovery
+    // must still probe the inherited step instead of skipping it.
+    {
+        let conn = Connection::open(root.join(".bb/plane.db")).unwrap();
+        conn.execute(
+            "DELETE FROM workflow_run_status WHERE run_id = ?1",
+            params![run_id],
+        )
+        .unwrap();
+    }
 
     // restart: boot classification must mark the inherited run
     // needs_attention naming the in-flight step — never blindly re-execute

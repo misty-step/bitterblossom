@@ -11,6 +11,19 @@ use super::{
 };
 pub const PIDFILE: &str = "harness.pid";
 
+fn process_identity(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 pub struct LocalSubstrate;
 
 impl Substrate for LocalSubstrate {
@@ -31,13 +44,28 @@ impl Substrate for LocalSubstrate {
         let Ok(content) = std::fs::read_to_string(&pidfile) else {
             return ProbeResult::Unknown(format!("no pidfile at {}", pidfile.display()));
         };
-        let Ok(pid) = content.trim().parse::<i32>() else {
+        let mut lines = content.lines();
+        let Ok(pid) = lines.next().unwrap_or_default().trim().parse::<i32>() else {
             return ProbeResult::Unknown("unparseable pidfile".into());
         };
-        if unsafe { libc::kill(pid, 0) } == 0 {
-            ProbeResult::Alive
-        } else {
+        let identity = lines.next().map(str::trim).filter(|value| !value.is_empty());
+        let errno = unsafe { libc::kill(pid, 0) };
+        if errno == 0 {
+            if let Some(expected) = identity {
+                match u32::try_from(pid).ok().and_then(process_identity) {
+                    Some(actual) if actual == expected => ProbeResult::Alive,
+                    Some(_) => ProbeResult::Unknown("pid identity does not match marker".into()),
+                    None => ProbeResult::Unknown("unable to read pid identity".into()),
+                }
+            } else {
+                // Store-era pidfiles contain only a PID; preserve their
+                // visibility while new executions get identity protection.
+                ProbeResult::Alive
+            }
+        } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
             ProbeResult::Dead
+        } else {
+            ProbeResult::Unknown(format!("pid probe failed: {}", std::io::Error::last_os_error()))
         }
     }
 }
@@ -362,7 +390,10 @@ pub(crate) fn run_with_timeout(
         .spawn()
         .with_context(|| format!("spawn {program}"))?;
     if let Some(path) = control.pidfile {
-        let _ = std::fs::write(path, child.id().to_string());
+        let content = process_identity(child.id())
+            .map(|identity| format!("{}\n{identity}\n", child.id()))
+            .unwrap_or_else(|| format!("{}\n", child.id()));
+        let _ = std::fs::write(path, content);
     }
 
     if let Some(input) = stdin {

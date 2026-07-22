@@ -47,7 +47,7 @@ impl Substrate for SpritesSubstrate {
     }
 
     fn probe(&self, host: &str, _attempt_dir: &Path, marker: &str) -> ProbeResult {
-        let script = format!("pid=\"$(cat /tmp/{marker}.pid 2>/dev/null)\" || exit 3; case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; kill -0 \"$pid\" 2>/dev/null && exit 0 || exit 4");
+        let script = format!("raw=\"$(cat /tmp/{marker}.pid 2>/dev/null)\" || exit 3; pid=\"${{raw%%|*}}\"; expected=\"${{raw#*|}}\"; case \"$pid\" in ''|*[!0-9]*) exit 5;; esac; kill -0 \"$pid\" 2>/dev/null || exit 4; if [ \"$expected\" = \"$raw\" ] || [ -z \"$expected\" ]; then exit 0; fi; actual=\"$(ps -p \"$pid\" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')\"; [ \"$actual\" = \"$expected\" ] && exit 0 || exit 6");
         let mut cmd = vec![sprite_bin(), "exec".into()];
         cmd.extend(selector_args(host));
         cmd.extend(["--".into(), "sh".into(), "-c".into(), script]);
@@ -350,7 +350,7 @@ impl Session for SpriteSession {
             ""
         };
         let script = format!(
-            "cd {ws} || exit 1\necho $$ > /tmp/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
+            "cd {ws} || exit 1\necho \"$|$(ps -p $ -o lstart=)\" > /tmp/{marker}.pid\nunset GH_TOKEN\n{scrub}{exports}{body}",
             ws = shell_quote(&self.workspace),
             marker = self.marker,
         );

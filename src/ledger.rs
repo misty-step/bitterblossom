@@ -479,6 +479,279 @@ impl Ledger {
         })
     }
 
+    /// Admit a webhook submission storm as one write transaction.
+    ///
+    /// Parent dedupe, submission head selection, queue-capacity checks, and
+    /// member dedupe/insertion all run under the same IMMEDIATE lock. A
+    /// duplicate delivery therefore remains a no-op at a full queue, while a
+    /// repair or first admission either inserts the complete tree or nothing.
+    pub(crate) fn ingest_submission_storm(
+        &mut self,
+        parent: IngressRequest<'_>,
+        change: &str,
+        rev: &str,
+        version: Option<&str>,
+        members: &[(String, String, String)],
+    ) -> Result<IngressOutcome> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ts = now();
+
+        let parent_existing: Option<String> = parent
+            .idempotency_key
+            .and_then(|key| {
+                tx.query_row(
+                    "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                    params![parent.task, key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .transpose()
+            })
+            .transpose()?;
+        let parent_duplicate = parent_existing.is_some();
+        let parent_id = parent_existing.unwrap_or_else(new_id);
+
+        let parent_parked: Option<String> = tx
+            .query_row(
+                "SELECT reason FROM parked_tasks WHERE task = ?1",
+                params![parent.task],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut needed = std::collections::BTreeMap::<String, i64>::new();
+        if !parent_duplicate {
+            needed.insert(parent.task.to_string(), 1);
+        }
+
+        // Resolve the submission head without calling helpers that open their
+        // own transaction. This keeps supersession and member admission atomic.
+        let latest: Option<(
+            String,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = tx
+            .query_row(
+                "SELECT id, state, rev, round, prior_report_json, report_json, head_version
+                 FROM submissions WHERE change_key = ?1 ORDER BY rowid DESC LIMIT 1",
+                params![change],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let mut settle_old = None;
+        let mut new_submission: Option<(String, i64, Option<String>)> = None;
+        let mut submission_id: Option<String> = None;
+        match latest {
+            Some((id, state, old_rev, _round, _prior, _report, _old_version))
+                if old_rev == rev && state == "open" =>
+            {
+                submission_id = Some(id);
+            }
+            Some((_id, _state, old_rev, _round, _prior, _report, _old_version))
+                if old_rev == rev => {}
+            Some((id, state, _old_rev, round, _prior, _report, old_version)) if state == "open" => {
+                let newer = version
+                    .zip(old_version.as_deref())
+                    .is_none_or(|(new, old)| new > old);
+                if !parent_duplicate && newer {
+                    settle_old = Some(id);
+                    let id = new_id();
+                    submission_id = Some(id.clone());
+                    new_submission = Some((id, 1, None));
+                }
+            }
+            Some((_id, state, _old_rev, round, prior, _report, old_version)) => {
+                let newer = version
+                    .zip(old_version.as_deref())
+                    .is_none_or(|(new, old)| new > old);
+                if newer {
+                    let id = new_id();
+                    submission_id = Some(id.clone());
+                    let round = if state == "blocked" { round + 1 } else { 1 };
+                    let prior = if state == "blocked" { prior } else { None };
+                    new_submission = Some((id, round, prior));
+                }
+            }
+            None => {
+                let id = new_id();
+                submission_id = Some(id.clone());
+                new_submission = Some((id, 1, None));
+            }
+        }
+
+        let mut member_existing = Vec::with_capacity(members.len());
+        if let Some(submission_id) = &submission_id {
+            for (task, kind, _payload) in members {
+                let key = format!("storm:{submission_id}:{kind}");
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM runs WHERE task = ?1 AND idempotency_key = ?2",
+                        params![task, key],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if existing.is_none() {
+                    *needed.entry(task.clone()).or_default() += 1;
+                }
+                member_existing.push(existing);
+            }
+        }
+
+        // Capacity is charged only for missing rows. Duplicate deliveries
+        // can repair nothing and must stay successful even at the ceiling.
+        for (task, missing) in &needed {
+            let depth: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM runs WHERE task = ?1 AND state = 'pending'",
+                params![task],
+                |row| row.get(0),
+            )?;
+            if depth + missing > Self::MAX_PENDING_QUEUE_DEPTH {
+                bail!(
+                    "queue backpressure: task '{}' has {depth} pending runs and needs {missing} additional slots (limit {})",
+                    task,
+                    Self::MAX_PENDING_QUEUE_DEPTH
+                );
+            }
+        }
+
+        // Parent and event are inserted only after every refusal check above.
+        if !parent_duplicate {
+            let (state, reason) = match parent_parked {
+                Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+                None => ("pending", None),
+            };
+            tx.execute(
+                "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+                   state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                params![
+                    parent_id,
+                    parent.task,
+                    parent.trigger_kind,
+                    parent.idempotency_key,
+                    state,
+                    reason,
+                    new_id(),
+                    parent.parent_run_id,
+                    parent.payload,
+                    ts
+                ],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id,
+               dedupe_key, payload_hash, duplicate, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                parent_id,
+                parent.task,
+                parent.trigger_kind,
+                parent.source_event_id,
+                parent.idempotency_key,
+                parent.payload.map(payload_hash),
+                parent_duplicate as i64,
+                ts
+            ],
+        )?;
+
+        if let Some(old_id) = settle_old {
+            tx.execute(
+                "UPDATE submissions SET state = 'abandoned', report_json = '{}', updated_at = ?2
+                 WHERE id = ?1 AND state = 'open'",
+                params![old_id, ts],
+            )?;
+        }
+        if let Some((id, round, prior_report)) = new_submission {
+            tx.execute(
+                "INSERT INTO submissions (id, change_key, rev, round, state, context,
+                   prior_report_json, created_at, updated_at, head_version)
+                 VALUES (?1, ?2, ?3, ?4, 'open', NULL, ?5, ?6, ?6, ?7)",
+                params![id, change, rev, round, prior_report, ts, version],
+            )?;
+        }
+
+        for ((task, kind, payload), existing) in members.iter().zip(member_existing) {
+            let Some(submission_id) = submission_id.as_ref() else {
+                break;
+            };
+            let key = format!("storm:{submission_id}:{kind}");
+            let payload = serde_json::from_str::<serde_json::Value>(payload)
+                .map(|mut value| {
+                    value["submission"] = serde_json::Value::String(submission_id.clone());
+                    value.to_string()
+                })
+                .unwrap_or_else(|_| payload.clone());
+            let (run_id, duplicate) = if let Some(existing) = existing {
+                (existing, true)
+            } else {
+                let id = new_id();
+                let parked: Option<String> = tx
+                    .query_row(
+                        "SELECT reason FROM parked_tasks WHERE task = ?1",
+                        params![task],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let (state, reason) = match parked {
+                    Some(reason) => ("blocked_budget", Some(format!("task parked: {reason}"))),
+                    None => ("pending", None),
+                };
+                tx.execute(
+                    "INSERT INTO runs (id, task, trigger_kind, idempotency_key, state,
+                       state_reason, trace_id, parent_run_id, payload, created_at, updated_at)
+                     VALUES (?1, ?2, 'webhook', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    params![
+                        id,
+                        task,
+                        key,
+                        state,
+                        reason,
+                        new_id(),
+                        parent_id,
+                        payload,
+                        ts
+                    ],
+                )?;
+                (id, false)
+            };
+            tx.execute(
+                "INSERT INTO ingress_events (run_id, task, trigger_kind, source_event_id,
+                   dedupe_key, payload_hash, duplicate, received_at)
+                 VALUES (?1, ?2, 'webhook', NULL, ?3, ?4, ?5, ?6)",
+                params![
+                    run_id,
+                    task,
+                    key,
+                    payload_hash(&payload),
+                    duplicate as i64,
+                    ts
+                ],
+            )?;
+        }
+        tx.commit()?;
+
+        Ok(IngressOutcome {
+            state: self.run_state(&parent_id)?,
+            run_id: parent_id,
+            duplicate: parent_duplicate,
+        })
+    }
+
     /// Remove a newly admitted submission storm tree when member admission
     /// fails. Parent, members, ingress events, and the opened submission are
     /// deleted in one transaction so no partial irreversible admission remains.
@@ -631,6 +904,36 @@ impl Ledger {
             let from = self.run_state(run_id)?;
             bail!("illegal run transition {from} -> {to} for {run_id}");
         }
+        Ok(())
+    }
+
+    /// Resolve a legacy run without leaving an executing attempt orphaned.
+    /// Operator-selected terminal state is recorded only after every open
+    /// attempt is closed and its host lease is released.
+    pub fn resolve_run(&self, run_id: &str, to: &str, reason: &str) -> Result<()> {
+        let from = self.run_state(run_id)?;
+        if !transition_allowed(&from, to) {
+            bail!("illegal run transition {from} -> {to} for {run_id}");
+        }
+        let attempts = self.attempts(run_id)?;
+        let outcome = if to == "success" {
+            "success"
+        } else {
+            "failure"
+        };
+        for attempt in attempts.iter().filter(|attempt| attempt.ended_at.is_none()) {
+            self.finish_attempt(
+                attempt.id,
+                outcome,
+                Some(reason),
+                None,
+                &AttemptStats::default(),
+                attempt.artifact_dir.as_deref(),
+            )?;
+            self.set_attempt_phase(attempt.id, "released")?;
+        }
+        self.transition(run_id, to, Some(reason))?;
+        self.release_leases_for_run(run_id)?;
         Ok(())
     }
 

@@ -766,6 +766,15 @@ impl Ledger {
         Ok(())
     }
 
+    fn workflow_run_audit(&self, run_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO workflow_events (workflow_id, run_id, kind, data, at)
+             SELECT workflow_id, id, ?2, ?3, ?4 FROM workflow_runs WHERE id = ?1",
+            params![run_id, kind, data, now()],
+        )?;
+        Ok(())
+    }
+
     fn insert_revision(
         &self,
         workflow_id: &str,
@@ -1289,6 +1298,11 @@ impl Ledger {
                 &wf.id,
                 "run_accepted",
                 Some(&format!("run {id} pinned revision {revision}")),
+            )?;
+            self.workflow_run_audit(
+                &id,
+                "run_accepted",
+                Some(&format!("pinned revision {revision}")),
             )?;
             Ok(AcceptOutcome::Accepted {
                 run: self.workflow_run(&id)?,
