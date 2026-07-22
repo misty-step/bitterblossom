@@ -349,30 +349,75 @@ fn submission_head_version(submission: &crate::submit::SubmissionRow) -> Option<
         .or(submission.report_json.as_deref())
 }
 
-pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -> Result<String> {
-    if let Some((left, right)) = expr.split_once('|') {
-        let left = derive_dedupe_key(left, headers, body)?;
-        let right = derive_dedupe_key(right, headers, body)?;
-        return Ok(format!("{left}|{right}"));
+/// Validate the canonical trigger dedupe expression before activation.
+///
+/// Expressions are one or more header:<name> or json:<pointer> terms joined
+/// by a pipe. Keeping syntax validation here lets the workflow store and every
+/// ingress path share one parser rather than accepting a trigger that can only
+/// fail after the first delivery arrives.
+pub fn validate_dedupe_key_expression(expr: &str) -> Result<()> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        bail!("dedupe_key expression must not be empty");
     }
-    match expr.split_once(':') {
-        Some(("header", name)) => header(headers, &name.to_ascii_lowercase())
-            .with_context(|| format!("dedupe header '{name}' missing from delivery")),
-        Some(("json", pointer)) => {
-            let v: serde_json::Value =
-                serde_json::from_str(body).context("dedupe json: body is not JSON")?;
-            let found = v
-                .pointer(pointer)
-                .with_context(|| format!("dedupe pointer '{pointer}' missing from body"))?;
-            Ok(match found {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            })
-        }
+    if let Some((left, right)) = expr.split_once('|') {
+        validate_dedupe_key_expression(left)?;
+        validate_dedupe_key_expression(right)?;
+        return Ok(());
+    }
+    let Some((kind, value)) = expr.split_once(':') else {
+        bail!("unknown dedupe_key expression '{expr}' (use header:<Name> or json:<ptr>)");
+    };
+    match kind {
+        "header" if !value.trim().is_empty() && !value.contains(':') => Ok(()),
+        "json" if !value.is_empty() && value.starts_with('/') => Ok(()),
+        "header" => bail!("dedupe header expression '{expr}' needs a non-empty name"),
+        "json" => bail!("dedupe json expression '{expr}' needs a JSON pointer starting with '/'"),
         _ => bail!("unknown dedupe_key expression '{expr}' (use header:<Name> or json:<ptr>)"),
     }
 }
 
+pub fn derive_dedupe_key(expr: &str, headers: &[(String, String)], body: &str) -> Result<String> {
+    validate_dedupe_key_expression(expr)?;
+    let expr = expr.trim();
+    if let Some((left, right)) = expr.split_once('|') {
+        let left = derive_dedupe_key(left, headers, body)?;
+        let right = derive_dedupe_key(right, headers, body)?;
+        if left.is_empty() || right.is_empty() {
+            bail!("dedupe expression resolved to an empty value");
+        }
+        return Ok(format!("{left}|{right}"));
+    }
+    let (kind, value) = expr
+        .split_once(':')
+        .expect("validated dedupe expression contains a kind separator");
+    let result = match kind {
+        "header" => header(headers, &value.to_ascii_lowercase())
+            .with_context(|| format!("dedupe header '{value}' missing from delivery"))?,
+        "json" => {
+            let payload: serde_json::Value =
+                serde_json::from_str(body).context("dedupe json: body is not JSON")?;
+            let found = payload
+                .pointer(value)
+                .with_context(|| format!("dedupe pointer '{value}' missing from body"))?;
+            match found {
+                serde_json::Value::Null => {
+                    bail!("dedupe pointer '{value}' resolved to null")
+                }
+                serde_json::Value::String(s) if s.trim().is_empty() => {
+                    bail!("dedupe pointer '{value}' resolved to an empty string")
+                }
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }
+        }
+        _ => unreachable!("validated dedupe expression kind"),
+    };
+    if result.trim().is_empty() {
+        bail!("dedupe expression '{expr}' resolved to an empty value");
+    }
+    Ok(result)
+}
 fn header(headers: &[(String, String)], name: &str) -> Option<String> {
     headers
         .iter()
