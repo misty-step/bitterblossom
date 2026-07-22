@@ -126,8 +126,13 @@ tool_rules = ["allow:read", "deny:write", "deny:network"]
 context_inputs = ["event.payload"]
 
 [policies]
+timeout_minutes = 5
+max_runs_per_day = 4
 max_cost_per_run_usd = 2.0
+concurrency = 2
 max_rounds = 3
+max_elapsed_seconds = 60
+seats = 3
 "#;
     let doc = WorkflowDoc::from_toml(text).expect("composition declaration parses");
     let json = doc.canonical_json().expect("canonical JSON");
