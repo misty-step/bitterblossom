@@ -318,7 +318,8 @@ fn validate_composition(step: &WorkflowStep, workflow: &str) -> Result<()> {
         if fallback.model.trim().is_empty() {
             bail!("workflow '{workflow}': step '{}' fallback {index} model is required", step.name);
         }
-        if fallback.provider.is_some() && fallback.provider != agent.provider {
+        let primary_provider = agent.provider.as_deref().unwrap_or("openrouter");
+        if fallback.provider.as_deref().unwrap_or(primary_provider) != primary_provider {
             bail!("workflow '{workflow}': step '{}' fallback {index} changes provider authority", step.name);
         }
         validate_effort(fallback.effort.as_deref(), workflow, &step.name)?;
@@ -368,7 +369,7 @@ fn validate_effort(effort: Option<&str>, workflow: &str, step: &str) -> Result<(
 impl WorkflowDoc {
     /// Rich composition is admitted only when the adapter has a verified
     /// native enforcement path. Prompt projection is not enforcement.
-    fn validate_adapter_capabilities(&self) -> Result<()> {
+    pub(crate) fn validate_adapter_capabilities(&self) -> Result<()> {
         for step in &self.steps {
             let mut unsupported = Vec::new();
             if step.agent.effort.is_some() { unsupported.push("effort"); }
@@ -681,6 +682,13 @@ impl WorkflowDoc {
             "harness": step.agent.harness,
             "bin": step.agent.bin,
             "args": step.agent.args,
+            "provider": step.agent.provider,
+            "model": step.agent.model,
+            "effort": step.agent.effort,
+            "skills": step.agent.skills,
+            "mcps": step.agent.mcps,
+            "tool_rules": step.agent.tool_rules,
+            "context_inputs": step.agent.context_inputs,
         }))?;
         let authority_digest = format!(
             "{:x}",
@@ -1257,6 +1265,15 @@ impl Ledger {
                 return Ok((LaunchSnapshotState::Invalid, Some(format!("revision document is invalid: {error:#}"))))
             }
         };
+        if let Err(error) = doc
+            .validate()
+            .and_then(|_| doc.validate_adapter_capabilities())
+        {
+            return Ok((
+                LaunchSnapshotState::Invalid,
+                Some(format!("revision fails current validation: {error:#}")),
+            ));
+        }
         let mut statement = self.conn.prepare(
             "SELECT step, snapshot_json, digest
              FROM workflow_step_launch_snapshots
@@ -1282,7 +1299,16 @@ impl Ledger {
                     continue;
                 }
             };
-            if snapshot.workflow_id != workflow_id || snapshot.revision != revision || snapshot.step != step {
+            let Some(expected_index) = doc.steps.iter().position(|candidate| candidate.name == step) else {
+                invalid = Some(format!("step '{step}' snapshot is not declared by revision"));
+                continue;
+            };
+            if snapshot.workflow_id != workflow_id
+                || snapshot.revision != revision
+                || snapshot.step != step
+                || snapshot.step_index != expected_index as u32
+                || snapshot.fallback_index > snapshot.fallbacks.len()
+            {
                 invalid = Some(format!("step '{step}' snapshot identity does not match workflow {workflow_id} revision {revision}"));
             } else if table_digest != snapshot.digest {
                 invalid = Some(format!("step '{step}' table digest {table_digest} differs from payload {}", snapshot.digest));
