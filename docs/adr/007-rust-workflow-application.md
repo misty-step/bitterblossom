@@ -9,7 +9,10 @@ that its controls are enforceable, materializes an immutable launch contract, an
 persists a digest for each step. Runs and evidence use that accepted snapshot, so a
 later Roster/catalog change cannot alter an accepted launch. Fallbacks are ordered,
 deterministic, and narrowing: they cannot widen role, tools, context, authority,
-seats, or run-group budget.
+seats, or run-group budget. A fallback may provide a compatible authentication-class harness,
+binary, and argument vector, and may remove credential references; activation rejects any
+provider or authority widening. Only pre-spawn launch failures select the next entry; once
+the adapter starts, exit, timeout, parse, and completion failures remain terminal.
 
 Bitterblossom has three independent agentic loops: composition, execution, and
 verification/remediation. The final merge gate is a deterministic controller-owned

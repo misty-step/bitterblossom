@@ -287,7 +287,10 @@ run-group limits, and ordered fallbacks. Activation refuses unsupported controls
 materializes an executable launch contract, and persists its digest beside the
 immutable workflow revision. Runtime and evidence read that snapshot rather than
 following later catalog drift. Fallbacks may only narrow the workflow grant and
-consume the same run-group budget.
+consume the same run-group budget. A fallback may select a compatible
+authentication-class harness, binary, and argument vector, or remove credential
+references, but cannot widen provider or authority. Only a pre-spawn launch failure
+advances the ordered list; post-launch failures are terminal.
 
 The product has three independent agentic loops: composition, execution, and
 verification/remediation. The final merge gate is a deterministic
