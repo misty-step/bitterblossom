@@ -138,7 +138,10 @@ seats = 3
     let json = doc.canonical_json().expect("canonical JSON");
     let restored = WorkflowDoc::from_canonical_json(&json).expect("canonical JSON parses");
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert!(value["step"][0].get("launch_snapshot").is_none(), "desired TOML must not carry runtime snapshots");
+    assert!(
+        value["step"][0].get("launch_snapshot").is_none(),
+        "desired TOML must not carry runtime snapshots"
+    );
     assert_eq!(restored, doc);
     let toml = restored.to_toml().expect("TOML export");
     assert_eq!(WorkflowDoc::from_toml(&toml).unwrap(), doc);
@@ -176,8 +179,12 @@ max_rounds = 3
     let mut doc = WorkflowDoc::from_toml(text).unwrap();
     let ledger = Ledger::open(&db).unwrap();
     let (workflow, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
-    ledger.activate_workflow("pinned-composition", Some(revision)).unwrap();
-    let first = ledger.launch_snapshots_for_revision(&workflow.id, revision).unwrap();
+    ledger
+        .activate_workflow("pinned-composition", Some(revision))
+        .unwrap();
+    let first = ledger
+        .launch_snapshots_for_revision(&workflow.id, revision)
+        .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].digest.len(), 64);
     let pinned: LaunchSnapshot = serde_json::from_value(first[0].snapshot.clone()).unwrap();
@@ -195,10 +202,18 @@ max_rounds = 3
     assert_eq!(pinned.authority_digest.len(), 64);
     pinned.verify_digest().unwrap();
     doc.steps[0].agent.model = "moonshotai/kimi-k2.5".into();
-    let (_, revision_two) = ledger.revise_workflow("pinned-composition", &doc, "test", None).unwrap();
-    ledger.activate_workflow("pinned-composition", Some(revision_two)).unwrap();
-    let old = ledger.launch_snapshots_for_revision(&workflow.id, revision).unwrap();
-    let new = ledger.launch_snapshots_for_revision(&workflow.id, revision_two).unwrap();
+    let (_, revision_two) = ledger
+        .revise_workflow("pinned-composition", &doc, "test", None)
+        .unwrap();
+    ledger
+        .activate_workflow("pinned-composition", Some(revision_two))
+        .unwrap();
+    let old = ledger
+        .launch_snapshots_for_revision(&workflow.id, revision)
+        .unwrap();
+    let new = ledger
+        .launch_snapshots_for_revision(&workflow.id, revision_two)
+        .unwrap();
     assert_eq!(old[0].digest, first[0].digest);
     assert_ne!(old[0].digest, new[0].digest);
 }
@@ -228,7 +243,9 @@ skills = ["write"]
 "#;
     let err = WorkflowDoc::from_toml(text).unwrap_err().to_string();
     assert!(err.contains("widens skills"), "{err}");
-    let mut doc = WorkflowDoc::from_toml(&text.replace("skills = [\"write\"]", "skills = [\"review\"]")).unwrap();
+    let mut doc =
+        WorkflowDoc::from_toml(&text.replace("skills = [\"write\"]", "skills = [\"review\"]"))
+            .unwrap();
     doc.policies.seats = Some(0);
     let err = doc.validate().unwrap_err().to_string();
     assert!(err.contains("policies.seats"), "{err}");
@@ -263,7 +280,10 @@ context_inputs = ["event.payload"]
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open(&dir.path().join(".bb/plane.db")).unwrap();
     let (_, revision) = ledger.create_workflow(&doc, "test", None).unwrap();
-    let error = ledger.activate_workflow("unsupported-composition", Some(revision)).unwrap_err().to_string();
+    let error = ledger
+        .activate_workflow("unsupported-composition", Some(revision))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("adapter 'opencode'"), "{error}");
     for field in ["effort", "skills", "mcps", "tool_rules", "context_inputs"] {
         assert!(error.contains(field), "missing {field} in {error}");
@@ -296,8 +316,14 @@ secrets = []
 "#;
     let doc = WorkflowDoc::from_toml(text).expect("narrow fallback parses");
     let snapshots = doc.materialize_launch_snapshots("wf-test", 1).unwrap();
-    assert_eq!(snapshots[0].fallbacks[0].harness.as_deref(), Some("command"));
-    assert_eq!(snapshots[0].fallbacks[0].bin.as_deref(), Some("/tmp/fallback"));
+    assert_eq!(
+        snapshots[0].fallbacks[0].harness.as_deref(),
+        Some("command")
+    );
+    assert_eq!(
+        snapshots[0].fallbacks[0].bin.as_deref(),
+        Some("/tmp/fallback")
+    );
     assert_eq!(snapshots[0].fallbacks[0].args, vec!["--safe"]);
     assert_eq!(snapshots[0].fallbacks[0].secrets, Vec::<String>::new());
 
@@ -305,15 +331,24 @@ secrets = []
         "tool_rules = [\"allow:read\", \"deny:write\", \"deny:network\"]",
         "tool_rules = [\"allow:read\"]",
     );
-    let error = WorkflowDoc::from_toml(&dropped_deny).unwrap_err().to_string();
+    let error = WorkflowDoc::from_toml(&dropped_deny)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("dropping deny rule"), "{error}");
 
     let widened_secret = text.replace("secrets = []", "secrets = [\"OTHER_SECRET\"]");
-    let error = WorkflowDoc::from_toml(&widened_secret).unwrap_err().to_string();
+    let error = WorkflowDoc::from_toml(&widened_secret)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("widens secret_refs"), "{error}");
 
-    let changed_auth = text.replace("harness = \"command\"\nbin = \"/tmp/fallback\"", "harness = \"claude\"\nbin = \"/tmp/fallback\"");
-    let error = WorkflowDoc::from_toml(&changed_auth).unwrap_err().to_string();
+    let changed_auth = text.replace(
+        "harness = \"command\"\nbin = \"/tmp/fallback\"",
+        "harness = \"claude\"\nbin = \"/tmp/fallback\"",
+    );
+    let error = WorkflowDoc::from_toml(&changed_auth)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("authentication authority"), "{error}");
 }
 
@@ -351,8 +386,14 @@ model = "moonshotai/kimi-k2.6"
     ledger.create_workflow(&first, "test", None).unwrap();
     ledger.activate_workflow("pr-review", None).unwrap();
     ledger.create_workflow(&second, "test", None).unwrap();
-    let err = ledger.activate_workflow("second-workflow", None).unwrap_err().to_string();
-    assert!(err.contains("webhook route") && err.contains("already owned"), "{err}");
+    let err = ledger
+        .activate_workflow("second-workflow", None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("webhook route") && err.contains("already owned"),
+        "{err}"
+    );
 }
 // --- criterion 1: one database-backed lifecycle API -------------------------
 
@@ -747,7 +788,10 @@ fn cli_and_http_create_read_diff_activate_the_same_revisions() {
     assert_eq!(status, 200, "{activated}");
     assert_eq!(activated["active_revision"], 2);
     assert!(activated["launch_snapshots"].as_array().unwrap()[0]["snapshot"].is_object());
-    assert_eq!(activated["launch_snapshots"][0]["digest"], activated["launch_snapshots"][0]["snapshot"]["digest"]);
+    assert_eq!(
+        activated["launch_snapshots"][0]["digest"],
+        activated["launch_snapshots"][0]["snapshot"]["digest"]
+    );
     let cli_wf = bb_json(root, &["workflow", "show", "pr-review", "--json"]);
     assert_eq!(cli_wf["workflow"]["active_revision"], 2);
     assert_eq!(cli_wf["workflow"]["state"], "active");

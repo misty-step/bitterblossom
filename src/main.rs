@@ -1867,14 +1867,10 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                 println!("{}", serde_json::to_string_pretty(&value)?);
             } else {
                 print_workflow(&wf, false)?;
-                for snapshot in ledger.launch_snapshots_for_revision(
-                    &wf.id,
-                    wf.active_revision.unwrap_or_default(),
-                )? {
-                    println!(
-                        "  step {} launch_digest={}",
-                        snapshot.step, snapshot.digest
-                    );
+                for snapshot in ledger
+                    .launch_snapshots_for_revision(&wf.id, wf.active_revision.unwrap_or_default())?
+                {
+                    println!("  step {} launch_digest={}", snapshot.step, snapshot.digest);
                 }
             }
         }
@@ -1904,7 +1900,9 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             if json {
                 let snapshots = wf
                     .active_revision
-                    .map(|active_revision| ledger.launch_snapshots_for_revision(&wf.id, active_revision))
+                    .map(|active_revision| {
+                        ledger.launch_snapshots_for_revision(&wf.id, active_revision)
+                    })
                     .transpose()?
                     .unwrap_or_default();
                 println!(

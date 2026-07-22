@@ -40,7 +40,8 @@ use crate::ledger::{new_id, now, AttemptStats, Ledger};
 use crate::spec::{AgentSpec, AuthClass, Plane, TaskBudget};
 use crate::substrate::{self, ExecMonitor, ExecSnapshot, WorkspacePlan};
 use crate::workflow::{
-    AcceptOutcome, LaunchSnapshot, StepAgent, WorkflowDoc, WorkflowPolicies, WorkflowStep, ROUTE_DONE,
+    AcceptOutcome, LaunchSnapshot, StepAgent, WorkflowDoc, WorkflowPolicies, WorkflowStep,
+    ROUTE_DONE,
 };
 
 /// The completion tool: a branching step's agent writes this file with one
@@ -382,7 +383,9 @@ fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Resul
         })
         .collect::<Result<Vec<_>>>()?;
     snapshots.sort_by_key(|snapshot| snapshot.step_index);
-    let first = snapshots.first().context("verified launch snapshot set is empty")?;
+    let first = snapshots
+        .first()
+        .context("verified launch snapshot set is empty")?;
     let steps = snapshots
         .iter()
         .map(|snapshot| WorkflowStep {
@@ -435,7 +438,11 @@ fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Resul
 
 /// Load the activation-time launch contract. Runtime never resolves a mutable
 /// Roster/catalog entry or reconstructs a composition from the desired TOML.
-fn load_launch_snapshot(ledger: &Ledger, run: &crate::workflow::WorkflowRunRow, step: &str) -> Result<LaunchSnapshot> {
+fn load_launch_snapshot(
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    step: &str,
+) -> Result<LaunchSnapshot> {
     let workflow = ledger.workflow_by_name(&run.workflow)?;
     let row = ledger
         .require_verified_launch_snapshots(&workflow.id, run.revision)?
@@ -444,8 +451,14 @@ fn load_launch_snapshot(ledger: &Ledger, run: &crate::workflow::WorkflowRunRow, 
         .with_context(|| format!("workflow '{}' revision {} has no launch snapshot for step '{}'; activate the revision before execution", run.workflow, run.revision, step))?;
     let snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)
         .with_context(|| format!("launch snapshot for step '{step}' is not valid JSON"))?;
-    if snapshot.workflow_id != workflow.id || snapshot.revision != run.revision || snapshot.step != step || row.digest != snapshot.digest {
-        bail!("launch snapshot for step '{step}' has mismatched workflow, revision, step, or digest");
+    if snapshot.workflow_id != workflow.id
+        || snapshot.revision != run.revision
+        || snapshot.step != step
+        || row.digest != snapshot.digest
+    {
+        bail!(
+            "launch snapshot for step '{step}' has mismatched workflow, revision, step, or digest"
+        );
     }
     snapshot.verify_digest()?;
     Ok(snapshot)
@@ -1596,17 +1609,27 @@ fn post_attempt_spend_guard(
     let Some(cap) = snapshot.max_cost_per_run_usd else {
         return Ok(None);
     };
-    let observed = ledger.workflow_run_status(&run.id)?.and_then(|status| status.cost_usd);
+    let observed = ledger
+        .workflow_run_status(&run.id)?
+        .and_then(|status| status.cost_usd);
     let Some(observed) = observed else {
         return Ok(None);
     };
     if !observed.is_finite() || observed < 0.0 {
-        let detail = format!("spend guard invalid: observed cost {observed:?} is not finite and non-negative");
-        ledger.record_guard_event("workflow_guard_spend_invalid", Some(&run.workflow), &detail, 1)?;
+        let detail = format!(
+            "spend guard invalid: observed cost {observed:?} is not finite and non-negative"
+        );
+        ledger.record_guard_event(
+            "workflow_guard_spend_invalid",
+            Some(&run.workflow),
+            &detail,
+            1,
+        )?;
         return Ok(Some(detail));
     }
     if observed > cap {
-        let detail = format!("spend guard: observed ${observed:.4} exceeds run-group cap ${cap:.2}");
+        let detail =
+            format!("spend guard: observed ${observed:.4} exceeds run-group cap ${cap:.2}");
         ledger.record_guard_event("workflow_guard_spend", Some(&run.workflow), &detail, 1)?;
         return Ok(Some(detail));
     }
@@ -1666,7 +1689,8 @@ fn fired_guard(
         None => {
             if let Some(cap) = snapshot.max_cost_per_run_usd {
                 let estimate_violation = if !harness::reports_cost(&snapshot.harness) {
-                    let estimate = snapshot.estimated_cost_per_run_usd
+                    let estimate = snapshot
+                        .estimated_cost_per_run_usd
                         .or_else(|| snapshot.max_cost_per_run_usd.filter(|value| *value != 0.0))
                         .unwrap_or(1.0);
                     if !estimate.is_finite() || estimate <= 0.0 {
@@ -1774,7 +1798,12 @@ fn load_bundle(snapshot: &LaunchSnapshot) -> Result<Option<(String, String)>> {
 /// contract projected from config (declared outcomes, authority labels).
 /// Projection, not judgment — every semantic token here comes from the
 /// pinned document.
-fn commission(doc: &WorkflowDoc, step: &WorkflowStep, snapshot: &LaunchSnapshot, bundle_agents_md: Option<&str>) -> String {
+fn commission(
+    doc: &WorkflowDoc,
+    step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
+    bundle_agents_md: Option<&str>,
+) -> String {
     let mut card = String::new();
     if let Some(agents_md) = bundle_agents_md {
         card.push_str(agents_md.trim_end());
@@ -1973,8 +2002,16 @@ fn run_step_once(
             None,
             stats,
         )?;
-        ledger.record_guard_event("workflow_guard_spend_invalid", Some(&run.workflow), &error, 1)?;
-        Ok(StepDisposition::Stopped(format!("step '{}' attempt {attempt}: {error}", step.name)))
+        ledger.record_guard_event(
+            "workflow_guard_spend_invalid",
+            Some(&run.workflow),
+            &error,
+            1,
+        )?;
+        Ok(StepDisposition::Stopped(format!(
+            "step '{}' attempt {attempt}: {error}",
+            step.name
+        )))
     };
     let none = AttemptStats::default();
     if let Some(v) = budget::metered_parent_key_violation(
@@ -2072,9 +2109,9 @@ fn run_step_once(
         }
         if lease_started.elapsed() >= lease_wait {
             let holder = ledger.lease_holder(&host)?;
-            return fail_pre_exec(
-                format!("host lease '{host}' is held by run {holder:?} after bounded wait"),
-            );
+            return fail_pre_exec(format!(
+                "host lease '{host}' is held by run {holder:?} after bounded wait"
+            ));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -2088,7 +2125,12 @@ fn run_step_once(
         Err(e) => return fail_pre_exec(format!("acquire: {e:#}")),
     };
 
-    let card = commission(doc, step, snapshot, bundle.as_ref().map(|(text, _)| text.as_str()));
+    let card = commission(
+        doc,
+        step,
+        snapshot,
+        bundle.as_ref().map(|(text, _)| text.as_str()),
+    );
     let run_context = serde_json::json!({
         "workflow_run_id": run.id,
         "workflow": run.workflow,
@@ -2336,7 +2378,8 @@ fn run_step_once(
             let (authority, inherited) = match &decl.authority {
                 None => (snapshot.authority.clone(), true),
                 Some(declared) => {
-                    if let Some(excess) = declared.iter().find(|a| !snapshot.authority.contains(a)) {
+                    if let Some(excess) = declared.iter().find(|a| !snapshot.authority.contains(a))
+                    {
                         return fail_terminal(
                             format!(
                                 "child agent '{}' declares authority {excess:?} beyond its \

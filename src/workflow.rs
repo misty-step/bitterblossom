@@ -278,7 +278,10 @@ impl LaunchSnapshot {
         let mut resolved = self.clone();
         if index > 0 {
             let fallback = &self.fallbacks[index - 1];
-            resolved.harness = fallback.harness.clone().unwrap_or_else(|| self.harness.clone());
+            resolved.harness = fallback
+                .harness
+                .clone()
+                .unwrap_or_else(|| self.harness.clone());
             resolved.bin = fallback.bin.clone().or_else(|| self.bin.clone());
             resolved.args = fallback.args.clone();
             resolved.provider = fallback.provider.clone().or_else(|| self.provider.clone());
@@ -347,39 +350,63 @@ impl WorkflowPolicies {
     }
 }
 
-
 fn validate_composition(step: &WorkflowStep, workflow: &str) -> Result<()> {
     let agent = &step.agent;
     if agent.model.trim().is_empty() {
-        bail!("workflow '{workflow}': step '{}' agent model is required", step.name);
+        bail!(
+            "workflow '{workflow}': step '{}' agent model is required",
+            step.name
+        );
     }
     if let Some(role) = &agent.role {
         if role.trim().is_empty() {
-            bail!("workflow '{workflow}': step '{}' agent role cannot be empty", step.name);
+            bail!(
+                "workflow '{workflow}': step '{}' agent role cannot be empty",
+                step.name
+            );
         }
     }
     validate_effort(agent.effort.as_deref(), workflow, &step.name)?;
     validate_values(&agent.skills, "skills", workflow, &step.name)?;
     validate_values(&agent.mcps, "mcps", workflow, &step.name)?;
     for rule in &agent.tool_rules {
-        let valid = rule.split_once(':').is_some_and(|(kind, value)|
-            matches!(kind, "allow" | "deny") && !value.trim().is_empty());
+        let valid = rule.split_once(':').is_some_and(|(kind, value)| {
+            matches!(kind, "allow" | "deny") && !value.trim().is_empty()
+        });
         if !valid {
-            bail!("workflow '{workflow}': step '{}' has unenforceable tool rule '{rule}'", step.name);
+            bail!(
+                "workflow '{workflow}': step '{}' has unenforceable tool rule '{rule}'",
+                step.name
+            );
         }
     }
-    validate_values(&agent.context_inputs, "context_inputs", workflow, &step.name)?;
+    validate_values(
+        &agent.context_inputs,
+        "context_inputs",
+        workflow,
+        &step.name,
+    )?;
     validate_values(&agent.secrets, "secret_refs", workflow, &step.name)?;
-    if agent.secrets.iter().any(|name| name.contains('=') || name.chars().any(char::is_whitespace)) {
+    if agent
+        .secrets
+        .iter()
+        .any(|name| name.contains('=') || name.chars().any(char::is_whitespace))
+    {
         bail!("workflow '{workflow}': step '{}' secret_refs must be environment variable names, never credential bytes", step.name);
     }
     for (index, fallback) in agent.fallbacks.iter().enumerate() {
         if fallback.model.trim().is_empty() {
-            bail!("workflow '{workflow}': step '{}' fallback {index} model is required", step.name);
+            bail!(
+                "workflow '{workflow}': step '{}' fallback {index} model is required",
+                step.name
+            );
         }
         let primary_provider = agent.provider.as_deref().unwrap_or("openrouter");
         if fallback.provider.as_deref().unwrap_or(primary_provider) != primary_provider {
-            bail!("workflow '{workflow}': step '{}' fallback {index} changes provider authority", step.name);
+            bail!(
+                "workflow '{workflow}': step '{}' fallback {index} changes provider authority",
+                step.name
+            );
         }
         if let Some(harness) = fallback.harness.as_deref() {
             if !crate::harness::HARNESSES.contains(&harness) {
@@ -389,18 +416,62 @@ fn validate_composition(step: &WorkflowStep, workflow: &str) -> Result<()> {
                 bail!("workflow '{workflow}': step '{}' fallback {index} changes authentication authority", step.name);
             }
         }
-        if fallback.bin.as_deref().is_some_and(|bin| bin.trim().is_empty()) {
-            bail!("workflow '{workflow}': step '{}' fallback {index} bin cannot be empty", step.name);
+        if fallback
+            .bin
+            .as_deref()
+            .is_some_and(|bin| bin.trim().is_empty())
+        {
+            bail!(
+                "workflow '{workflow}': step '{}' fallback {index} bin cannot be empty",
+                step.name
+            );
         }
         validate_effort(fallback.effort.as_deref(), workflow, &step.name)?;
         if effort_rank(fallback.effort.as_deref()) > effort_rank(agent.effort.as_deref()) {
-            bail!("workflow '{workflow}': step '{}' fallback {index} widens effort", step.name);
+            bail!(
+                "workflow '{workflow}': step '{}' fallback {index} widens effort",
+                step.name
+            );
         }
-        validate_narrowed_values(&fallback.skills, "skills", &agent.skills, workflow, &step.name, index)?;
-        validate_narrowed_values(&fallback.mcps, "mcps", &agent.mcps, workflow, &step.name, index)?;
-        validate_tool_rules_narrowing(&agent.tool_rules, &fallback.tool_rules, workflow, &step.name, index)?;
-        validate_narrowed_values(&fallback.context_inputs, "context_inputs", &agent.context_inputs, workflow, &step.name, index)?;
-        validate_narrowed_values(&fallback.secrets, "secret_refs", &agent.secrets, workflow, &step.name, index)?;
+        validate_narrowed_values(
+            &fallback.skills,
+            "skills",
+            &agent.skills,
+            workflow,
+            &step.name,
+            index,
+        )?;
+        validate_narrowed_values(
+            &fallback.mcps,
+            "mcps",
+            &agent.mcps,
+            workflow,
+            &step.name,
+            index,
+        )?;
+        validate_tool_rules_narrowing(
+            &agent.tool_rules,
+            &fallback.tool_rules,
+            workflow,
+            &step.name,
+            index,
+        )?;
+        validate_narrowed_values(
+            &fallback.context_inputs,
+            "context_inputs",
+            &agent.context_inputs,
+            workflow,
+            &step.name,
+            index,
+        )?;
+        validate_narrowed_values(
+            &fallback.secrets,
+            "secret_refs",
+            &agent.secrets,
+            workflow,
+            &step.name,
+            index,
+        )?;
     }
     Ok(())
 }
@@ -454,8 +525,9 @@ fn validate_tool_rules_narrowing(
 
 fn validate_tool_rules(values: &[String], workflow: &str, step: &str) -> Result<()> {
     for rule in values {
-        let valid = rule.split_once(':').is_some_and(|(kind, value)|
-            matches!(kind, "allow" | "deny") && !value.trim().is_empty());
+        let valid = rule.split_once(':').is_some_and(|(kind, value)| {
+            matches!(kind, "allow" | "deny") && !value.trim().is_empty()
+        });
         if !valid {
             bail!("workflow '{workflow}': step '{step}' has unenforceable tool rule '{rule}'");
         }
@@ -494,17 +566,37 @@ impl WorkflowDoc {
     pub(crate) fn validate_adapter_capabilities(&self) -> Result<()> {
         for step in &self.steps {
             let mut unsupported = Vec::new();
-            if step.agent.effort.is_some() { unsupported.push("effort"); }
-            if !step.agent.skills.is_empty() { unsupported.push("skills"); }
-            if !step.agent.mcps.is_empty() { unsupported.push("mcps"); }
-            if !step.agent.tool_rules.is_empty() { unsupported.push("tool_rules"); }
-            if !step.agent.context_inputs.is_empty() { unsupported.push("context_inputs"); }
+            if step.agent.effort.is_some() {
+                unsupported.push("effort");
+            }
+            if !step.agent.skills.is_empty() {
+                unsupported.push("skills");
+            }
+            if !step.agent.mcps.is_empty() {
+                unsupported.push("mcps");
+            }
+            if !step.agent.tool_rules.is_empty() {
+                unsupported.push("tool_rules");
+            }
+            if !step.agent.context_inputs.is_empty() {
+                unsupported.push("context_inputs");
+            }
             for (index, fallback) in step.agent.fallbacks.iter().enumerate() {
-                if fallback.effort.is_some() { unsupported.push("fallbacks.effort"); }
-                if !fallback.skills.is_empty() { unsupported.push("fallbacks.skills"); }
-                if !fallback.mcps.is_empty() { unsupported.push("fallbacks.mcps"); }
-                if !fallback.tool_rules.is_empty() { unsupported.push("fallbacks.tool_rules"); }
-                if !fallback.context_inputs.is_empty() { unsupported.push("fallbacks.context_inputs"); }
+                if fallback.effort.is_some() {
+                    unsupported.push("fallbacks.effort");
+                }
+                if !fallback.skills.is_empty() {
+                    unsupported.push("fallbacks.skills");
+                }
+                if !fallback.mcps.is_empty() {
+                    unsupported.push("fallbacks.mcps");
+                }
+                if !fallback.tool_rules.is_empty() {
+                    unsupported.push("fallbacks.tool_rules");
+                }
+                if !fallback.context_inputs.is_empty() {
+                    unsupported.push("fallbacks.context_inputs");
+                }
                 let _ = index;
             }
             if !unsupported.is_empty() {
@@ -778,25 +870,41 @@ impl WorkflowDoc {
     /// Materialize one immutable executable launch contract per step. The
     /// snapshot is derived only from this desired revision and policy, so a
     /// later catalog edit cannot change its digest or selected controls.
-    pub fn materialize_launch_snapshots(&self, workflow_id: &str, revision: i64) -> Result<Vec<LaunchSnapshot>> {
+    pub fn materialize_launch_snapshots(
+        &self,
+        workflow_id: &str,
+        revision: i64,
+    ) -> Result<Vec<LaunchSnapshot>> {
         self.validate()?;
         self.steps
             .iter()
             .enumerate()
-            .map(|(step_index, step)| self.materialize_step_launch_snapshot(workflow_id, revision, step_index as u32, step))
+            .map(|(step_index, step)| {
+                self.materialize_step_launch_snapshot(
+                    workflow_id,
+                    revision,
+                    step_index as u32,
+                    step,
+                )
+            })
             .collect()
     }
 
-    fn materialize_step_launch_snapshot(&self, workflow_id: &str, revision: i64, step_index: u32, step: &WorkflowStep) -> Result<LaunchSnapshot> {
+    fn materialize_step_launch_snapshot(
+        &self,
+        workflow_id: &str,
+        revision: i64,
+        step_index: u32,
+        step: &WorkflowStep,
+    ) -> Result<LaunchSnapshot> {
         let bundle_digest = step
             .agent
             .bundle
             .as_deref()
             .map(|bundle| {
                 let path = std::path::Path::new(bundle).join("AGENTS.md");
-                let content = std::fs::read(&path).with_context(|| {
-                    format!("roster bundle AGENTS.md at {}", path.display())
-                })?;
+                let content = std::fs::read(&path)
+                    .with_context(|| format!("roster bundle AGENTS.md at {}", path.display()))?;
                 Ok::<_, anyhow::Error>(format!("{:x}", Sha256::digest(content)))
             })
             .transpose()?;
@@ -812,10 +920,8 @@ impl WorkflowDoc {
             "tool_rules": step.agent.tool_rules,
             "context_inputs": step.agent.context_inputs,
         }))?;
-        let authority_digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&step.authority)?)
-        );
+        let authority_digest =
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&step.authority)?));
         let mut snapshot = LaunchSnapshot {
             workflow_id: workflow_id.to_string(),
             revision,
@@ -976,30 +1082,85 @@ impl WorkflowDoc {
             (task.spec.rollout.authority.is_some(), "rollout.authority"),
             (task.spec.rollout.scorecard.is_some(), "rollout.scorecard"),
             (task.spec.roster_brief.is_some(), "roster_brief"),
-            (!task.spec.required_artifacts.is_empty(), "required_artifacts"),
+            (
+                !task.spec.required_artifacts.is_empty(),
+                "required_artifacts",
+            ),
             (task.spec.archived, "archived"),
-            (task.spec.workspace.checkpoint.is_some(), "workspace.checkpoint"),
-            (task.spec.admission.attention_debt != Default::default(), "admission.attention_debt"),
+            (
+                task.spec.workspace.checkpoint.is_some(),
+                "workspace.checkpoint",
+            ),
+            (
+                task.spec.admission.attention_debt != Default::default(),
+                "admission.attention_debt",
+            ),
             (task.spec.budget.turn_cap.is_some(), "budget.turn_cap"),
-            (task.spec.budget.tool_action_cap.is_some(), "budget.tool_action_cap"),
-            (task.spec.budget.output_bytes_cap.is_some(), "budget.output_bytes_cap"),
+            (
+                task.spec.budget.tool_action_cap.is_some(),
+                "budget.tool_action_cap",
+            ),
+            (
+                task.spec.budget.output_bytes_cap.is_some(),
+                "budget.output_bytes_cap",
+            ),
             (task.agent.auth.is_some(), "agent.auth"),
-            (!task.agent.checkout_secrets.is_empty(), "agent.checkout_secrets"),
-            (!task.agent.optional_secrets.is_empty(), "agent.optional_secrets"),
-            (task.agent.policy.provider_key_name.is_some(), "agent.policy.provider_key_name"),
-            (task.agent.policy.provider_spend_cap_usd.is_some(), "agent.policy.provider_spend_cap_usd"),
-            (!task.agent.policy.model_allowlist.is_empty(), "agent.policy.model_allowlist"),
-            (!task.agent.policy.trigger_bindings.is_empty(), "agent.policy.trigger_bindings"),
-            (task.agent.policy.iteration_cap.is_some(), "agent.policy.iteration_cap"),
-            (task.agent.policy.turn_cap.is_some(), "agent.policy.turn_cap"),
-            (task.agent.policy.tool_action_cap.is_some(), "agent.policy.tool_action_cap"),
-            (task.agent.policy.output_bytes_cap.is_some(), "agent.policy.output_bytes_cap"),
-            (task.agent.policy.wall_clock_minutes.is_some(), "agent.policy.wall_clock_minutes"),
-            (task.agent.policy.side_effect_policy.is_some(), "agent.policy.side_effect_policy"),
+            (
+                !task.agent.checkout_secrets.is_empty(),
+                "agent.checkout_secrets",
+            ),
+            (
+                !task.agent.optional_secrets.is_empty(),
+                "agent.optional_secrets",
+            ),
+            (
+                task.agent.policy.provider_key_name.is_some(),
+                "agent.policy.provider_key_name",
+            ),
+            (
+                task.agent.policy.provider_spend_cap_usd.is_some(),
+                "agent.policy.provider_spend_cap_usd",
+            ),
+            (
+                !task.agent.policy.model_allowlist.is_empty(),
+                "agent.policy.model_allowlist",
+            ),
+            (
+                !task.agent.policy.trigger_bindings.is_empty(),
+                "agent.policy.trigger_bindings",
+            ),
+            (
+                task.agent.policy.iteration_cap.is_some(),
+                "agent.policy.iteration_cap",
+            ),
+            (
+                task.agent.policy.turn_cap.is_some(),
+                "agent.policy.turn_cap",
+            ),
+            (
+                task.agent.policy.tool_action_cap.is_some(),
+                "agent.policy.tool_action_cap",
+            ),
+            (
+                task.agent.policy.output_bytes_cap.is_some(),
+                "agent.policy.output_bytes_cap",
+            ),
+            (
+                task.agent.policy.wall_clock_minutes.is_some(),
+                "agent.policy.wall_clock_minutes",
+            ),
+            (
+                task.agent.policy.side_effect_policy.is_some(),
+                "agent.policy.side_effect_policy",
+            ),
             (task.agent.roster.is_some(), "agent.roster"),
         ];
         if let Some((_, field)) = unsupported.into_iter().find(|(present, _)| *present) {
-            bail!("task '{}' has unsupported migration field '{}'; import refuses to erase it", task.name, field);
+            bail!(
+                "task '{}' has unsupported migration field '{}'; import refuses to erase it",
+                task.name,
+                field
+            );
         }
         let triggers = task
             .spec
@@ -1324,7 +1485,14 @@ impl Ledger {
                 "INSERT OR IGNORE INTO workflow_step_launch_snapshots
                  (workflow_id, revision, step, snapshot_json, digest, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![workflow_id, revision, step.name, snapshot_json, snapshot.digest, now()],
+                params![
+                    workflow_id,
+                    revision,
+                    step.name,
+                    snapshot_json,
+                    snapshot.digest,
+                    now()
+                ],
             )?;
             let stored: (String, String) = self.conn.query_row(
                 "SELECT snapshot_json, digest FROM workflow_step_launch_snapshots
@@ -1339,7 +1507,12 @@ impl Ledger {
         self.require_verified_launch_snapshots(workflow_id, revision)
     }
 
-    fn copy_launch_snapshots(&self, workflow_id: &str, from_revision: i64, to_revision: i64) -> Result<Vec<WorkflowLaunchSnapshotRow>> {
+    fn copy_launch_snapshots(
+        &self,
+        workflow_id: &str,
+        from_revision: i64,
+        to_revision: i64,
+    ) -> Result<Vec<WorkflowLaunchSnapshotRow>> {
         let source = self.require_verified_launch_snapshots(workflow_id, from_revision)?;
         for row in source {
             let mut snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)?;
@@ -1350,7 +1523,14 @@ impl Ledger {
                 "INSERT INTO workflow_step_launch_snapshots
                  (workflow_id, revision, step, snapshot_json, digest, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![workflow_id, to_revision, row.step, snapshot_json, snapshot.digest, now()],
+                params![
+                    workflow_id,
+                    to_revision,
+                    row.step,
+                    snapshot_json,
+                    snapshot.digest,
+                    now()
+                ],
             )?;
         }
         self.require_verified_launch_snapshots(workflow_id, to_revision)
@@ -1364,7 +1544,7 @@ impl Ledger {
         let mut statement = self.conn.prepare(
             "SELECT workflow_id, revision, step, snapshot_json, digest, created_at
              FROM workflow_step_launch_snapshots
-             WHERE workflow_id = ?1 AND revision = ?2 ORDER BY step"
+             WHERE workflow_id = ?1 AND revision = ?2 ORDER BY step",
         )?;
         let rows = statement
             .query_map(params![workflow_id, revision], row_to_launch_snapshot)?
@@ -1384,7 +1564,10 @@ impl Ledger {
         let doc = match WorkflowDoc::from_canonical_json(&revision_row.document) {
             Ok(doc) => doc,
             Err(error) => {
-                return Ok((LaunchSnapshotState::Invalid, Some(format!("revision document is invalid: {error:#}"))))
+                return Ok((
+                    LaunchSnapshotState::Invalid,
+                    Some(format!("revision document is invalid: {error:#}")),
+                ))
             }
         };
         if let Err(error) = doc
@@ -1421,8 +1604,14 @@ impl Ledger {
                     continue;
                 }
             };
-            let Some(expected_index) = doc.steps.iter().position(|candidate| candidate.name == step) else {
-                invalid = Some(format!("step '{step}' snapshot is not declared by revision"));
+            let Some(expected_index) = doc
+                .steps
+                .iter()
+                .position(|candidate| candidate.name == step)
+            else {
+                invalid = Some(format!(
+                    "step '{step}' snapshot is not declared by revision"
+                ));
                 continue;
             };
             if snapshot.workflow_id != workflow_id
@@ -1433,7 +1622,10 @@ impl Ledger {
             {
                 invalid = Some(format!("step '{step}' snapshot identity does not match workflow {workflow_id} revision {revision}"));
             } else if table_digest != snapshot.digest {
-                invalid = Some(format!("step '{step}' table digest {table_digest} differs from payload {}", snapshot.digest));
+                invalid = Some(format!(
+                    "step '{step}' table digest {table_digest} differs from payload {}",
+                    snapshot.digest
+                ));
             } else if let Err(error) = snapshot.verify_digest() {
                 invalid = Some(format!("step '{step}' digest is invalid: {error:#}"));
             }
@@ -1442,12 +1634,23 @@ impl Ledger {
             return Ok((LaunchSnapshotState::Invalid, Some(error)));
         }
         if count != doc.steps.len() || doc.steps.iter().any(|step| !seen.contains(&step.name)) {
-            return Ok((LaunchSnapshotState::Missing, Some(format!("expected {} launch snapshots, found {}", doc.steps.len(), count))));
+            return Ok((
+                LaunchSnapshotState::Missing,
+                Some(format!(
+                    "expected {} launch snapshots, found {}",
+                    doc.steps.len(),
+                    count
+                )),
+            ));
         }
         Ok((LaunchSnapshotState::Ready, None))
     }
 
-    pub fn require_verified_launch_snapshots(&self, workflow_id: &str, revision: i64) -> Result<Vec<WorkflowLaunchSnapshotRow>> {
+    pub fn require_verified_launch_snapshots(
+        &self,
+        workflow_id: &str,
+        revision: i64,
+    ) -> Result<Vec<WorkflowLaunchSnapshotRow>> {
         let (state, reason) = self.launch_snapshot_state(workflow_id, revision)?;
         match state {
             LaunchSnapshotState::Ready => self.launch_snapshots_for_revision(workflow_id, revision),
@@ -1662,8 +1865,10 @@ impl Ledger {
                 None => self.latest_workflow_revision(&wf.id)?.revision,
             };
             let revision_row = self.workflow_revision_row(&wf.id, revision)?;
-            let doc = WorkflowDoc::from_canonical_json(&revision_row.document)
-                .with_context(|| format!("workflow '{name}' revision {revision} is not valid JSON"))?;
+            let doc =
+                WorkflowDoc::from_canonical_json(&revision_row.document).with_context(|| {
+                    format!("workflow '{name}' revision {revision} is not valid JSON")
+                })?;
             doc.validate()?;
             doc.validate_adapter_capabilities()?;
             self.validate_activation_routes(&wf.id, &doc, reserved_routes)?;
@@ -1678,7 +1883,11 @@ impl Ledger {
                  WHERE id = ?1",
                 params![wf.id, revision, now()],
             )?;
-            self.workflow_audit(&wf.id, "activated", Some(&format!("revision {revision}; launch_digests={digest}")))?;
+            self.workflow_audit(
+                &wf.id,
+                "activated",
+                Some(&format!("revision {revision}; launch_digests={digest}")),
+            )?;
             self.workflow(&wf.id)
         })
     }
@@ -2000,7 +2209,8 @@ impl Ledger {
             let run = self.workflow_run(run_id)?;
             let revision = self.workflow_revision_row(&run.workflow_id, run.revision)?;
             let doc = WorkflowDoc::from_canonical_json(&revision.document)?;
-            let launch_snapshots = self.require_verified_launch_snapshots(&run.workflow_id, run.revision)?;
+            let launch_snapshots =
+                self.require_verified_launch_snapshots(&run.workflow_id, run.revision)?;
             Ok(crate::budget::workflow_admission_limit(
                 plane,
                 self,
@@ -2301,7 +2511,11 @@ pub struct WorkflowSpendToday {
 /// Conservative reservation used when a harness has no dollar meter.
 const DEFAULT_WORKFLOW_COST_ESTIMATE_USD: f64 = 1.0;
 
-fn launch_snapshot_projection(ledger: &Ledger, workflow_id: &str, revision: i64) -> Result<(String, Option<String>, Vec<WorkflowLaunchSnapshotRow>)> {
+fn launch_snapshot_projection(
+    ledger: &Ledger,
+    workflow_id: &str,
+    revision: i64,
+) -> Result<(String, Option<String>, Vec<WorkflowLaunchSnapshotRow>)> {
     let (state, error) = ledger.launch_snapshot_state(workflow_id, revision)?;
     let snapshots = if state == LaunchSnapshotState::Ready {
         ledger.launch_snapshots_for_revision(workflow_id, revision)?
@@ -2336,7 +2550,11 @@ pub fn workflow_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
             let (state, error, snapshots) = launch_snapshot_projection(ledger, &wf.id, revision)?;
             (state, error, Some(serde_json::to_value(snapshots)?))
         }
-        None => (LaunchSnapshotState::Missing.as_str().to_string(), Some("workflow has no active revision".to_string()), Some(serde_json::json!([]))),
+        None => (
+            LaunchSnapshotState::Missing.as_str().to_string(),
+            Some("workflow has no active revision".to_string()),
+            Some(serde_json::json!([])),
+        ),
     };
     Ok(serde_json::json!({
         "workflow": wf,
@@ -2351,7 +2569,8 @@ pub fn workflow_view(ledger: &Ledger, name: &str) -> Result<serde_json::Value> {
 pub fn revision_view(ledger: &Ledger, name: &str, revision: i64) -> Result<serde_json::Value> {
     let row = ledger.workflow_revision(name, revision)?;
     let document: serde_json::Value = serde_json::from_str(&row.document)?;
-    let (snapshot_state, snapshot_error, launch_snapshots) = launch_snapshot_projection(ledger, &row.workflow_id, row.revision)?;
+    let (snapshot_state, snapshot_error, launch_snapshots) =
+        launch_snapshot_projection(ledger, &row.workflow_id, row.revision)?;
     Ok(serde_json::json!({
         "workflow": name,
         "revision": row.revision,
@@ -2377,7 +2596,8 @@ pub fn workflow_run_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Va
     let run = ledger.workflow_run(run_id)?;
     let document = revision_document_view(ledger, &run.workflow, run.revision)?;
     let workflow = ledger.workflow_by_name(&run.workflow)?;
-    let (snapshot_state, snapshot_error, launch_snapshots) = launch_snapshot_projection(ledger, &workflow.id, run.revision)?;
+    let (snapshot_state, snapshot_error, launch_snapshots) =
+        launch_snapshot_projection(ledger, &workflow.id, run.revision)?;
     Ok(serde_json::json!({
         "run": run,
         "document": document,

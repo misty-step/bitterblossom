@@ -451,9 +451,15 @@ bin = "{}"
     let steps = view["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2);
     assert_eq!(view["launch_snapshots"].as_array().unwrap().len(), 2);
-    assert!(view["launch_snapshots"][0]["snapshot"].is_object(), "snapshot readback is structured, not opaque JSON text");
+    assert!(
+        view["launch_snapshots"][0]["snapshot"].is_object(),
+        "snapshot readback is structured, not opaque JSON text"
+    );
     assert_eq!(view["launch_snapshots"][0]["snapshot"]["fallback_index"], 0);
-    assert_eq!(view["launch_snapshots"][0]["digest"], view["launch_snapshots"][0]["snapshot"]["digest"]);
+    assert_eq!(
+        view["launch_snapshots"][0]["digest"],
+        view["launch_snapshots"][0]["snapshot"]["digest"]
+    );
     assert_eq!(steps[0]["step"], "triage");
     assert_eq!(steps[0]["attempt"], 1);
     assert_eq!(steps[0]["state"], "succeeded");
@@ -517,7 +523,11 @@ model = "fallback"
     assert_eq!(view["status"]["state"], "succeeded", "{view}");
     assert_eq!(view["status"]["detail"], "fallback-launch-succeeded");
     let steps = view["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 2, "primary and fallback attempts are both evidence");
+    assert_eq!(
+        steps.len(),
+        2,
+        "primary and fallback attempts are both evidence"
+    );
     assert_eq!(steps[0]["state"], "failed");
     assert_eq!(steps[0]["agent"]["fallback_index"], 0);
     assert_eq!(steps[1]["state"], "succeeded");
@@ -621,11 +631,24 @@ secrets = ["OPENROUTER_API_KEY"]
         ),
     );
     create_and_activate(root, &doc, "fallback-metered-key");
-    let output = bb(root, &["workflow", "accept", "fallback-metered-key", "--trigger", "test", "--json"]);
+    let output = bb(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "fallback-metered-key",
+            "--trigger",
+            "test",
+            "--json",
+        ],
+    );
     let denied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(denied["disposition"], "denied", "{denied}");
     assert_eq!(denied["kind"], "cost_blind_harness", "{denied}");
-    assert!(denied["reason"].as_str().unwrap().contains("command"), "{denied}");
+    assert!(
+        denied["reason"].as_str().unwrap().contains("command"),
+        "{denied}"
+    );
 }
 
 #[test]
@@ -673,7 +696,9 @@ max_rounds = 1
         .unwrap()
         .list_guard_events(100)
         .unwrap();
-    assert!(events.iter().any(|event| event.kind == "workflow_guard_rounds"));
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "workflow_guard_rounds"));
 }
 
 // --- criterion 2: result schemas only where routing needs them ---------------
@@ -1803,12 +1828,28 @@ echo spun"#,
     }
     // Invalid current validation is denied at acceptance because the
     // revision has no verified executable snapshot. No run row is created.
-    let refused = bb(root, &["workflow", "accept", "prerule", "--trigger", "test", "--json"]);
-    assert!(!refused.status.success(), "invalid pinned revision was accepted");
+    let refused = bb(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "prerule",
+            "--trigger",
+            "test",
+            "--json",
+        ],
+    );
+    assert!(
+        !refused.status.success(),
+        "invalid pinned revision was accepted"
+    );
     let denied: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(denied["disposition"], "denied", "{denied}");
     assert_eq!(denied["kind"], "launch_snapshot", "{denied}");
-    assert!(denied["reason"].as_str().unwrap().contains("validation"), "{denied}");
+    assert!(
+        denied["reason"].as_str().unwrap().contains("validation"),
+        "{denied}"
+    );
     let run_count: i64 = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap()
         .query_row("SELECT COUNT(*) FROM workflow_runs WHERE workflow_id = (SELECT id FROM workflows WHERE name = 'prerule')", [], |r| r.get(0)).unwrap();
     assert_eq!(run_count, 0, "denied acceptance must not create a run");
@@ -2434,8 +2475,16 @@ bin = "{}"
     let run_id = "wfr-legacy-missing";
     {
         let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
-        let wf_id: String = conn.query_row("SELECT id FROM workflows WHERE name = 'elder'", [], |r| r.get(0)).unwrap();
-        conn.execute("UPDATE workflows SET active_revision = ?1, state = 'active' WHERE name = 'elder'", [rev]).unwrap();
+        let wf_id: String = conn
+            .query_row("SELECT id FROM workflows WHERE name = 'elder'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "UPDATE workflows SET active_revision = ?1, state = 'active' WHERE name = 'elder'",
+            [rev],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, created_at) VALUES (?1, ?2, ?3, 'test', NULL, NULL, '2026-01-01T00:00:00Z')",
             rusqlite::params![run_id, wf_id, rev],
@@ -2446,31 +2495,55 @@ bin = "{}"
         ).unwrap();
     }
     let refused = bb(root, &["workflow", "execute", run_id, "--json"]);
-    assert!(!refused.status.success(), "legacy execution unexpectedly launched");
+    assert!(
+        !refused.status.success(),
+        "legacy execution unexpectedly launched"
+    );
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("reactivation"), "{stderr}");
     assert!(stderr.contains("launch snapshot"), "{stderr}");
 
     bb_ok(root, &["workflow", "pause", "elder"]);
     let refused = bb(root, &["workflow", "resume", "elder"]);
-    assert!(!refused.status.success(), "resume silently accepted a legacy revision");
+    assert!(
+        !refused.status.success(),
+        "resume silently accepted a legacy revision"
+    );
     assert!(String::from_utf8_lossy(&refused.stderr).contains("reactivation"));
-    let refused = bb(root, &["workflow", "rollback", "elder", "--to", &rev.to_string()]);
-    assert!(!refused.status.success(), "rollback synthesized a legacy snapshot");
+    let refused = bb(
+        root,
+        &["workflow", "rollback", "elder", "--to", &rev.to_string()],
+    );
+    assert!(
+        !refused.status.success(),
+        "rollback synthesized a legacy snapshot"
+    );
     assert!(String::from_utf8_lossy(&refused.stderr).contains("verified launch snapshot"));
 
-    let activated = bb_json(root, &["workflow", "activate", "elder", "--revision", &rev.to_string(), "--json"]);
+    let activated = bb_json(
+        root,
+        &[
+            "workflow",
+            "activate",
+            "elder",
+            "--revision",
+            &rev.to_string(),
+            "--json",
+        ],
+    );
     assert_eq!(activated["state"], "active", "{activated}");
     assert_eq!(activated["launch_snapshots"].as_array().unwrap().len(), 1);
     let after_bytes: String = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap()
         .query_row("SELECT document FROM workflow_revisions WHERE workflow_id = (SELECT id FROM workflows WHERE name = 'elder') AND revision = ?1", [rev], |r| r.get(0)).unwrap();
-    assert_eq!(after_bytes, original_bytes, "reactivation rewrote immutable legacy document bytes");
+    assert_eq!(
+        after_bytes, original_bytes,
+        "reactivation rewrote immutable legacy document bytes"
+    );
     let run_id = accept_test_run(root, "elder");
     let view = execute(root, &run_id);
     assert_eq!(view["status"]["state"], "succeeded", "{view}");
     assert_eq!(view["status"]["detail"], "still valid");
 }
-
 
 #[test]
 fn terminal_child_cost_is_checked_before_success() {
