@@ -4,7 +4,7 @@
   <key>Label</key><string>com.misty-step.bb-plane-litestream</string>
   <key>WorkingDirectory</key><string>__BB_REPO_DIR__/plane</string>
   <key>ProgramArguments</key><array><string>__BB_REPO_DIR__/scripts/bb-litestream-local-entrypoint.sh</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>__BB_LOG_DIR__/bb-plane-litestream.out.log</string>
   <key>StandardErrorPath</key><string>__BB_LOG_DIR__/bb-plane-litestream.err.log</string>

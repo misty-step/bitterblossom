@@ -120,7 +120,8 @@ pub struct IngressSpec {
     pub max_cron_catchup_fires: u32,
 }
 fn default_bind() -> String {
-    "127.0.0.1:7093".to_string()
+    // Unconfigured development planes must not contend with the local-primary port.
+    "127.0.0.1:0".to_string()
 }
 fn default_max_body_bytes() -> usize {
     1_048_576

@@ -77,7 +77,7 @@ pub fn run(root: &Path, expect_serve: bool) -> DoctorReport {
             Some(bind) => {
                 checks.push(serve_health_check(&bind, expect_serve));
                 checks.push(dashboard_check(&bind, expect_serve));
-                if bind == "127.0.0.1:7093" {
+                if !plane.spec.dev {
                     checks.push(retired_dashboard_check());
                 }
             }
@@ -226,7 +226,9 @@ fn launchctl_bin() -> String {
 fn retired_dashboard_check() -> DoctorCheck {
     let uid = unsafe { libc::getuid() };
     let target = format!("gui/{uid}/com.misty-step.bb-dashboard");
-    let output = Command::new(launchctl_bin()).args(["print", &target]).output();
+    let output = Command::new(launchctl_bin())
+        .args(["print", &target])
+        .output();
     match output {
         Err(e) => DoctorCheck {
             name: "retired_dashboard",

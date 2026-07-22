@@ -94,7 +94,10 @@ To inspect the unauthenticated liveness route manually:
 
 For a protected local-primary install, keep the token in an operator-local env
 file rather than a raw export or command argument. The file must be owner-only
-(0600 or stricter), and the drill sources it silently without printing values:
+(0600 or stricter), and every entrypoint uses the same silent search order: an
+explicit `BB_ENV_FILE`, then `<checkout>/.env.bb`, then
+`<checkout>/.env.bb.local-primary`. The installer chmods the repo-root files;
+entrypoints and the drill reject permissive modes without printing values:
 
     BB_ENV_FILE="$HOME/.config/bitterblossom/primary.env" \
       BB_RUNTIME_PLANE=plane BB_BIN="$HOME/.local/libexec/bitterblossom/bb" \
@@ -113,10 +116,13 @@ Install or update the reproducible release services before first start:
     ./scripts/install-bb-local-primary.sh
 
 The installer atomically stages `target/release/bb` into
-`~/.local/libexec/bitterblossom/bb`, renders the tracked launchd templates with
-that stable path, verifies `dev = false`, `allow_local_substrate = true`, and
-`[ingress] bind = "127.0.0.1:7093"`, then loads/kickstarts the serve and
-Litestream labels. A failed copy leaves the previous installed binary intact.
+`~/.local/libexec/bitterblossom/bb`, preserves the prior installed release at
+`~/.local/libexec/bitterblossom/bb.previous`, renders the tracked launchd templates
+with that stable path, validates their XML, verifies `dev = false`,
+`allow_local_substrate = true`, and `[ingress] bind = "127.0.0.1:7093"`, then
+settles and loads/kickstarts the serve and Litestream labels. A failed copy leaves
+the current installed binary intact. The installer also chmods repo-root operator
+env files to 0600.
 It never writes credentials or plane state. If the retired
 `com.misty-step.bb-dashboard` plist is detected, rerun with
 `--retire-legacy-dashboard` to explicitly unload and remove it; normal install
@@ -187,8 +193,8 @@ restore. If the binary or config is bad:
 1. disable PR/merge admission;
 2. capture the primary HTTP/store readback, DLQ, logs, and the preserved database/WAL;
 3. stop and drain launchd;
-4. restore the last known-good binary/config pair without editing schema
-   metadata;
+4. restore the preserved `~/.local/libexec/bitterblossom/bb.previous` binary
+   and known-good config pair without editing schema metadata;
 5. kickstart the same com.misty-step.bb-serve job;
 6. rerun the full readback and --dev-temp restore rehearsal before reopening
    admission.

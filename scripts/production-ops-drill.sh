@@ -53,22 +53,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 BB_CONFIG="${BB_CONFIG_ARG:-$(printenv BB_RUNTIME_PLANE 2>/dev/null || printf '%s' plane)}"
-BB_ENV_FILE="$(printenv BB_ENV_FILE 2>/dev/null || true)"
-if [ -z "$BB_ENV_FILE" ] && [ -f "$BB_CONFIG/.env.bb" ]; then
-  BB_ENV_FILE="$BB_CONFIG/.env.bb"
-fi
-if [ -n "$BB_ENV_FILE" ]; then
-  [ -f "$BB_ENV_FILE" ] || { echo "ops drill: BB_ENV_FILE is not a file" >&2; exit 2; }
-  _bb_env_xtrace=0
-  case "$-" in *x*) _bb_env_xtrace=1; set +x ;; esac
-  if . "$BB_ENV_FILE" >/dev/null 2>&1; then
-    _bb_env_status=0
-  else
-    _bb_env_status=$?
-  fi
-  [ "$_bb_env_xtrace" -eq 1 ] && set -x
-  [ "$_bb_env_status" -eq 0 ] || { echo "ops drill: failed to source BB_ENV_FILE" >&2; exit 2; }
-fi
+. "$(pwd)/scripts/bb-operator-env.sh"
+bb_source_operator_env "$(pwd)" || { echo "ops drill: failed to load operator env" >&2; exit 2; }
 
 BB_BIN="${BB_BIN_ARG:-$(printenv BB_BIN 2>/dev/null || printf '%s' ./target/debug/bb)}"
 TMP=
@@ -448,19 +434,40 @@ try:
     ).fetchall()
     table_names = [row[1] for row in schema if row[0] == "table"]
     table_counts = {}
+    table_columns = {}
     for name in table_names:
         quoted = '"' + name.replace('"', '""') + '"'
         table_counts[name] = conn.execute(f"SELECT count(*) FROM {quoted}").fetchone()[0]
+        table_columns[name] = {row[1] for row in conn.execute(f"PRAGMA table_info({quoted})").fetchall()}
+
+    def require_columns(table, columns):
+        missing = sorted(set(columns) - table_columns.get(table, set()))
+        if missing:
+            raise SystemExit(f"SQLite {table} is missing required column(s): {', '.join(missing)}")
+
     state_counts = {}
-    for table, column in (("runs", "state"), ("dead_letters", "status"), ("submissions", "state")):
+    for table, column in (("runs", "state"), ("submissions", "state")):
         if table not in table_names:
             continue
+        require_columns(table, [column])
         qt = '"' + table.replace('"', '""') + '"'
         qc = '"' + column.replace('"', '""') + '"'
         state_counts[table] = {
             str(row[0]): row[1]
             for row in conn.execute(
                 f"SELECT {qc}, count(*) FROM {qt} GROUP BY {qc} ORDER BY {qc}"
+            ).fetchall()
+        }
+    if "dead_letters" in table_names:
+        require_columns("dead_letters", ["acknowledged_at", "replayed_run_id"])
+        qt = '"dead_letters"'
+        state_counts["dead_letters"] = {
+            str(row[0]): row[1]
+            for row in conn.execute(
+                f"SELECT CASE WHEN replayed_run_id IS NOT NULL THEN 'replayed' "
+                f"WHEN acknowledged_at IS NOT NULL THEN 'acknowledged' "
+                f"ELSE 'open' END, count(*) FROM {qt} "
+                "GROUP BY 1 ORDER BY 1"
             ).fetchall()
         }
 finally:

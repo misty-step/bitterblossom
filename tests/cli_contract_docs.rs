@@ -261,7 +261,10 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
         "0600",
         "hosted-app-platform-reference.md",
     ] {
-        assert!(ops.contains(needle), "operations runbook missing {needle:?}");
+        assert!(
+            ops.contains(needle),
+            "operations runbook missing {needle:?}"
+        );
     }
     assert!(!ops.contains("127.0.0.1:7077"));
     assert!(!ops.contains("doctl"));
@@ -297,8 +300,18 @@ fn operations_runbook_and_drill_are_wired_into_the_gate() {
         .nth(1)
         .and_then(|tail| tail.split("case \"$MODE\" in").next())
         .expect("primary function");
-    for forbidden in ["doctor", " recover ", " status --json", " runs list", " dlq list", " serve"] {
-        assert!(!primary.contains(forbidden), "primary path invokes forbidden CLI: {forbidden}");
+    for forbidden in [
+        "doctor",
+        " recover ",
+        " status --json",
+        " runs list",
+        " dlq list",
+        " serve",
+    ] {
+        assert!(
+            !primary.contains(forbidden),
+            "primary path invokes forbidden CLI: {forbidden}"
+        );
     }
 
     let verify = read("scripts/verify.sh");
@@ -320,20 +333,30 @@ fn current_operations_docs_use_local_primary_and_keep_dev_temp_separate() {
         "skills/bitterblossom/references/operator-recipes.md",
     ] {
         let text = read(rel);
-        assert!(text.contains("127.0.0.1:7093"), "{rel} must name the live bind");
-        assert!(text.contains("local-primary"), "{rel} must name local-primary");
-        assert!(!text.contains("127.0.0.1:7077"), "{rel} carries stale 7077 guidance");
-        assert!(!text.contains("ondigitalocean"), "{rel} carries stale hosted URL");
+        assert!(
+            text.contains("127.0.0.1:7093"),
+            "{rel} must name the live bind"
+        );
+        assert!(
+            text.contains("local-primary"),
+            "{rel} must name local-primary"
+        );
+        assert!(
+            !text.contains("127.0.0.1:7077"),
+            "{rel} carries stale 7077 guidance"
+        );
+        assert!(
+            !text.contains("ondigitalocean"),
+            "{rel} carries stale hosted URL"
+        );
     }
 }
 
-
-
 #[test]
-fn product_default_bind_is_local_primary_not_fixture() {
+fn product_default_bind_is_ephemeral_for_unconfigured_planes() {
     let spec = read("src/spec.rs");
-    assert!(spec.contains("\"127.0.0.1:7093\".to_string()"));
-    assert!(!spec.contains("\"127.0.0.1:7077\".to_string()"));
+    assert!(spec.contains("\"127.0.0.1:0\".to_string()"));
+    assert!(!spec.contains("\"127.0.0.1:7093\".to_string()"));
 }
 
 #[test]
@@ -353,6 +376,9 @@ fn local_primary_assets_pin_launchd_and_fixture_boundaries() {
     let installer = read("scripts/install-bb-local-primary.sh");
     assert!(installer.contains("--retire-legacy-dashboard"));
     assert!(installer.contains("mv -f"));
+    assert!(installer.contains("bb.previous"));
+    assert!(installer.contains("plutil -lint"));
+    assert!(installer.contains("wait_for_bootout"));
     for needle in [
         "target/release/bb",
         "BB_INSTALL_DIR",
@@ -367,6 +393,10 @@ fn local_primary_assets_pin_launchd_and_fixture_boundaries() {
     ] {
         assert!(installer.contains(needle), "installer missing {needle:?}");
     }
+    let env_helper = read("scripts/bb-operator-env.sh");
+    assert!(env_helper.contains("BB_ENV_FILE"));
+    assert!(env_helper.contains(".env.bb.local-primary"));
+    assert!(env_helper.contains("0600"));
     let entrypoint = read("scripts/bb-serve-local-entrypoint.sh");
     assert!(entrypoint.contains("BB_LOCAL_PRIMARY_BIN"));
     assert!(entrypoint.contains(".local/libexec/bitterblossom/bb"));
@@ -379,7 +409,23 @@ fn local_primary_assets_pin_launchd_and_fixture_boundaries() {
     let sidecar = read("deploy/launchd/com.misty-step.bb-plane-litestream.plist.template");
     assert!(sidecar.contains("com.misty-step.bb-plane-litestream"));
     assert!(sidecar.contains("bb-litestream-local-entrypoint.sh"));
-    let dashboard = read("docs/operations/bb-dashboard.md");
+    let serve_path = read("deploy/launchd/com.misty-step.bb-serve.plist.template");
+    assert!(serve_path.contains("/usr/bin:/bin:/usr/sbin"));
+    assert!(sidecar.contains("/usr/bin:/bin:/usr/sbin"));
+    assert_eq!(
+        serve_path
+            .matches("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+            .count(),
+        1
+    );
+    assert_eq!(
+        sidecar
+            .matches("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+            .count(),
+        1
+    );
+    let dashboard = read("docs/archive/operations/bb-dashboard.md");
+    assert!(dashboard.contains("Historical reference only"));
     assert!(dashboard.contains("7091"));
     assert!(dashboard.contains("dev") || dashboard.contains("demo"));
 }

@@ -72,9 +72,10 @@ def parse_json(proc: subprocess.CompletedProcess, action: str) -> Any:
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        raise SystemExit(
+        eprint(
             f"{action}: bb returned non-JSON stdout: {exc}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
+        raise SystemExit(2)
 
 
 def submission_id(doc: Any) -> str:
@@ -144,10 +145,10 @@ def main() -> int:
             eprint(dlq.stderr.rstrip())
         return dlq.returncode
     dlq_doc = parse_json(dlq, "dlq list")
-    if not isinstance(dlq_doc, list):
-        eprint("submission readiness read returned a non-list DLQ document")
-        return 3
-    open_rows = [row for row in dlq_doc if isinstance(row, dict) and row.get("status") == "open"]
+    if not isinstance(dlq_doc, list) or not all(isinstance(row, dict) for row in dlq_doc):
+        eprint("submission readiness read returned a malformed DLQ document")
+        return 2
+    open_rows = [row for row in dlq_doc if row.get("status") == "open"]
     if open_rows:
         eprint("submission storm blocked: status=open dead letters require resolution or explicit acknowledgement before PR/merge loops")
         for row in open_rows:

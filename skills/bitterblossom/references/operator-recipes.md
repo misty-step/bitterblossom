@@ -408,12 +408,26 @@ BB_RUNTIME_PLANE=/Users/phaedrus/Development/bitterblossom/plane \
 ```
 
 If the local-primary API is protected, add the owner-only (0600 or stricter)
-operator env file without putting the token in argv:
+operator env file without putting the token in argv. All local-primary entrypoints
+search the explicit `BB_ENV_FILE`, then `<checkout>/.env.bb`, then
+`<checkout>/.env.bb.local-primary` and reject files more permissive than 0600:
 
+```bash
 BB_ENV_FILE="$HOME/.config/bitterblossom/primary.env" \
   BB_RUNTIME_PLANE=/Users/phaedrus/Development/bitterblossom/plane \
   BB_BIN="$HOME/.local/libexec/bitterblossom/bb" \
   ./scripts/production-ops-drill.sh --primary
+```
+
+For a direct protected read, pass the bearer through curl's stdin config rather
+than argv or a query string:
+
+```bash
+{
+  printf '%s\n' silent show-error
+  printf '%s\n' 'url = "http://127.0.0.1:7093/api/status"'
+  printf 'header = "Authorization: Bearer %s"\n' "$BB_API_TOKEN"
+} | curl --config -
 ```
 
 With no token, the drill requires loopback binding before accepting API 200. If

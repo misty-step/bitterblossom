@@ -440,12 +440,14 @@ Deployment contract:
   CERBERUS_REVIEW_GH_TOKEN, SPRITE_TOKEN for the bounded alternate,
   LITESTREAM_REPLICA_URL, and Canary check-in values. Values stay in the
   operator-local launchd environment, never git, plane.toml, argv, or evidence.
-- Readiness: GET /health, bb doctor --expect-serve --json, bb check --json,
-  bb status --json, bb runs list --json, bb dlq list --json, and a read-only
-  SQLite journal/integrity check must all be captured before enabling PR/merge
-  loops. A derived DLQ status=open is a hard readiness block. Replayed and
-  acknowledged rows are resolved; null acknowledgement timestamps are only a
-  separately reported historical count.
+- Readiness: run `./scripts/production-ops-drill.sh --primary` before enabling
+  PR/merge loops. It captures launchd ownership, GET /health and the read-only
+  /api/status, /api/runs, and /api/dlq surfaces, then opens SQLite with
+  `mode=ro&immutable=0`, `PRAGMA query_only = ON`, and journal/integrity/schema
+  snapshots before and after the readback. A derived DLQ status=open is a hard
+  readiness block. Do not use bb doctor, bb check, bb status, bb runs, bb dlq,
+  bb recover, or bb serve against the live ledger; reserve those CLI reads for
+  fixtures and isolated copies where migration writes are safe.
 - Recovery: after launchd restart, inspect health/status and run bb recover --json
   only after side-effect inspection. Unknown probes retain leases; never blindly
   replay work that may have crossed the execution boundary.
@@ -454,8 +456,10 @@ Deployment contract:
 - Logs/headroom: stdout/stderr are under ~/.local/state/bitterblossom and the
   operator records df/du headroom for the WAL, Litestream queue, logs, and one
   isolated restore.
-- Rollback: preserve the failed binary, config, database, and WAL; stop/drain
-  launchd; restore a known-good binary/config pair; kickstart the same job; and
+- Rollback: preserve the failed binary, config, database, and WAL; the installer
+  keeps the prior installed binary at `~/.local/libexec/bitterblossom/bb.previous`;
+  stop/drain launchd; restore that known-good binary/config pair; kickstart the same
+  job; and
   rerun doctor, status, integrity, backup, and isolated-restore checks. Never
   lower schema metadata or silently discard an open DLQ.
 - Alternate substrate: sprites and tailnet remain available through task and

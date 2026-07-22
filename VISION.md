@@ -51,12 +51,9 @@ service. The read-only `scripts/production-ops-drill.sh --primary` reads the
 live HTTP health/status/runs/DLQ surfaces and SQLite integrity/count snapshots
 without invoking mutating CLI paths; an open DLQ status fails closed.
 
-External dispatch registration, register-through wrappers, and interactive lead
-sessions are not part of the current product boundary. The interactive lead
-sessions are not part of the current product boundary. They remain historical
+External dispatch registration, register-through wrappers, and
+interactive lead sessions are not part of the current product boundary. They remain historical
 implementation material only and must not be presented as the default origin.
-
-interactive lead sessions are not part of the current product boundary.
 
 ## The product model
 

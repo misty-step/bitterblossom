@@ -7,14 +7,8 @@ set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 plane_dir="$repo_dir/plane"
 
-if [ -f "$repo_dir/.env.bb" ]; then
-  # shellcheck disable=SC1091
-  . "$repo_dir/.env.bb"
-fi
-if [ -f "$repo_dir/.env.bb.local-primary" ]; then
-  # shellcheck disable=SC1091
-  . "$repo_dir/.env.bb.local-primary"
-fi
+. "$repo_dir/scripts/bb-operator-env.sh"
+bb_source_operator_env "$repo_dir" || { echo "bb litestream: failed to load operator env" >&2; exit 2; }
 
 : "${LITESTREAM_REPLICA_URL:?set LITESTREAM_REPLICA_URL in operator-local environment}"
 export BB_PLANE_DIR="$plane_dir"

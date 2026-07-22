@@ -7,25 +7,8 @@ set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 plane_dir="$repo_dir/plane"
 
-source_env() {
-  env_file=$1
-  [ -f "$env_file" ] || return 0
-  _env_xtrace=0
-  case "$-" in *x*) _env_xtrace=1; set +x ;; esac
-  if . "$env_file" >/dev/null 2>&1; then
-    _env_status=0
-  else
-    _env_status=$?
-  fi
-  [ "$_env_xtrace" -eq 1 ] && set -x
-  [ "$_env_status" -eq 0 ] || { echo "bb local-primary: failed to source operator env" >&2; exit 2; }
-}
-
-if [ -n "${BB_ENV_FILE:-}" ]; then
-  source_env "$BB_ENV_FILE"
-fi
-source_env "$repo_dir/.env.bb"
-source_env "$repo_dir/.env.bb.local-primary"
+. "$repo_dir/scripts/bb-operator-env.sh"
+bb_source_operator_env "$repo_dir" || { echo "bb local-primary: failed to load operator env" >&2; exit 2; }
 
 bb_bin="${BB_LOCAL_PRIMARY_BIN:-$HOME/.local/libexec/bitterblossom/bb}"
 [ -x "$bb_bin" ] || { echo "bb local-primary: installed release binary missing at $bb_bin; run scripts/install-bb-local-primary.sh" >&2; exit 2; }
