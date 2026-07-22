@@ -1854,7 +1854,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             revision,
             json,
         } => {
-            let routes = ingress::task_webhook_routes(&plane);
+            let routes = ingress::task_webhook_routes(plane);
             let wf = ledger.activate_workflow_with_reserved_routes(&name, revision, &routes)?;
             print_workflow(&wf, json)?;
         }
@@ -1863,7 +1863,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Resume { name, json } => {
-            let routes = ingress::task_webhook_routes(&plane);
+            let routes = ingress::task_webhook_routes(plane);
             let wf = ledger.resume_workflow_with_reserved_routes(&name, &routes)?;
             print_workflow(&wf, json)?;
         }
@@ -1872,7 +1872,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Rollback { name, to, json } => {
-            let routes = ingress::task_webhook_routes(&plane);
+            let routes = ingress::task_webhook_routes(plane);
             let (wf, revision) =
                 ledger.rollback_workflow_with_reserved_routes(&name, to, &routes)?;
             print_revision(&wf, revision, "rolled back to snapshot as", json)?;
@@ -1913,7 +1913,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             )?;
             let wf = if activate {
                 {
-                    let routes = ingress::task_webhook_routes(&plane);
+                    let routes = ingress::task_webhook_routes(plane);
                     ledger.activate_workflow_with_reserved_routes(
                         &wf.name,
                         Some(revision),

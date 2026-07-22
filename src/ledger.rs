@@ -267,6 +267,15 @@ pub struct Ledger {
 
 const SCHEMA: &str = include_str!("schema.sql");
 pub const LEDGER_SCHEMA_VERSION: i64 = 1;
+type SubmissionHeadRow = (
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 impl Ledger {
     pub const MAX_PENDING_QUEUE_DEPTH: i64 = 256;
@@ -527,15 +536,7 @@ impl Ledger {
 
         // Resolve the submission head without calling helpers that open their
         // own transaction. This keeps supersession and member admission atomic.
-        let latest: Option<(
-            String,
-            String,
-            String,
-            i64,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = tx
+        let latest: Option<SubmissionHeadRow> = tx
             .query_row(
                 "SELECT id, state, rev, round, prior_report_json, report_json, head_version
                  FROM submissions WHERE change_key = ?1 ORDER BY rowid DESC LIMIT 1",
@@ -564,7 +565,9 @@ impl Ledger {
             }
             Some((_id, _state, old_rev, _round, _prior, _report, _old_version))
                 if old_rev == rev => {}
-            Some((id, state, _old_rev, round, _prior, _report, old_version)) if state == "open" => {
+            Some((id, state, _old_rev, _round, _prior, _report, old_version))
+                if state == "open" =>
+            {
                 let newer = version
                     .zip(old_version.as_deref())
                     .is_none_or(|(new, old)| new > old);
