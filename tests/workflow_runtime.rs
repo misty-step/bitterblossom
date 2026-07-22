@@ -525,6 +525,9 @@ model = "fallback"
     assert_eq!(steps[1]["agent"]["bin"], fallback.display().to_string());
     assert_ne!(steps[0]["agent"]["digest"], steps[1]["agent"]["digest"]);
     let fallback_digest = steps[1]["agent"]["digest"].as_str().unwrap();
+    let shown = bb_json(root, &["workflow", "run-show", &run_id, "--json"]);
+    assert_eq!(shown["steps"][1]["agent"]["fallback_index"], 1);
+    assert_eq!(shown["steps"][1]["agent"]["digest"], fallback_digest);
     let events = Ledger::open(&root.join(".bb/plane.db"))
         .unwrap()
         .list_guard_events(100)
