@@ -153,7 +153,7 @@ $BB --config $CFG artifacts read "$run_id" REPORT.json --json >/dev/null
 rm -rf "$local_plane_tmp"
 
 echo "==> operations smoke drill"
-BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --local >/dev/null
+BB_BIN=./target/debug/bb scripts/production-ops-drill.sh --dev-temp >/dev/null
 
 echo "==> self-drill chaos fixture"
 self_drill_tmp=$(mktemp -d "${TMPDIR:-/tmp}/bb-self-drill-verify.XXXXXX")
@@ -316,7 +316,7 @@ rm -rf "$self_drill_tmp"
 # ledger row (~9 lines). No new module, no new subsystem, no workload
 # judgment -- this is the same class of budget-governance arithmetic as
 # the existing global daily ceiling it sits beside.
-# Linejam DigitalOcean cutover: 15200 -> 15500 for durable attempt-artifact
+# Hosted deployment cutover: 15200 -> 15500 for durable attempt-artifact
 # snapshots. artifacts.rs captures public top-level files at the existing
 # finish_attempt seam, bounds each stored text body at the existing 1 MiB read
 # limit, and projects the same list/read/bundle contracts from SQLite when an

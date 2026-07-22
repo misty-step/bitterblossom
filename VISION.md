@@ -32,6 +32,32 @@ pull-request review, incident resolution, scheduled stewardship, deploy
 verification, and other operations that must not depend on a laptop tab
 remaining open.
 
+## Local-primary deployment truth
+
+The shipped single-operator production plane runs on local hardware under the
+launchd job `com.misty-step.bb-serve`. Its release binary reads the durable
+`plane/` instance and binds only to `127.0.0.1:7093`; production config is
+`dev = false` with the explicit `allow_local_substrate = true` grant. SQLite
+state lives at `plane/.bb/plane.db` in WAL mode. The separate
+`com.misty-step.bb-plane-litestream` sidecar writes
+`plane/.bb/backup-last-success` only after a confirmed Litestream sync, and
+operator-local credentials never enter Git, argv, or evidence.
+
+The `127.0.0.1:7091` dashboard is a separate dev/demo service. Port
+`127.0.0.1:7077` belongs only to explicit isolated fixture configurations; it
+is not a production default. Sprites and tailnet remain bounded alternate
+substrates for workloads that need stronger isolation, not the local-primary
+service. The read-only `scripts/production-ops-drill.sh --primary` reads the
+live HTTP health/status/runs/DLQ surfaces and SQLite integrity/count snapshots
+without invoking mutating CLI paths; an open DLQ status fails closed.
+
+External dispatch registration, register-through wrappers, and interactive lead
+sessions are not part of the current product boundary. The interactive lead
+sessions are not part of the current product boundary. They remain historical
+implementation material only and must not be presented as the default origin.
+
+interactive lead sessions are not part of the current product boundary.
+
 ## The product model
 
 The configured vocabulary is intentionally small:

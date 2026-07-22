@@ -393,30 +393,50 @@ pidfiles and probe command failures are unknown, not dead.
 
 ## Serve and Read APIs
 
-Loopback development:
+The canonical production plane is launchd-managed local-primary on
+`127.0.0.1:7093`. Use the primary drill for a non-destructive readback. It
+uses HTTP GET /health, /api/status, /api/runs, and /api/dlq, then Python sqlite3
+with `mode=ro&immutable=0` and `PRAGMA query_only = ON` to compare WAL,
+integrity, schema, counts, and state before and after. It never invokes
+`bb doctor`, `bb check`, `bb status`, `bb runs`, `bb dlq`, `bb recover`,
+or `bb serve` against the live plane:
 
 ```bash
-bb --config <plane> serve
-curl http://127.0.0.1:7077/health
-curl http://127.0.0.1:7077/api/status
-curl http://127.0.0.1:7077/api/tasks
+BB_RUNTIME_PLANE=/Users/phaedrus/Development/bitterblossom/plane \
+  BB_BIN="$HOME/.local/libexec/bitterblossom/bb" \
+  ./scripts/production-ops-drill.sh --primary
 ```
 
-Non-loopback serving needs `BB_API_TOKEN`. Query with:
+If the local-primary API is protected, add the owner-only (0600 or stricter)
+operator env file without putting the token in argv:
+
+BB_ENV_FILE="$HOME/.config/bitterblossom/primary.env" \
+  BB_RUNTIME_PLANE=/Users/phaedrus/Development/bitterblossom/plane \
+  BB_BIN="$HOME/.local/libexec/bitterblossom/bb" \
+  ./scripts/production-ops-drill.sh --primary
+```
+
+With no token, the drill requires loopback binding before accepting API 200. If
+a token is configured, it proves no-header 401 plus bearer 200. It sources the
+file silently and never prints the credential. An open dead letter is a readiness brake. The drill returns non-zero with
+`READINESS BLOCKED` when derived `status = "open"` appears, including the
+current #29 missing `POWDER_API_BASE_URL` row. It does not acknowledge or
+replay the row. Replayed and acknowledged history does not block. The
+check-to-submit window in `scripts/bb-submit-storm` has the same fail-before-
+mutation guard, but it is not transactional; controller admission hardening is
+required for a future atomic guarantee.
+
+Use the separate fixture only for local development and CI. It owns an isolated
+SQLite file and may mutate that throwaway plane:
 
 ```bash
-{
-  printf '%s\n' 'fail'
-  printf '%s\n' 'silent'
-  printf '%s\n' 'show-error'
-  printf 'url = "%s/api/runs"\n' "$BB_URL"
-  printf 'header = "Authorization: Bearer %s"\n' "$BB_API_TOKEN"
-} | curl --config -
+BB_BIN=./target/debug/bb ./scripts/production-ops-drill.sh --dev-temp
 ```
 
-Do not put `BB_API_TOKEN` in a query string. Read APIs and the HTML view accept
-only the bearer header when a token is configured. Prefer curl config on stdin
-so the bearer value is not exposed in process argv.
+The service must bind to loopback when no token is configured. For a protected
+non-loopback deployment, keep the bearer in the owner-only env file used by the
+primary drill. Do not put `BB_API_TOKEN` in argv, a query string, logs, or
+receipts; the drill sources the file silently and proves the 401/200 boundary.
 
 ## Parked Tasks
 

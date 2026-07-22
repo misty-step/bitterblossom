@@ -31,12 +31,10 @@ otherwise.
 Run:
 
 ```bash
-export BB_RUNTIME_PLANE="${BB_RUNTIME_PLANE:-/path/to/private/plane}"
-export BB_DO_APP_ID="${BB_DO_APP_ID:?set from operator-local app inventory}"
+export BB_RUNTIME_PLANE="${BB_RUNTIME_PLANE:-/Users/phaedrus/Development/bitterblossom/plane}"
 git status --short --branch --untracked-files=all
-doctl apps get "$BB_DO_APP_ID" \
-  --format ID,Spec.Name,DefaultIngress,ActiveDeployment.ID,InProgressDeployment.ID
-sprite org list
+BB_RUNTIME_PLANE="$BB_RUNTIME_PLANE" ./scripts/production-ops-drill.sh --primary || test "$?" -eq 3
+launchctl print gui/$(id -u)/com.misty-step.bb-serve
 sprite use -o misty-step lane-1
 sprite org list
 sprite exec -- whoami
@@ -49,12 +47,14 @@ sprite exec -- whoami
 
 Hard requirements:
 
-- Sprite org must be `misty-step` before any remote lane or `bb` dispatch.
+- The local-primary service is the canonical production path: launchd label `com.misty-step.bb-serve`, release binary, `dev = false`, `allow_local_substrate = true`, and bind `127.0.0.1:7093`.
+- The primary readback may return BLOCKED for an open DLQ; record the row and stop. Do not replay or acknowledge it.
+- Sprite org must be `misty-step` before any bounded alternate lane or `bb` dispatch.
   `sprite org list` can show another selected org; fix with
   `sprite use -o misty-step lane-1` and verify with `sprite exec -- whoami`.
-- The production plane is instance data, not checked into this repo. Do not
-  assume `--config plane`; require `BB_RUNTIME_PLANE` or the service's
-  `BB_PLANE_DIR` runtime environment.
+- The production plane is instance data, not checked into this repo. Require
+  `BB_RUNTIME_PLANE` or the service's `BB_PLANE_DIR` runtime environment; do not
+  substitute the `127.0.0.1:7091` demo dashboard or `7077` fixture ports.
 - Do not unpark a task just to make a gate run. Read the parked reason and
   record what condition would make unpark safe.
 - Do not run verdict tasks directly with arbitrary payloads. They need a

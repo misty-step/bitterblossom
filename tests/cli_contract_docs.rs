@@ -1,8 +1,6 @@
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::Path;
+use std::process::Command;
 
 fn help(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_bb"))
@@ -117,10 +115,12 @@ fn live_help_exposes_current_agent_cli_contract() {
 fn current_docs_and_skills_match_live_cli_contract() {
     let current_contracts = [
         "README.md",
+        "VISION.md",
         "docs/spine.md",
         "skills/bitterblossom/SKILL.md",
         "skills/bitterblossom/references/operator-recipes.md",
         ".agents/skills/bb-dogfood/SKILL.md",
+        ".agents/skills/bb-dogfood/references/session-notes-template.md",
     ];
     for rel in current_contracts {
         let text = read(rel);
@@ -238,315 +238,150 @@ fn walkthrough_terminal_transcripts_are_archived() {
 #[test]
 fn operations_runbook_and_drill_are_wired_into_the_gate() {
     let ops = read("docs/operations/README.md");
-    assert!(ops.contains("scripts/production-ops-drill.sh --remote"));
-    assert!(ops.contains("scripts/production-ops-drill.sh --local"));
-    assert!(ops.contains("doctl apps get \"$BB_DO_APP_ID\""));
-    assert!(ops.contains("doctl apps get-deployment \"$BB_DO_APP_ID\""));
-    assert!(ops.contains("doctl apps list-deployments \"$BB_DO_APP_ID\""));
-    assert!(ops.contains("BB_EXPECTED_DEPLOYMENT_ID"));
-    assert!(ops.contains("InProgressDeployment.ID"));
-    assert!(ops.contains("failed rollout that leaves the previous deployment active cannot pass"));
-    assert!(ops.contains("doctl apps logs \"$BB_DO_APP_ID\" plane --type run"));
-    assert!(ops.contains("BB_LITESTREAM_REQUIRED=1"));
-    assert!(ops.contains("BB_LITESTREAM_REPLICA_URL_ENV=LITESTREAM_REPLICA_URL"));
-    assert!(ops.contains("BB_PLANE_CONFIG_URL"));
-    assert!(ops.contains("litestream restore -config /tmp/bb-litestream.yml"));
-    assert!(ops.contains("ledger.schema_version"));
-    assert!(ops.contains("newer than the rollback target supports"));
-    assert!(ops.contains("Do not edit `PRAGMA user_version`"));
-    assert!(ops.contains("backup.status == \"fresh\""));
-    assert!(ops.contains("last_success_path = \".bb/backup-last-success\""));
-    assert!(ops.contains("git revert <bad-commit>"));
-    assert!(ops.contains("doctl apps console \"$BB_DO_APP_ID\" plane"));
-    assert!(ops.contains("bb dlq replay <id> --json"));
-    assert!(ops.contains("bb dlq ack <id> --reason <text>"));
-    assert!(!ops.contains("there is no first-class acknowledge"));
-    assert!(!ops.contains("?token=$BB_API_TOKEN"));
+    for needle in [
+        "local-primary",
+        "com.misty-step.bb-serve",
+        "127.0.0.1:7093",
+        "dev = false",
+        "allow_local_substrate = true",
+        "plane/.bb/plane.db",
+        "LITESTREAM_REPLICA_URL",
+        "/api/status",
+        "mode=ro&immutable=0",
+        "PRAGMA integrity_check",
+        "SIGTERM",
+        "launchctl kickstart",
+        "--dev-temp",
+        "backup",
+        "restore",
+        "rollback",
+        "READINESS BLOCKED",
+        "status = \"open\"",
+        "BB_ENV_FILE",
+        "0600",
+        "hosted-app-platform-reference.md",
+    ] {
+        assert!(ops.contains(needle), "operations runbook missing {needle:?}");
+    }
+    assert!(!ops.contains("127.0.0.1:7077"));
+    assert!(!ops.contains("doctl"));
+    assert!(!ops.contains("ondigitalocean"));
 
     let script = read("scripts/production-ops-drill.sh");
-    assert!(script.contains("backup_restore_check"));
-    assert!(script.contains("restore_read_surface_check"));
-    assert!(script.contains("gate --change ops-drill --json"));
-    assert!(script.contains("backup status was not fresh"));
-    assert!(script.contains("expect_bearer_code remote-tasks"));
-    assert!(script.contains("--do-app-id"));
-    assert!(script.contains("--expected-deployment-id"));
-    assert!(script.contains("doctl apps get \"$BB_DO_APP_ID\""));
-    assert!(script.contains("doctl apps get-deployment \"$BB_DO_APP_ID\""));
-    assert!(script.contains("InProgressDeployment.ID"));
-    assert!(script.contains("is still in progress"));
-    assert!(script.contains("did not match expected"));
-    assert!(script.contains("phase was not ACTIVE"));
-    assert!(script.contains("curl --config -"));
-    assert!(!script.contains("-H \"Authorization: Bearer $BB_API_TOKEN\""));
-    assert!(!script.contains("?token="));
-
-    let dockerfile = read("Dockerfile");
-    assert!(dockerfile.contains("ARG LITESTREAM_VERSION=0.5.13"));
-    assert!(dockerfile.contains("ca-certificates git curl openssh-client passwd socat util-linux"));
-    assert!(dockerfile.contains("useradd --system --create-home"));
-    assert!(dockerfile.contains("chown bb:bb \"$BB_PLANE_DIR\""));
-    assert!(dockerfile.contains("litestream-${LITESTREAM_VERSION}-linux-${litestream_arch}.tar.gz"));
-    assert!(dockerfile.contains("FROM tailscale/tailscale:stable@sha256:"));
-    assert!(dockerfile.contains("COPY --from=tailscale /usr/local/bin/tailscaled"));
-    assert!(dockerfile.contains("COPY --from=tailscale /usr/local/bin/tailscale"));
-    assert!(dockerfile.contains("ENTRYPOINT [\"/usr/local/bin/bb-mint-tailnet-entrypoint\"]"));
-    assert!(!dockerfile.contains("LITESTREAM_REPLICA_URL="));
-
-    let mint_container_smoke = read("scripts/mint-tailnet-container-smoke.sh");
-    assert!(mint_container_smoke.contains("NoNewPrivs:"));
-    assert!(mint_container_smoke.contains("Cap(Inh|Prm|Eff|Bnd|Amb):"));
-    assert!(mint_container_smoke.contains("Mint Powder capability probe failed; stopping bb"));
-    assert!(mint_container_smoke.contains("/run/bb-mint/tailscaled.sock"));
-    assert!(mint_container_smoke.contains("__mint.powder.bitterblossom__"));
-
-    let ci = read(".github/workflows/ci.yml");
-    assert!(ci.contains("scripts/mint-tailnet-container-smoke.sh"));
-
-    assert!(!Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fly.toml")
-        .exists());
-
-    let entrypoint = read("scripts/bb-litestream-entrypoint.sh");
-    assert!(entrypoint.contains("litestream replicate -config \"$config_path\""));
-    assert!(entrypoint.contains(
-        "litestream restore -if-replica-exists -o \"$db_path\" -config \"$config_path\" \"$db_path\""
-    ));
-    assert!(entrypoint
-        .contains("litestream sync -socket \"$socket_path\" -wait -timeout \"$sync_timeout\""));
-    assert!(entrypoint.contains("url: ${%s}"));
-    assert!(entrypoint.contains("date -u '+%Y-%m-%dT%H:%M:%SZ' >\"$heartbeat_path\""));
-    assert!(entrypoint.contains("BB_TAILNET_SSH_PRIVATE_KEY"));
-    assert!(entrypoint.contains("BB_TAILNET_SSH_KNOWN_HOSTS"));
-    assert!(entrypoint.contains("BB_TAILNET_SSH_DIR:-/root/.ssh"));
-    assert!(entrypoint.contains("chmod 0700 \"$ssh_dir\""));
-    assert!(entrypoint.contains("chmod 0600 \"$ssh_dir/id_ed25519\""));
-    assert!(entrypoint.contains("chmod 0600 \"$ssh_dir/known_hosts\""));
+    assert!(script.contains("primary_api_auth"));
+    assert!(script.contains("BB_ENV_FILE"));
+    for needle in [
+        "--primary",
+        "--dev-temp",
+        "127.0.0.1:7093",
+        "allow_local_substrate = true",
+        "/api/status",
+        "/api/dlq",
+        "journal_mode",
+        "integrity_check",
+        "SIGTERM",
+        "restore_read_surface_check",
+        "READINESS BLOCKED",
+        "BB_ENV_FILE",
+        "primary-status-no-auth",
+        "primary-status-auth",
+    ] {
+        assert!(script.contains(needle), "drill missing {needle:?}");
+    }
+    assert!(!script.contains("--remote"));
+    assert!(!script.contains("7077"));
+    assert!(!script.contains("doctl"));
+    assert!(!script.contains("ondigitalocean"));
+    let primary = script
+        .split("run_primary() {")
+        .nth(1)
+        .and_then(|tail| tail.split("case \"$MODE\" in").next())
+        .expect("primary function");
+    for forbidden in ["doctor", " recover ", " status --json", " runs list", " dlq list", " serve"] {
+        assert!(!primary.contains(forbidden), "primary path invokes forbidden CLI: {forbidden}");
+    }
 
     let verify = read("scripts/verify.sh");
-    assert!(verify.contains("scripts/production-ops-drill.sh --local"));
+    assert!(verify.contains("scripts/production-ops-drill.sh --dev-temp"));
+    assert!(!verify.contains("scripts/production-ops-drill.sh --local"));
+
+    let reference = read("docs/archive/operations/hosted-app-platform-reference.md");
+    assert!(reference.contains("Historical reference only"));
+    assert!(reference.contains("DigitalOcean"));
 }
 
 #[test]
-fn active_operations_cannot_recreate_the_retired_fly_app() {
+fn current_operations_docs_use_local_primary_and_keep_dev_temp_separate() {
     for rel in [
-        "docs/operations/README.md",
+        "README.md",
         "docs/spine.md",
-        "scripts/production-ops-drill.sh",
-        ".agents/skills/bb-dogfood/SKILL.md",
-        ".agents/skills/bb-dogfood/references/session-notes-template.md",
+        "docs/credential-refusal-doctrine.md",
+        "skills/bitterblossom/SKILL.md",
+        "skills/bitterblossom/references/operator-recipes.md",
     ] {
-        let content = read(rel);
-        for forbidden in [
-            "BB_FLY_APP",
-            "flyctl deploy",
-            "flyctl status",
-            "flyctl volumes",
-            "flyctl ssh",
-            "flyctl secrets",
-            "flyctl releases",
-        ] {
-            assert!(
-                !content.contains(forbidden),
-                "{rel} still contains retired hosted-app operation `{forbidden}`"
-            );
-        }
+        let text = read(rel);
+        assert!(text.contains("127.0.0.1:7093"), "{rel} must name the live bind");
+        assert!(text.contains("local-primary"), "{rel} must name local-primary");
+        assert!(!text.contains("127.0.0.1:7077"), "{rel} carries stale 7077 guidance");
+        assert!(!text.contains("ondigitalocean"), "{rel} carries stale hosted URL");
     }
 }
 
-#[cfg(unix)]
-struct FakeRemoteDrill {
-    _temp: tempfile::TempDir,
-    path: String,
-    log: PathBuf,
+
+
+#[test]
+fn product_default_bind_is_local_primary_not_fixture() {
+    let spec = read("src/spec.rs");
+    assert!(spec.contains("\"127.0.0.1:7093\".to_string()"));
+    assert!(!spec.contains("\"127.0.0.1:7077\".to_string()"));
 }
 
-#[cfg(unix)]
-impl FakeRemoteDrill {
-    fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let bin = temp.path().join("bin");
-        fs::create_dir(&bin).unwrap();
-
-        let curl = bin.join("curl");
-        fs::write(
-            &curl,
-            r#"#!/bin/sh
-set -eu
-out=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --config) cat >/dev/null; shift 2 ;;
-    -o) out=$2; shift 2 ;;
-    -w) shift 2 ;;
-    *) shift ;;
-  esac
-done
-: "${out:?missing -o}"
-printf '{}\n' >"$out"
-printf '200'
-"#,
-        )
-        .unwrap();
-
-        let doctl = bin.join("doctl");
-        fs::write(
-            &doctl,
-            r#"#!/bin/sh
-set -eu
-printf '%s\n' "$*" >>"$FAKE_DOCTL_LOG"
-case "$1:$2" in
-  apps:get)
-    case "$*" in
-      *InProgressDeployment.ID*)
-        printf '%s\n' "$FAKE_IN_PROGRESS"
-        ;;
-      *)
-        printf '%s    bitterblossom-plane    %s    %s\n' \
-          "$FAKE_APP_ID" "$FAKE_APP_URL" "$FAKE_ACTIVE"
-        ;;
-    esac
-    ;;
-  apps:get-deployment)
-    printf '*    ACTIVE\n'
-    ;;
-  *) exit 64 ;;
-esac
-"#,
-        )
-        .unwrap();
-
-        for path in [&curl, &doctl] {
-            let mut permissions = fs::metadata(path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(path, permissions).unwrap();
-        }
-
-        let log = temp.path().join("doctl.log");
-        let path = format!(
-            "{}:{}",
-            bin.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        Self {
-            _temp: temp,
-            path,
-            log,
-        }
+#[test]
+fn local_primary_assets_pin_launchd_and_fixture_boundaries() {
+    let vision = read("VISION.md");
+    for needle in [
+        "com.misty-step.bb-serve",
+        "dev = false",
+        "allow_local_substrate = true",
+        "127.0.0.1:7093",
+        "127.0.0.1:7091",
+        "127.0.0.1:7077",
+        "interactive lead sessions are not part of the current product boundary",
+    ] {
+        assert!(vision.contains(needle), "VISION missing {needle:?}");
     }
-
-    fn run(&self, active: &str, in_progress: &str, expected_deployment: &str) -> Output {
-        Command::new("sh")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/production-ops-drill.sh"))
-            .args([
-                "--remote",
-                "--url",
-                "https://bitterblossom.example.test",
-                "--do-app-id",
-                "test-app-id",
-            ])
-            .env("BB_API_TOKEN", "test-token")
-            .env("FAKE_APP_ID", "test-app-id")
-            .env("FAKE_APP_URL", "https://bitterblossom.example.test")
-            .env("FAKE_ACTIVE", active)
-            .env("FAKE_IN_PROGRESS", in_progress)
-            .env("BB_EXPECTED_DEPLOYMENT_ID", expected_deployment)
-            .env("FAKE_DOCTL_LOG", &self.log)
-            .env("PATH", &self.path)
-            .output()
-            .unwrap()
+    let installer = read("scripts/install-bb-local-primary.sh");
+    assert!(installer.contains("--retire-legacy-dashboard"));
+    assert!(installer.contains("mv -f"));
+    for needle in [
+        "target/release/bb",
+        "BB_INSTALL_DIR",
+        "mktemp",
+        "mv -f",
+        "--retire-legacy-dashboard",
+        "com.misty-step.bb-serve",
+        "com.misty-step.bb-plane-litestream",
+        "127.0.0.1:7093",
+        "dev = false",
+        "allow_local_substrate = true",
+    ] {
+        assert!(installer.contains(needle), "installer missing {needle:?}");
     }
-
-    fn calls(&self) -> String {
-        fs::read_to_string(&self.log).unwrap()
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn remote_operations_drill_parses_read_only_provider_output_without_globbing() {
-    let fake = FakeRemoteDrill::new();
-    let output = fake.run("*", "", "*");
-
-    assert!(
-        output.status.success(),
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("ok:remote-do app=test-app-id deployment=* phase=ACTIVE"));
-    let calls = fake.calls();
-    assert_eq!(calls.lines().count(), 3, "unexpected doctl calls: {calls}");
-    assert!(calls
-        .lines()
-        .all(|call| { call.starts_with("apps get ") || call.starts_with("apps get-deployment ") }));
-}
-
-#[cfg(unix)]
-#[test]
-fn remote_operations_drill_refuses_the_previous_active_deployment_during_rollout() {
-    let fake = FakeRemoteDrill::new();
-    let output = fake.run("*", "deployment-building", "deployment-building");
-
-    assert!(
-        !output.status.success(),
-        "smoke passed against the previous ACTIVE deployment during rollout:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("deployment deployment-building is still in progress"),
-        "unexpected stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let calls = fake.calls();
-    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
-    assert!(calls.lines().all(|call| call.starts_with("apps get ")));
-}
-
-#[cfg(unix)]
-#[test]
-fn remote_operations_drill_refuses_a_failed_rollout_that_left_the_previous_active() {
-    let fake = FakeRemoteDrill::new();
-    let output = fake.run("*", "", "deployment-failed");
-
-    assert!(
-        !output.status.success(),
-        "smoke passed after the expected rollout failed and left the previous deployment active:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("active deployment * did not match expected deployment-failed"),
-        "unexpected stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let calls = fake.calls();
-    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
-    assert!(calls.lines().all(|call| call.starts_with("apps get ")));
-}
-
-#[cfg(unix)]
-#[test]
-fn remote_operations_drill_identifies_a_first_deployment_still_in_progress() {
-    let fake = FakeRemoteDrill::new();
-    let output = fake.run("", "deployment-first", "deployment-first");
-
-    assert!(
-        !output.status.success(),
-        "smoke passed a first deployment that was still building:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("deployment deployment-first is still in progress"),
-        "unexpected stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let calls = fake.calls();
-    assert_eq!(calls.lines().count(), 2, "unexpected doctl calls: {calls}");
-    assert!(calls.lines().all(|call| call.starts_with("apps get ")));
+    let entrypoint = read("scripts/bb-serve-local-entrypoint.sh");
+    assert!(entrypoint.contains("BB_LOCAL_PRIMARY_BIN"));
+    assert!(entrypoint.contains(".local/libexec/bitterblossom/bb"));
+    assert!(!entrypoint.contains("target/release/bb"));
+    let plist = read("deploy/launchd/com.misty-step.bb-serve.plist.template");
+    assert!(plist.contains("com.misty-step.bb-serve"));
+    assert!(plist.contains("bb-serve-local-entrypoint.sh"));
+    assert!(plist.contains("__BB_INSTALL_BIN__"));
+    assert!(!plist.contains("target/release/bb"));
+    let sidecar = read("deploy/launchd/com.misty-step.bb-plane-litestream.plist.template");
+    assert!(sidecar.contains("com.misty-step.bb-plane-litestream"));
+    assert!(sidecar.contains("bb-litestream-local-entrypoint.sh"));
+    let dashboard = read("docs/operations/bb-dashboard.md");
+    assert!(dashboard.contains("7091"));
+    assert!(dashboard.contains("dev") || dashboard.contains("demo"));
 }
 
 #[test]

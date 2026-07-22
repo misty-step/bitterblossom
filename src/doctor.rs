@@ -72,26 +72,36 @@ pub fn run(root: &Path, expect_serve: bool) -> DoctorReport {
     checks.push(database_check(&plane));
     checks.extend(preflight_checks(&plane));
 
-    let bind = fixed_bind(&plane);
-    match bind {
-        Some(bind) => {
-            checks.push(serve_health_check(&bind, expect_serve));
-            checks.push(dashboard_check(&bind, expect_serve));
-        }
-        None if expect_serve => {
-            checks.push(DoctorCheck {
+    match effective_bind(&plane) {
+        Ok(bind) => match fixed_bind(&bind) {
+            Some(bind) => {
+                checks.push(serve_health_check(&bind, expect_serve));
+                checks.push(dashboard_check(&bind, expect_serve));
+                if bind == "127.0.0.1:7093" {
+                    checks.push(retired_dashboard_check());
+                }
+            }
+            None if expect_serve => checks.push(DoctorCheck {
                 name: "serve_api",
                 status: "fail",
                 detail: format!(
-                    "[ingress].bind is \"{}\" (ephemeral); --expect-serve needs a fixed address",
-                    plane.spec.ingress.bind
+                    "effective [ingress].bind is \"{}\" (ephemeral); --expect-serve needs a fixed address",
+                    bind
                 ),
                 remediation: Some(
                     "set [ingress].bind to a fixed host:port in plane.toml before requiring a live serve check".to_string(),
                 ),
-            });
-        }
-        None => {}
+            }),
+            None => {}
+        },
+        Err(detail) => checks.push(DoctorCheck {
+            name: "serve_api",
+            status: "fail",
+            detail,
+            remediation: Some(
+                "make BB_INGRESS_BIND match [ingress].bind, or unset the override".to_string(),
+            ),
+        }),
     }
 
     let ok = checks.iter().all(|c| c.status != "fail");
@@ -179,12 +189,66 @@ fn preflight_check_name(kind: &str) -> &'static str {
     }
 }
 
+/// Resolve the bind used by `bb serve` and reject a conflicting environment
+/// override. Keeping this check here prevents doctor from probing one address
+/// while serve listens on another.
+fn effective_bind(plane: &Plane) -> Result<String, String> {
+    let configured = plane.spec.ingress.bind.trim();
+    match std::env::var("BB_INGRESS_BIND") {
+        Ok(override_bind) if !override_bind.trim().is_empty() => {
+            let override_bind = override_bind.trim();
+            if override_bind != configured {
+                return Err(format!(
+                    "BB_INGRESS_BIND={override_bind:?} disagrees with [ingress].bind={configured:?}"
+                ));
+            }
+            Ok(override_bind.to_string())
+        }
+        _ => Ok(configured.to_string()),
+    }
+}
+
 /// `None` for an ephemeral bind (`:0`) -- there is no fixed address to probe
 /// before a real `bb serve` invocation picks a port.
-fn fixed_bind(plane: &Plane) -> Option<String> {
-    let bind = plane.spec.ingress.bind.trim();
+fn fixed_bind(bind: &str) -> Option<String> {
+    let bind = bind.trim();
     let port = bind.rsplit_once(':').map(|(_, p)| p)?;
     (port != "0" && !port.is_empty()).then(|| bind.to_string())
+}
+
+fn launchctl_bin() -> String {
+    std::env::var("BB_DOCTOR_LAUNCHCTL_BIN").unwrap_or_else(|_| "launchctl".into())
+}
+
+/// The old dashboard LaunchAgent is a retired authority. Detect it without
+/// unloading it: cleanup is an explicit installer action so a doctor/readback
+/// never mutates the operator's launchd state.
+fn retired_dashboard_check() -> DoctorCheck {
+    let uid = unsafe { libc::getuid() };
+    let target = format!("gui/{uid}/com.misty-step.bb-dashboard");
+    let output = Command::new(launchctl_bin()).args(["print", &target]).output();
+    match output {
+        Err(e) => DoctorCheck {
+            name: "retired_dashboard",
+            status: "skipped",
+            detail: format!("cannot inspect retired launchd label: {e}"),
+            remediation: Some(
+                "run scripts/install-bb-local-primary.sh --retire-legacy-dashboard on macOS".to_string(),
+            ),
+        },
+        Ok(output) if output.status.success() => DoctorCheck {
+            name: "retired_dashboard",
+            status: "fail",
+            detail: "retired launchd label com.misty-step.bb-dashboard is still loaded".to_string(),
+            remediation: Some(
+                "run scripts/install-bb-local-primary.sh --retire-legacy-dashboard (explicitly unloads and removes ~/Library/LaunchAgents/com.misty-step.bb-dashboard.plist)".to_string(),
+            ),
+        },
+        Ok(_) => ok_check(
+            "retired_dashboard",
+            "retired launchd label com.misty-step.bb-dashboard is not loaded".to_string(),
+        ),
+    }
 }
 
 fn serve_health_check(bind: &str, expect_serve: bool) -> DoctorCheck {

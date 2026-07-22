@@ -96,7 +96,7 @@ fi
 mkdir -p "$(dirname "$db_path")" "$(dirname "$config_path")" "$(dirname "$heartbeat_path")" "$(dirname "$socket_path")"
 rm -f "$socket_path"
 
-# Ephemeral-disk substrates (DO App Platform) have no volume carrying the
+# Ephemeral hosted substrates have no volume carrying the
 # plane's workload config (plane.toml, agents/, tasks/). When
 # BB_PLANE_CONFIG_URL is set and config is absent, fetch and unpack it before
 # anything touches the plane dir. The URL is typically a presigned
