@@ -869,14 +869,19 @@ fn run() -> Result<()> {
         } => {
             let task = dispatch::default_dispatch_task(&plane)?;
             let payload = dispatch_payload(&repo, &brief, model, label)?;
-            let outcome = ledger.ingest(IngressRequest {
-                task: &task,
-                trigger_kind: "manual",
-                idempotency_key: None,
-                source_event_id: None,
-                payload: Some(&payload),
-                parent_run_id: None,
-            })?;
+            let outcome = bitterblossom::workflow_service::WorkflowService::dispatch_for(
+                &plane,
+                &mut ledger,
+                bitterblossom::workflow_service::auth_context_for_local()?,
+                IngressRequest {
+                    task: &task,
+                    trigger_kind: "manual",
+                    idempotency_key: None,
+                    source_event_id: None,
+                    payload: Some(&payload),
+                    parent_run_id: None,
+                },
+            )?;
             if outcome.state == "blocked_budget" {
                 eprintln!("run {} blocked: task is parked", outcome.run_id);
             }
@@ -918,14 +923,19 @@ fn run() -> Result<()> {
                 serde_json::from_str::<serde_json::Value>(p)
                     .with_context(|| format!("{payload_source} is not valid JSON"))?;
             }
-            let outcome = ledger.ingest(IngressRequest {
-                task: &task,
-                trigger_kind: "manual",
-                idempotency_key: idempotency_key.as_deref(),
-                source_event_id: None,
-                payload: payload.as_deref(),
-                parent_run_id: None,
-            })?;
+            let outcome = bitterblossom::workflow_service::WorkflowService::dispatch_for(
+                &plane,
+                &mut ledger,
+                bitterblossom::workflow_service::auth_context_for_local()?,
+                IngressRequest {
+                    task: &task,
+                    trigger_kind: "manual",
+                    idempotency_key: idempotency_key.as_deref(),
+                    source_event_id: None,
+                    payload: payload.as_deref(),
+                    parent_run_id: None,
+                },
+            )?;
             if outcome.duplicate && outcome.state != "pending" {
                 eprintln!(
                     "duplicate idempotency key; existing run {} ({})",
@@ -1161,14 +1171,19 @@ fn run() -> Result<()> {
                     );
                 }
                 let replay_key = format!("replay:dl-{id}");
-                let outcome = ledger.ingest(IngressRequest {
-                    task: &dl.task,
-                    trigger_kind: "replay",
-                    idempotency_key: Some(&replay_key),
-                    source_event_id: None,
-                    payload: dl.payload.as_deref(),
-                    parent_run_id: Some(&dl.run_id),
-                })?;
+                let outcome = bitterblossom::workflow_service::WorkflowService::dispatch_for(
+                    &plane,
+                    &mut ledger,
+                    bitterblossom::workflow_service::auth_context_for_local()?,
+                    IngressRequest {
+                        task: &dl.task,
+                        trigger_kind: "replay",
+                        idempotency_key: Some(&replay_key),
+                        source_event_id: None,
+                        payload: dl.payload.as_deref(),
+                        parent_run_id: Some(&dl.run_id),
+                    },
+                )?;
                 if !ledger.mark_dead_letter_replayed(id, &outcome.run_id)? {
                     bail!("dead letter {id} was claimed by a concurrent replay");
                 }
@@ -1745,6 +1760,13 @@ fn run() -> Result<()> {
 fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) -> Result<()> {
     use bitterblossom::workflow::{self, AcceptOutcome, WorkflowDoc};
 
+    let service = bitterblossom::workflow_service::WorkflowService::new(
+        plane,
+        ledger,
+        bitterblossom::workflow_service::auth_context_for_local()?,
+    )
+    .with_source("cli");
+
     fn read_doc(file: &Path) -> Result<WorkflowDoc> {
         let text = std::fs::read_to_string(file)
             .with_context(|| format!("read workflow document {}", file.display()))?;
@@ -1787,7 +1809,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
     match command {
         WorkflowCommand::Create { file, note, json } => {
             let doc = read_doc(&file)?;
-            let (wf, revision) = ledger.create_workflow(&doc, "cli", note.as_deref())?;
+            let (wf, revision) = service.create_workflow(&doc, note.as_deref())?;
             print_revision(&wf, revision, "created", json)?;
         }
         WorkflowCommand::List { json } => {
@@ -1825,7 +1847,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             json,
         } => {
             let doc = read_doc(&file)?;
-            let (wf, revision) = ledger.revise_workflow(&name, &doc, "cli", note.as_deref())?;
+            let (wf, revision) = service.revise_workflow(&name, &doc, note.as_deref())?;
             print_revision(&wf, revision, "revised", json)?;
         }
         WorkflowCommand::Diff {
@@ -1854,8 +1876,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             revision,
             json,
         } => {
-            let routes = ingress::task_webhook_routes(plane);
-            let wf = ledger.activate_workflow_with_reserved_routes(&name, revision, &routes)?;
+            let wf = service.activate_workflow(&name, revision)?;
             if json {
                 let mut value = serde_json::to_value(&wf)?;
                 let snapshots = wf
@@ -1881,28 +1902,24 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             }
         }
         WorkflowCommand::Pause { name, reason, json } => {
-            let wf = ledger.pause_workflow(&name, &reason)?;
+            let wf = service.pause_workflow(&name, &reason)?;
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Resume { name, json } => {
-            let routes = ingress::task_webhook_routes(plane);
-            let wf = ledger.resume_workflow_with_reserved_routes(&name, &routes)?;
+            let wf = service.resume_workflow(&name)?;
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Archive { name, json } => {
-            let wf = ledger.archive_workflow(&name)?;
+            let wf = service.archive_workflow(&name)?;
             print_workflow(&wf, json)?;
         }
         WorkflowCommand::Rollback { name, to, json } => {
-            let routes = ingress::task_webhook_routes(plane);
-            let (wf, revision) =
-                ledger.rollback_workflow_with_reserved_routes(&name, to, &routes)?;
+            let (wf, revision) = service.rollback_workflow(&name, to)?;
             print_revision(&wf, revision, "rolled back to snapshot as", json)?;
         }
         WorkflowCommand::Import { file, note, json } => {
             let doc = read_doc(&file)?;
-            let (wf, revision, outcome) =
-                ledger.import_workflow(&doc, "import", note.as_deref())?;
+            let (wf, revision, outcome) = service.import_workflow(&doc, note.as_deref())?;
             if json {
                 let snapshots = wf
                     .active_revision
@@ -1936,15 +1953,12 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
         } => {
             let task = plane.task(&task)?;
             let doc = WorkflowDoc::from_task(task)?;
-            let (wf, revision, outcome) = ledger.import_workflow(
-                &doc,
-                "import-task",
-                Some(&format!("from task '{}'", task.name)),
-            )?;
+            let (wf, revision, outcome) =
+                service.import_workflow(&doc, Some(&format!("from task '{}'", task.name)))?;
             let wf = if activate {
                 {
                     let routes = ingress::task_webhook_routes_except(plane, &task.name);
-                    ledger.activate_workflow_with_reserved_routes(
+                    service.activate_workflow_with_reserved_routes(
                         &wf.name,
                         Some(revision),
                         &routes,
@@ -1982,7 +1996,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
                 payload,
                 dedupe_key,
             };
-            let outcome = bitterblossom::workflow_runtime::accept(plane, ledger, &envelope)?;
+            let outcome = service.accept(&envelope)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
@@ -2020,9 +2034,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             reason,
             json,
         } => {
-            let status = bitterblossom::workflow_runtime::resolve_workflow_run(
-                ledger, &run_id, &state, &reason,
-            )?;
+            let status = service.resolve_workflow_run(&run_id, &state, &reason)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
@@ -2030,7 +2042,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             }
         }
         WorkflowCommand::Execute { run_id, json } => {
-            let view = bitterblossom::workflow_runtime::execute_run(plane, ledger, &run_id)?;
+            let view = service.execute_workflow_run(&run_id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&view)?);
             } else {
@@ -2049,7 +2061,7 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             reason,
             json,
         } => {
-            let status = ledger.request_workflow_run_stop(&run_id, &reason)?;
+            let status = service.stop_workflow_run(&run_id, &reason)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {

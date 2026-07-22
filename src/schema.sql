@@ -330,7 +330,10 @@ CREATE TABLE IF NOT EXISTS workflow_run_status (
   stop_reason TEXT,
   cost_usd REAL,                   -- sum of OBSERVED step costs; NULL = none reported
   started_at TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  holder_principal TEXT,
+  claim_id TEXT,
+  lease_expires_at TEXT
 );
 CREATE INDEX IF NOT EXISTS workflow_run_status_queue
   ON workflow_run_status(state, updated_at, run_id);

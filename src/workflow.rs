@@ -2248,6 +2248,52 @@ impl Ledger {
         }
     }
 
+    pub fn record_workflow_auth_event(
+        &self,
+        workflow: Option<&str>,
+        run_id: Option<&str>,
+        operation: crate::auth::Operation,
+        auth: &crate::auth::AuthContext,
+    ) -> Result<()> {
+        let workflow_id = if let Some(name) = workflow {
+            Some(self.workflow_by_name(name)?.id)
+        } else if let Some(run_id) = run_id {
+            match self.workflow_run(run_id) {
+                Ok(run) => Some(run.workflow_id),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        let Some(workflow_id) = workflow_id else {
+            return Ok(());
+        };
+        let data = serde_json::json!({
+            "decision": "allow",
+            "operation": operation.as_str(),
+            "principal": auth.principal,
+            "role": auth.role.as_str(),
+            "workflow": workflow,
+            "run_id": run_id,
+        })
+        .to_string();
+        self.conn.execute(
+            "INSERT INTO workflow_events (workflow_id, run_id, kind, data, at) VALUES (?1, ?2, 'authz_allowed', ?3, ?4)",
+            params![workflow_id, run_id, data, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_auth_event(
+        &self,
+        workflow: Option<&str>,
+        run_id: Option<&str>,
+        operation: crate::auth::Operation,
+        auth: &crate::auth::AuthContext,
+    ) -> Result<()> {
+        self.record_workflow_auth_event(workflow, run_id, operation, auth)
+    }
+
     fn workflow_audit(&self, workflow_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO workflow_events (workflow_id, kind, data, at) VALUES (?1, ?2, ?3, ?4)",

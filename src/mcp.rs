@@ -376,14 +376,19 @@ fn run_dispatch_tool(plane: &Plane, args: &Value) -> Result<Value> {
     });
 
     let mut ledger = Ledger::open(&plane.db_path())?;
-    let outcome = ledger.ingest(IngressRequest {
-        task: &task,
-        trigger_kind: "manual",
-        idempotency_key: idempotency_key.as_deref(),
-        source_event_id: None,
-        payload: Some(&payload),
-        parent_run_id: None,
-    })?;
+    let outcome = crate::workflow_service::WorkflowService::dispatch_for(
+        plane,
+        &mut ledger,
+        crate::workflow_service::auth_context_for_local()?,
+        IngressRequest {
+            task: &task,
+            trigger_kind: "manual",
+            idempotency_key: idempotency_key.as_deref(),
+            source_event_id: None,
+            payload: Some(&payload),
+            parent_run_id: None,
+        },
+    )?;
 
     Ok(json!({
         "run_id": outcome.run_id,

@@ -382,6 +382,10 @@ impl Ledger {
             "REAL NOT NULL DEFAULT 1.0",
         )?;
         ensure_column(&conn, "workflow_events", "run_id", "TEXT")?;
+        // Principal-auth workflow lease ownership is additive for store-era ledgers.
+        ensure_column(&conn, "workflow_run_status", "holder_principal", "TEXT")?;
+        ensure_column(&conn, "workflow_run_status", "claim_id", "TEXT")?;
+        ensure_column(&conn, "workflow_run_status", "lease_expires_at", "TEXT")?;
         // Backfill store-era workflow runs that predate the mutable status table.
         // Runs with step evidence are conservative operator debt; untouched runs
         // remain queued and therefore visible to the bounded worker queue.

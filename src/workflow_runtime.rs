@@ -34,6 +34,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::LiveLease;
 use crate::budget;
 use crate::harness;
 use crate::ledger::{new_id, now, AttemptStats, Ledger};
@@ -126,13 +127,12 @@ pub struct TriggerEnvelope {
 /// emitters, synthetic tests, the CLI, and the HTTP API all build a
 /// [`TriggerEnvelope`] and call this one function.
 pub fn accept(plane: &Plane, ledger: &Ledger, envelope: &TriggerEnvelope) -> Result<AcceptOutcome> {
-    ledger.accept_workflow_run(
+    crate::workflow_service::WorkflowService::new(
         plane,
-        &envelope.workflow,
-        envelope.source.kind(),
-        envelope.payload.as_deref(),
-        envelope.dedupe_key.as_deref(),
+        ledger,
+        crate::workflow_service::auth_context_for_controller(),
     )
+    .accept(envelope)
 }
 
 /// Find the active workflow (if any) declaring a webhook trigger on `route`.
@@ -604,12 +604,24 @@ impl Ledger {
             .optional()?)
     }
 
-    /// Claim a queued run for execution: queued -> running CAS, so a serve
-    /// runner and a CLI `bb workflow execute` can never both run one group.
-    /// Store-era runs accepted before this table existed get a status row on
-    /// first claim.
+    /// Claim a queued run for execution. Ownership is durable and explicit:
+    /// principal/claim identity is recorded before any worker effect runs.
     pub fn claim_workflow_run(&self, run_id: &str) -> Result<bool> {
+        self.claim_workflow_run_for(run_id, "bb-controller", "controller", 3600)
+    }
+
+    pub fn claim_workflow_run_for(
+        &self,
+        run_id: &str,
+        holder_principal: &str,
+        claim_id: &str,
+        lease_seconds: i64,
+    ) -> Result<bool> {
         let ts = now();
+        let expires = (time::OffsetDateTime::now_utc()
+            + time::Duration::seconds(lease_seconds.max(1)))
+        .format(&time::format_description::well_known::Rfc3339)
+        .context("format workflow lease expiry")?;
         self.conn.execute(
             "INSERT OR IGNORE INTO workflow_run_status (run_id, state, updated_at)
              VALUES (?1, 'queued', ?2)",
@@ -617,11 +629,50 @@ impl Ledger {
         )?;
         let updated = self.conn.execute(
             "UPDATE workflow_run_status
-             SET state = 'running', started_at = ?2, updated_at = ?2
+             SET state = 'running', started_at = ?2, updated_at = ?2,
+                 holder_principal = ?3, claim_id = ?4, lease_expires_at = ?5
              WHERE run_id = ?1 AND state = 'queued'",
-            params![run_id, ts],
+            params![run_id, ts, holder_principal, claim_id, expires],
         )?;
         Ok(updated == 1)
+    }
+
+    pub fn workflow_run_lease(&self, run_id: &str) -> Result<Option<LiveLease>> {
+        self.conn
+            .query_row(
+                "SELECT run_id, holder_principal, claim_id, lease_expires_at
+             FROM workflow_run_status
+             WHERE run_id = ?1 AND state = 'running' AND holder_principal IS NOT NULL
+               AND claim_id IS NOT NULL AND lease_expires_at IS NOT NULL",
+                params![run_id],
+                |r| {
+                    Ok(LiveLease {
+                        run_id: r.get(0)?,
+                        holder_principal: r.get(1)?,
+                        claim_id: r.get(2)?,
+                        expires_at: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn renew_workflow_run_lease(
+        &self,
+        run_id: &str,
+        claim_id: &str,
+        lease_seconds: i64,
+    ) -> Result<bool> {
+        let expires = (time::OffsetDateTime::now_utc()
+            + time::Duration::seconds(lease_seconds.max(1)))
+        .format(&time::format_description::well_known::Rfc3339)
+        .context("format workflow lease expiry")?;
+        Ok(self.conn.execute(
+            "UPDATE workflow_run_status SET lease_expires_at = ?3, updated_at = ?4
+             WHERE run_id = ?1 AND claim_id = ?2 AND state = 'running'",
+            params![run_id, claim_id, expires, now()],
+        )? == 1)
     }
 
     /// Release a just-claimed run back to `queued` after an admission
