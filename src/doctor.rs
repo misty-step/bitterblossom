@@ -1,16 +1,3 @@
-//! `bb doctor`: the verified-live onboarding gate (application-floor,
-//! bitterblossom-123). `bb check`/`bb preflight` already validate config and
-//! secret/binary readiness; this composes those with a fixed-address serve
-//! probe into one pass/fail report, so onboarding has an explicit "this
-//! plane actually works end to end" stop rather than ending at build/install.
-//!
-//! No new backend: every check is either an existing read path (`Plane::
-//! load`, `Ledger::open`+schema version, `preflight::run_all`) or a curl
-//! probe against the two unauthenticated routes `bb serve` already exposes
-//! (`/health`, `/`), matching the crate's existing shell-out-to-curl
-//! convention (see `canary::deliver`) instead of adding an HTTP client
-//! dependency.
-
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -21,13 +8,9 @@ use crate::ledger::{Ledger, LEDGER_SCHEMA_VERSION};
 use crate::preflight;
 use crate::spec::Plane;
 
-const CURL_TIMEOUT_SECONDS: u64 = 3;
-
 #[derive(Debug, Serialize)]
 pub struct DoctorCheck {
     pub name: &'static str,
-    /// `"ok"`, `"fail"`, or `"skipped"` (best-effort serve/dashboard probes
-    /// when `--expect-serve` was not passed and the plane isn't reachable).
     pub status: &'static str,
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,27 +23,36 @@ pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
 }
 
-/// `expect_serve = true` (`--expect-serve`) turns the serve/dashboard probes
-/// from best-effort/informational into hard failures -- an operator who
-/// knows `bb serve` should already be up for this config gets a loud,
-/// non-zero-exit failure instead of a silently skipped check.
+fn check(
+    name: &'static str,
+    status: &'static str,
+    detail: impl Into<String>,
+    remediation: Option<String>,
+) -> DoctorCheck {
+    DoctorCheck {
+        name,
+        status,
+        detail: detail.into(),
+        remediation,
+    }
+}
+
 pub fn run(root: &Path, expect_serve: bool) -> DoctorReport {
     let mut checks = Vec::new();
 
     let plane = match Plane::load(root) {
         Ok(plane) => plane,
         Err(e) => {
-            checks.push(DoctorCheck {
-                name: "config",
-                status: "fail",
-                detail: format!("plane config at {} failed to load: {e:#}", root.display()),
-                remediation: Some(format!(
+            checks.push(check(
+                "config",
+                "fail",
+                format!("plane config at {} failed to load: {e:#}", root.display()),
+                Some(format!(
                     "fix plane.toml/agents/tasks under {}, then rerun `bb doctor --config {}`",
                     root.display(),
                     root.display()
                 )),
-            });
-            // Nothing below this can run without a loaded Plane.
+            ));
             return DoctorReport { ok: false, checks };
         }
     };
@@ -68,7 +60,6 @@ pub fn run(root: &Path, expect_serve: bool) -> DoctorReport {
         "config",
         format!("plane loaded from {}", plane.root.display()),
     ));
-
     checks.push(database_check(&plane));
     checks.extend(preflight_checks(&plane));
 
@@ -77,44 +68,32 @@ pub fn run(root: &Path, expect_serve: bool) -> DoctorReport {
             Some(bind) => {
                 checks.push(serve_health_check(&bind, expect_serve));
                 checks.push(dashboard_check(&bind, expect_serve));
-                if !plane.spec.dev {
-                    checks.push(retired_dashboard_check());
-                }
+                if !plane.spec.dev { checks.push(retired_dashboard_check()); }
             }
-            None if expect_serve => checks.push(DoctorCheck {
-                name: "serve_api",
-                status: "fail",
-                detail: format!(
-                    "effective [ingress].bind is \"{}\" (ephemeral); --expect-serve needs a fixed address",
-                    bind
-                ),
-                remediation: Some(
-                    "set [ingress].bind to a fixed host:port in plane.toml before requiring a live serve check".to_string(),
-                ),
-            }),
+            None if expect_serve => checks.push(check(
+                "serve_api",
+                "fail",
+                format!("effective [ingress].bind is \"{bind}\" (ephemeral); --expect-serve needs a fixed address"),
+                Some("set [ingress].bind to a fixed host:port in plane.toml before requiring a live serve check".into()),
+            )),
             None => {}
         },
-        Err(detail) => checks.push(DoctorCheck {
-            name: "serve_api",
-            status: "fail",
+        Err(detail) => checks.push(check(
+            "serve_api",
+            "fail",
             detail,
-            remediation: Some(
-                "make BB_INGRESS_BIND match [ingress].bind, or unset the override".to_string(),
-            ),
-        }),
+            Some("make BB_INGRESS_BIND match [ingress].bind, or unset the override".into()),
+        )),
     }
 
-    let ok = checks.iter().all(|c| c.status != "fail");
-    DoctorReport { ok, checks }
+    DoctorReport {
+        ok: checks.iter().all(|c| c.status != "fail"),
+        checks,
+    }
 }
 
-fn ok_check(name: &'static str, detail: String) -> DoctorCheck {
-    DoctorCheck {
-        name,
-        status: "ok",
-        detail,
-        remediation: None,
-    }
+fn ok_check(name: &'static str, detail: impl Into<String>) -> DoctorCheck {
+    check(name, "ok", detail, None)
 }
 
 fn database_check(plane: &Plane) -> DoctorCheck {
@@ -122,15 +101,16 @@ fn database_check(plane: &Plane) -> DoctorCheck {
     let ledger = match Ledger::open(&db_path) {
         Ok(ledger) => ledger,
         Err(e) => {
-            return DoctorCheck {
-                name: "database",
-                status: "fail",
-                detail: format!("cannot open ledger at {}: {e:#}", db_path.display()),
-                remediation: Some(format!(
-                    "check permissions/disk space at {}, or restore from backup if the file is missing",
-                    db_path.display()
-                )),
-            };
+            let remediation = format!(
+                "check permissions/disk space at {}, or restore from backup if the file is missing",
+                db_path.display()
+            );
+            return check(
+                "database",
+                "fail",
+                format!("cannot open ledger at {}: {e:#}", db_path.display()),
+                Some(remediation),
+            );
         }
     };
     match ledger.schema_version() {
@@ -138,20 +118,18 @@ fn database_check(plane: &Plane) -> DoctorCheck {
             "database",
             format!("ledger reachable at {}, schema v{v}", db_path.display()),
         ),
-        Ok(v) => DoctorCheck {
-            name: "database",
-            status: "fail",
-            detail: format!("ledger schema v{v} does not match this build's supported v{LEDGER_SCHEMA_VERSION}"),
-            remediation: Some(
-                "rebuild bb to match the ledger's schema version, or run the migration for this bb version".to_string(),
-            ),
-        },
-        Err(e) => DoctorCheck {
-            name: "database",
-            status: "fail",
-            detail: format!("cannot read ledger schema version: {e:#}"),
-            remediation: Some(format!("ledger file at {} may be corrupt", db_path.display())),
-        },
+        Ok(v) => check(
+            "database",
+            "fail",
+            format!("ledger schema v{v} does not match this build's supported v{LEDGER_SCHEMA_VERSION}"),
+            Some("rebuild bb to match the ledger's schema version, or run the migration for this bb version".into()),
+        ),
+        Err(e) => check(
+            "database",
+            "fail",
+            format!("cannot read ledger schema version: {e:#}"),
+            Some(format!("ledger file at {} may be corrupt", db_path.display())),
+        ),
     }
 }
 
@@ -169,14 +147,15 @@ fn preflight_checks(plane: &Plane) -> Vec<DoctorCheck> {
     report
         .findings
         .iter()
-        .map(|f| DoctorCheck {
-            name: preflight_check_name(f.kind),
-            status: "fail",
-            detail: format!("task '{}': {}", f.task, f.detail),
-            remediation: f
-                .remediation
-                .clone()
-                .or_else(|| Some(format!("see `bb preflight {} --json` for detail", f.task))),
+        .map(|f| {
+            check(
+                preflight_check_name(f.kind),
+                "fail",
+                format!("task '{}': {}", f.task, f.detail),
+                f.remediation
+                    .clone()
+                    .or_else(|| Some(format!("see `bb preflight {} --json` for detail", f.task))),
+            )
         })
         .collect()
 }
@@ -189,130 +168,95 @@ fn preflight_check_name(kind: &str) -> &'static str {
     }
 }
 
-/// Resolve the bind used by `bb serve` and reject a conflicting environment
-/// override. Keeping this check here prevents doctor from probing one address
-/// while serve listens on another.
 fn effective_bind(plane: &Plane) -> Result<String, String> {
     let configured = plane.spec.ingress.bind.trim();
-    match std::env::var("BB_INGRESS_BIND") {
-        Ok(override_bind) if !override_bind.trim().is_empty() => {
-            let override_bind = override_bind.trim();
-            if override_bind != configured {
-                return Err(format!(
-                    "BB_INGRESS_BIND={override_bind:?} disagrees with [ingress].bind={configured:?}"
-                ));
-            }
-            Ok(override_bind.to_string())
-        }
-        _ => Ok(configured.to_string()),
+    match std::env::var("BB_INGRESS_BIND")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        Some(value) if value.trim() != configured => Err(format!(
+            "BB_INGRESS_BIND={:?} disagrees with [ingress].bind={:?}",
+            value.trim(),
+            configured
+        )),
+        Some(value) => Ok(value.trim().to_string()),
+        None => Ok(configured.to_string()),
     }
 }
 
-/// `None` for an ephemeral bind (`:0`) -- there is no fixed address to probe
-/// before a real `bb serve` invocation picks a port.
 fn fixed_bind(bind: &str) -> Option<String> {
     let bind = bind.trim();
-    let port = bind.rsplit_once(':').map(|(_, p)| p)?;
-    (port != "0" && !port.is_empty()).then(|| bind.to_string())
+    bind.rsplit_once(':')
+        .and_then(|(_, port)| (port != "0" && !port.is_empty()).then(|| bind.to_string()))
 }
 
-fn launchctl_bin() -> String {
-    std::env::var("BB_DOCTOR_LAUNCHCTL_BIN").unwrap_or_else(|_| "launchctl".into())
-}
-
-/// The old dashboard LaunchAgent is a retired authority. Detect it without
-/// unloading it: cleanup is an explicit installer action so a doctor/readback
-/// never mutates the operator's launchd state.
 fn retired_dashboard_check() -> DoctorCheck {
-    let uid = unsafe { libc::getuid() };
-    let target = format!("gui/{uid}/com.misty-step.bb-dashboard");
-    let output = Command::new(launchctl_bin())
-        .args(["print", &target])
-        .output();
-    match output {
-        Err(e) => DoctorCheck {
-            name: "retired_dashboard",
-            status: "skipped",
-            detail: format!("cannot inspect retired launchd label: {e}"),
-            remediation: Some(
-                "run scripts/install-bb-local-primary.sh --retire-legacy-dashboard on macOS".to_string(),
-            ),
-        },
-        Ok(output) if output.status.success() => DoctorCheck {
-            name: "retired_dashboard",
-            status: "fail",
-            detail: "retired launchd label com.misty-step.bb-dashboard is still loaded".to_string(),
-            remediation: Some(
-                "run scripts/install-bb-local-primary.sh --retire-legacy-dashboard (explicitly unloads and removes ~/Library/LaunchAgents/com.misty-step.bb-dashboard.plist)".to_string(),
-            ),
-        },
-        Ok(_) => ok_check(
+    let target = format!("gui/{}/com.misty-step.bb-dashboard", unsafe {
+        libc::getuid()
+    });
+    match Command::new(std::env::var("BB_DOCTOR_LAUNCHCTL_BIN").unwrap_or_else(|_| "launchctl".into()))
+        .args(["print", &target]).output()
+    {
+        Err(e) => check(
             "retired_dashboard",
-            "retired launchd label com.misty-step.bb-dashboard is not loaded".to_string(),
+            "skipped",
+            format!("cannot inspect retired launchd label: {e}"),
+            Some("run scripts/install-bb-local-primary.sh --retire-legacy-dashboard on macOS".into()),
         ),
+        Ok(output) if output.status.success() => check(
+            "retired_dashboard",
+            "fail",
+            "retired launchd label com.misty-step.bb-dashboard is still loaded",
+            Some("run scripts/install-bb-local-primary.sh --retire-legacy-dashboard (explicitly unloads and removes ~/Library/LaunchAgents/com.misty-step.bb-dashboard.plist)".into()),
+        ),
+        Ok(_) => ok_check("retired_dashboard", "retired launchd label com.misty-step.bb-dashboard is not loaded"),
     }
 }
 
 fn serve_health_check(bind: &str, expect_serve: bool) -> DoctorCheck {
     match curl_get(&format!("http://{bind}/health")) {
         Ok(body) => ok_check("serve_api", format!("GET /health at {bind} -> {}", body.trim())),
-        Err(e) => DoctorCheck {
-            name: "serve_api",
-            status: if expect_serve { "fail" } else { "skipped" },
-            detail: format!("GET /health at {bind} failed: {e}"),
-            remediation: Some(format!(
-                "start `bb serve` for this config (or check the process managing it) and confirm it binds {bind}"
-            )),
-        },
+        Err(e) => check(
+            "serve_api",
+            if expect_serve { "fail" } else { "skipped" },
+            format!("GET /health at {bind} failed: {e}"),
+            Some(format!("start `bb serve` for this config (or check the process managing it) and confirm it binds {bind}")),
+        ),
     }
 }
 
 fn dashboard_check(bind: &str, expect_serve: bool) -> DoctorCheck {
     const TITLE_MARKER: &str = "<title>bitterblossom dashboard</title>";
     match curl_get(&format!("http://{bind}/")) {
-        Ok(body) if body.contains(TITLE_MARKER) => {
-            ok_check("dashboard", format!("GET / at {bind} served the current dashboard"))
-        }
-        Ok(_) => DoctorCheck {
-            name: "dashboard",
-            status: if expect_serve { "fail" } else { "skipped" },
-            detail: format!("GET / at {bind} responded but did not contain the expected dashboard title"),
-            remediation: Some(
-                "the service at this address may be stale or not bb serve at all -- rebuild and restart bb serve"
-                    .to_string(),
-            ),
-        },
-        Err(e) => DoctorCheck {
-            name: "dashboard",
-            status: if expect_serve { "fail" } else { "skipped" },
-            detail: format!("GET / at {bind} failed: {e}"),
-            remediation: Some(format!(
-                "start `bb serve` for this config (or check the process managing it) and confirm it binds {bind}"
-            )),
-        },
+        Ok(body) if body.contains(TITLE_MARKER) => ok_check("dashboard", format!("GET / at {bind} served the current dashboard")),
+        Ok(_) => check(
+            "dashboard",
+            if expect_serve { "fail" } else { "skipped" },
+            format!("GET / at {bind} responded but did not contain the expected dashboard title"),
+            Some("the service at this address may be stale or not bb serve at all -- rebuild and restart bb serve".into()),
+        ),
+        Err(e) => check(
+            "dashboard",
+            if expect_serve { "fail" } else { "skipped" },
+            format!("GET / at {bind} failed: {e}"),
+            Some(format!("start `bb serve` for this config (or check the process managing it) and confirm it binds {bind}")),
+        ),
     }
 }
 
-fn curl_bin() -> String {
-    std::env::var("BB_DOCTOR_CURL_BIN").unwrap_or_else(|_| "curl".into())
-}
-
-/// GET over curl via `--config -` (avoids leaking the URL through argv/process
-/// listing, matching `canary::deliver`'s convention), unauthenticated -- both
-/// probed routes (`/health`, `/`) are intentionally unauthenticated in
-/// `serve.rs`, so doctor never needs `BB_API_TOKEN` to prove liveness.
 fn curl_get(url: &str) -> Result<String, String> {
     let config = format!(
-        "fail\nsilent\nshow-error\nmax-time = {CURL_TIMEOUT_SECONDS}\nurl = \"{}\"\n",
+        "fail\nsilent\nshow-error\nmax-time = 3\nurl = \"{}\"\n",
         curl_config_escape(url)
     );
-    let mut child = Command::new(curl_bin())
-        .args(["--config", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("cannot spawn curl: {e}"))?;
+    let mut child =
+        Command::new(std::env::var("BB_DOCTOR_CURL_BIN").unwrap_or_else(|_| "curl".into()))
+            .args(["--config", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("cannot spawn curl: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(config.as_bytes());
     }
@@ -392,7 +336,6 @@ mod tests {
             .checks
             .iter()
             .any(|c| c.name == "preflight" && c.status == "ok"));
-        // Ephemeral bind (:0) means no serve/dashboard probe is attempted.
         assert!(!report
             .checks
             .iter()
@@ -466,8 +409,6 @@ mod tests {
     fn doctor_fails_loudly_on_dead_serve_api_when_expected() {
         let dir = tempfile::tempdir().unwrap();
         write_local_plane(dir.path());
-        // A fixed, unused port: nothing is listening, so both probes must
-        // fail (not skip) once --expect-serve asserts liveness is required.
         fs::write(
             dir.path().join("plane.toml"),
             "dev = true\n[ingress]\nbind = \"127.0.0.1:18799\"\n",
@@ -504,8 +445,6 @@ mod tests {
 
         let report = run(dir.path(), false);
 
-        // Not asserting expected-serve, so the same dead endpoint must not
-        // flip the overall verdict.
         assert!(report.ok, "{report:?}");
         let serve_check = report
             .checks
