@@ -35,6 +35,17 @@ pub struct WorkspacePlan {
     pub artifacts: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct NoWorkloadStarted(pub String);
+
+impl std::fmt::Display for NoWorkloadStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NoWorkloadStarted {}
+
 pub struct ExecResult {
     pub exit_code: i64,
     pub stdout: String,

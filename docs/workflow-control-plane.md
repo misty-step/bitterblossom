@@ -276,3 +276,26 @@ deadwood after moving any unique mechanism coverage into generic fixtures.
 
 Reintroduce Canary through the full incident-resolution workflow. Add later
 workflows one at a time so new mechanism is earned by a real operational need.
+
+
+## Composition and deterministic merge
+
+The workflow document carries the desired agent composition, not a live catalog
+lookup. It includes the role and agent revision, harness/provider/model/effort,
+skills, MCP toolsets, allowed tool rules, declared context inputs, seat and
+run-group limits, and ordered fallbacks. Activation refuses unsupported controls,
+materializes an executable launch contract, and persists its digest beside the
+immutable workflow revision. Runtime and evidence read that snapshot rather than
+following later catalog drift. Fallbacks may only narrow the workflow grant and
+consume the same run-group budget. A fallback may select a compatible
+authentication-class harness, binary, and argument vector, or remove credential
+references, but cannot widen provider or authority. Only a pre-spawn launch failure
+advances the ordered list; post-launch failures are terminal.
+
+The product has three independent agentic loops: composition, execution, and
+verification/remediation. The final merge gate is a deterministic
+controller-owned exact-head actuator, never a commissioned gate composition or
+model judgment. It re-reads trusted PR/head/check/review/risk/approval facts,
+invokes the typed merge effect with the exact SHA, and completes Powder from the
+receipt. Independent reviewer judgment remains upstream. A fourth declaration, if
+retained during migration, is syntax only and is not an agent workflow.

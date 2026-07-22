@@ -1856,7 +1856,23 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
         } => {
             let routes = ingress::task_webhook_routes(plane);
             let wf = ledger.activate_workflow_with_reserved_routes(&name, revision, &routes)?;
-            print_workflow(&wf, json)?;
+            if json {
+                let mut value = serde_json::to_value(&wf)?;
+                let snapshots = wf
+                    .active_revision
+                    .map(|revision| ledger.launch_snapshots_for_revision(&wf.id, revision))
+                    .transpose()?
+                    .unwrap_or_default();
+                value["launch_snapshots"] = serde_json::to_value(snapshots)?;
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else {
+                print_workflow(&wf, false)?;
+                for snapshot in ledger
+                    .launch_snapshots_for_revision(&wf.id, wf.active_revision.unwrap_or_default())?
+                {
+                    println!("  step {} launch_digest={}", snapshot.step, snapshot.digest);
+                }
+            }
         }
         WorkflowCommand::Pause { name, reason, json } => {
             let wf = ledger.pause_workflow(&name, &reason)?;
@@ -1882,12 +1898,20 @@ fn workflow_command(plane: &Plane, ledger: &Ledger, command: WorkflowCommand) ->
             let (wf, revision, outcome) =
                 ledger.import_workflow(&doc, "import", note.as_deref())?;
             if json {
+                let snapshots = wf
+                    .active_revision
+                    .map(|active_revision| {
+                        ledger.launch_snapshots_for_revision(&wf.id, active_revision)
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "workflow": wf,
                         "revision": revision,
                         "outcome": outcome,
+                        "launch_snapshots": snapshots,
                     }))?
                 );
             } else {

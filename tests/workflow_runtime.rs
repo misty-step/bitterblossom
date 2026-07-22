@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use bitterblossom::ledger::Ledger;
 use bitterblossom::spec::Plane;
 use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
 
 fn write_plane(root: &Path) {
     fs::write(
@@ -47,6 +48,15 @@ fn bb(root: &Path, args: &[&str]) -> Output {
         .args(args)
         .output()
         .unwrap()
+}
+
+fn bb_without_home(root: &Path, args: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bb"));
+    command
+        .env_remove("HOME")
+        .args(["--config", root.to_str().unwrap()])
+        .args(args);
+    command.output().unwrap()
 }
 
 fn bb_ok(root: &Path, args: &[&str]) -> String {
@@ -450,6 +460,16 @@ bin = "{}"
     assert_eq!(view["status"]["detail"], "applied the fix and verified");
     let steps = view["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2);
+    assert_eq!(view["launch_snapshots"].as_array().unwrap().len(), 2);
+    assert!(
+        view["launch_snapshots"][0]["snapshot"].is_object(),
+        "snapshot readback is structured, not opaque JSON text"
+    );
+    assert_eq!(view["launch_snapshots"][0]["snapshot"]["fallback_index"], 0);
+    assert_eq!(
+        view["launch_snapshots"][0]["digest"],
+        view["launch_snapshots"][0]["snapshot"]["digest"]
+    );
     assert_eq!(steps[0]["step"], "triage");
     assert_eq!(steps[0]["attempt"], 1);
     assert_eq!(steps[0]["state"], "succeeded");
@@ -470,6 +490,378 @@ bin = "{}"
     let rerun = bb(root, &["workflow", "execute", &run_id]);
     assert!(!rerun.status.success());
     assert!(String::from_utf8_lossy(&rerun.stderr).contains("succeeded"));
+}
+
+#[test]
+fn pre_exec_launch_failure_selects_bounded_fallback_with_snapshot_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let fallback = write_stub(root, "fallback.sh", r#"printf fallback-launch-succeeded"#);
+    let missing = root.join("missing-primary");
+    let doc = write_doc(
+        root,
+        "fallback.toml",
+        &format!(
+            r#"
+name = "fallback-live"
+goal = "Exercise an ordered pre-exec fallback."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Launch the primary and select the fallback only when launch fails."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+args = ["--safe"]
+model = "fallback"
+"#,
+            missing.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "fallback-live");
+    let run_id = accept_test_run(root, "fallback-live");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "succeeded", "{view}");
+    assert_eq!(view["status"]["detail"], "fallback-launch-succeeded");
+    let steps = view["steps"].as_array().unwrap();
+    assert_eq!(
+        steps.len(),
+        2,
+        "primary and fallback attempts are both evidence"
+    );
+    assert_eq!(steps[0]["state"], "failed");
+    assert_eq!(steps[0]["agent"]["fallback_index"], 0);
+    assert_eq!(steps[1]["state"], "succeeded");
+    assert_eq!(steps[1]["agent"]["fallback_index"], 1);
+    assert_eq!(steps[1]["agent"]["bin"], fallback.display().to_string());
+    assert_ne!(steps[0]["agent"]["digest"], steps[1]["agent"]["digest"]);
+    let fallback_digest = steps[1]["agent"]["digest"].as_str().unwrap();
+    let shown = bb_json(root, &["workflow", "run-show", &run_id, "--json"]);
+    assert_eq!(shown["steps"][1]["agent"]["fallback_index"], 1);
+    assert_eq!(shown["steps"][1]["agent"]["digest"], fallback_digest);
+    let events = Ledger::open(&root.join(".bb/plane.db"))
+        .unwrap()
+        .list_guard_events(100)
+        .unwrap();
+    let selected = events
+        .iter()
+        .find(|event| event.kind == "workflow_fallback_selected")
+        .expect("fallback selection evidence");
+    let detail = selected.detail.as_deref().unwrap();
+    assert!(detail.contains("index 1"), "{detail}");
+    assert!(detail.contains(fallback_digest), "{detail}");
+}
+
+#[test]
+fn execute_door_error_is_terminal_without_fallback_side_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let primary = write_stub(
+        root,
+        "primary-never-launched.sh",
+        r#"printf primary > primary-side-effect.txt"#,
+    );
+    let fallback = write_stub(
+        root,
+        "fallback-never-launched.sh",
+        r#"printf fallback > fallback-side-effect.txt"#,
+    );
+    let doc = write_doc(
+        root,
+        "execute-door-error.toml",
+        &format!(
+            r#"
+name = "execute-door-error"
+goal = "Do not retry an ambiguous adapter error."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "The adapter fails before exposing a result."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+"#,
+            primary.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "execute-door-error");
+    let run_id = accept_test_run(root, "execute-door-error");
+    let output = bb_without_home(root, &["workflow", "execute", &run_id, "--json"]);
+    assert!(
+        output.status.success(),
+        "terminal workflow failure is reported as JSON: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(
+        view["steps"].as_array().unwrap().len(),
+        1,
+        "generic execute error must not select fallback"
+    );
+    assert_eq!(view["steps"][0]["agent"]["fallback_index"], 0);
+    for step in view["steps"].as_array().unwrap() {
+        let artifact_dir = Path::new(step["artifact_dir"].as_str().unwrap());
+        assert!(
+            !artifact_dir
+                .join("workspace/primary-side-effect.txt")
+                .exists(),
+            "primary side effect was produced despite the execute-door error"
+        );
+        assert!(
+            !artifact_dir
+                .join("workspace/fallback-side-effect.txt")
+                .exists(),
+            "fallback side effect was produced after an ambiguous execute error"
+        );
+    }
+}
+
+#[test]
+fn legacy_pinned_seats_fail_before_workload_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let primary = write_stub(
+        root,
+        "legacy-seats-primary.sh",
+        r#"printf executed > legacy-seats-ran.txt"#,
+    );
+    let doc = write_doc(
+        root,
+        "legacy-seats.toml",
+        &format!(
+            r#"
+name = "legacy-seats"
+goal = "Reject a legacy snapshot whose seat control cannot be enforced."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Do not execute this unenforceable pinned contract."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+"#,
+            primary.display()
+        ),
+    );
+    create_and_activate(root, &doc, "legacy-seats");
+    let run_id = accept_test_run(root, "legacy-seats");
+
+    // Simulate a valid snapshot written by an older release: preserve the
+    // immutable digest after adding the formerly accepted seats control.
+    let db = root.join(".bb/plane.db");
+    let conn = Connection::open(&db).unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT snapshot_json FROM workflow_step_launch_snapshots LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut snapshot: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    snapshot["seats"] = serde_json::json!(3);
+    snapshot.as_object_mut().unwrap().remove("digest");
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+    );
+    snapshot["digest"] = serde_json::json!(digest);
+    let snapshot_json = serde_json::to_string(&snapshot).unwrap();
+    conn.execute(
+        "UPDATE workflow_step_launch_snapshots SET snapshot_json = ?1, digest = ?2",
+        params![snapshot_json, digest],
+    )
+    .unwrap();
+
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert!(
+        view["status"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("policies.seats=3"),
+        "{view}"
+    );
+    assert_eq!(view["steps"].as_array().unwrap().len(), 1);
+    let artifact_dir = Path::new(view["steps"][0]["artifact_dir"].as_str().unwrap());
+    assert!(
+        !artifact_dir.join("workspace/legacy-seats-ran.txt").exists(),
+        "legacy seats snapshot reached the workload"
+    );
+}
+
+#[test]
+fn post_launch_failure_does_not_select_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let primary = write_stub(root, "primary-exit.sh", r#"exit 127"#);
+    let fallback = write_stub(root, "fallback-never.sh", r#"printf should-not-run"#);
+    let doc = write_doc(
+        root,
+        "post-launch.toml",
+        &format!(
+            r#"
+name = "post-launch"
+goal = "Keep post-launch failures terminal."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Do not retry after the process starts."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+"#,
+            primary.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "post-launch");
+    let run_id = accept_test_run(root, "post-launch");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(view["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(view["steps"][0]["agent"]["fallback_index"], 0);
+}
+
+#[test]
+fn fallback_metered_parent_key_is_rejected_from_pinned_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let missing_primary = root.join("missing-primary-key");
+    let missing_fallback = root.join("missing-fallback-key");
+    let doc = write_doc(
+        root,
+        "fallback-metered-key.toml",
+        &format!(
+            r#"
+name = "fallback-metered-key"
+goal = "Reject a fallback whose selected harness cannot meter its parent key."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Never launch a cost-blind fallback with a metered parent key."
+[step.agent]
+name = "primary"
+version = 1
+harness = "opencode"
+provider = "openrouter"
+model = "primary"
+bin = "{}"
+secrets = ["OPENROUTER_API_KEY"]
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+secrets = ["OPENROUTER_API_KEY"]
+"#,
+            missing_primary.display(),
+            missing_fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "fallback-metered-key");
+    let output = bb(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "fallback-metered-key",
+            "--trigger",
+            "test",
+            "--json",
+        ],
+    );
+    let denied: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(denied["disposition"], "denied", "{denied}");
+    assert_eq!(denied["kind"], "cost_blind_harness", "{denied}");
+    assert!(
+        denied["reason"].as_str().unwrap().contains("command"),
+        "{denied}"
+    );
+}
+
+#[test]
+fn fallback_consumes_round_budget_before_next_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_plane(root);
+    let fallback = write_stub(root, "fallback-budget.sh", r#"printf should-not-run"#);
+    let missing = root.join("missing-primary-budget");
+    let doc = write_doc(
+        root,
+        "fallback-budget.toml",
+        &format!(
+            r#"
+name = "fallback-budget"
+goal = "Bound fallback attempts by the run group."
+[[trigger]]
+kind = "test"
+[[step]]
+name = "run"
+goal = "Stop when the rounds guard is exhausted."
+[step.agent]
+name = "stub"
+version = 1
+harness = "command"
+model = "primary"
+bin = "{}"
+[[step.agent.fallbacks]]
+harness = "command"
+bin = "{}"
+model = "fallback"
+[policies]
+max_rounds = 1
+"#,
+            missing.display(),
+            fallback.display()
+        ),
+    );
+    create_and_activate(root, &doc, "fallback-budget");
+    let run_id = accept_test_run(root, "fallback-budget");
+    let view = execute(root, &run_id);
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
+    assert_eq!(view["steps"].as_array().unwrap().len(), 1);
+    let events = Ledger::open(&root.join(".bb/plane.db"))
+        .unwrap()
+        .list_guard_events(100)
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "workflow_guard_rounds"));
 }
 
 // --- criterion 2: result schemas only where routing needs them ---------------
@@ -1597,22 +1989,33 @@ echo spun"#,
         )
         .unwrap();
     }
-    let run_id = accept_test_run(root, "prerule");
-
-    let refused = bb(root, &["workflow", "execute", &run_id]);
+    // Invalid current validation is denied at acceptance because the
+    // revision has no verified executable snapshot. No run row is created.
+    let refused = bb(
+        root,
+        &[
+            "workflow",
+            "accept",
+            "prerule",
+            "--trigger",
+            "test",
+            "--json",
+        ],
+    );
     assert!(
         !refused.status.success(),
-        "a pinned revision failing current validation executed anyway"
+        "invalid pinned revision was accepted"
     );
-    let view = bb_json(root, &["workflow", "run-show", &run_id, "--json"]);
-    assert_eq!(view["status"]["state"], "failed", "{view}");
-    let detail = view["status"]["detail"].as_str().unwrap();
-    assert!(detail.contains("validation"), "{detail}");
-    assert_eq!(
-        view["steps"].as_array().unwrap().len(),
-        0,
-        "no step may execute under a doc failing current validation: {view}"
+    let denied: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(denied["disposition"], "denied", "{denied}");
+    assert_eq!(denied["kind"], "launch_snapshot", "{denied}");
+    assert!(
+        denied["reason"].as_str().unwrap().contains("validation"),
+        "{denied}"
     );
+    let run_count: i64 = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap()
+        .query_row("SELECT COUNT(*) FROM workflow_runs WHERE workflow_id = (SELECT id FROM workflows WHERE name = 'prerule')", [], |r| r.get(0)).unwrap();
+    assert_eq!(run_count, 0, "denied acceptance must not create a run");
 }
 
 /// BLOCKER 2 (defense-in-depth): even when every declared guard is huge, the
@@ -1985,7 +2388,7 @@ bin = "{}"
     create_and_activate(root, &doc, "refund");
     let run_id = accept_test_run(root, "refund");
     let view = execute(root, &run_id);
-    assert_eq!(view["status"]["state"], "failed", "{view}");
+    assert_eq!(view["status"]["state"], "stopped", "{view}");
     let detail = view["status"]["detail"].as_str().unwrap();
     assert!(detail.contains("negative"), "{detail}");
     assert!(detail.contains("helper"), "{detail}");
@@ -2196,11 +2599,11 @@ substrate = "sprites"
     assert!(stderr.contains("host"), "{stderr}");
 }
 
-/// Additive-fields contract: a pinned snapshot stored BEFORE host/repos
-/// existed (no such keys in its JSON) still validates and executes
-/// unchanged on the substrate it declared.
+/// A legacy revision without a launch snapshot is historical but not executable.
+/// Resume and rollback refuse it; explicit activation is the only reactivation
+/// path and materializes a verified snapshot without rewriting source bytes.
 #[test]
-fn pre_host_field_pinned_snapshot_stays_valid_and_executes() {
+fn legacy_missing_snapshot_requires_explicit_reactivation() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     write_plane(root);
@@ -2226,21 +2629,79 @@ bin = "{}"
         ),
     );
     create_and_activate(root, &seed, "elder");
-    // a snapshot exactly as the pre-host-field binary stored it: no host,
-    // no repos keys anywhere
     let old_doc = format!(
         r#"{{"name":"elder","goal":"Pre-host-field snapshot.","step":[{{"name":"work","agent":{{"name":"stub","version":1,"harness":"command","model":"stub","bin":"{}"}},"goal":"Do the work."}}]}}"#,
         stub.display()
     );
     let rev = insert_prerule_revision(root, "elder", &old_doc);
+    let original_bytes = old_doc.clone();
+    let run_id = "wfr-legacy-missing";
     {
         let conn = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap();
+        let wf_id: String = conn
+            .query_row("SELECT id FROM workflows WHERE name = 'elder'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
-            "UPDATE workflows SET active_revision = ?1 WHERE name = 'elder'",
+            "UPDATE workflows SET active_revision = ?1, state = 'active' WHERE name = 'elder'",
             [rev],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_id, revision, trigger_kind, payload, dedupe_key, created_at) VALUES (?1, ?2, ?3, 'test', NULL, NULL, '2026-01-01T00:00:00Z')",
+            rusqlite::params![run_id, wf_id, rev],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workflow_run_status (run_id, state, updated_at) VALUES (?1, 'queued', '2026-01-01T00:00:00Z')",
+            [run_id],
+        ).unwrap();
     }
+    let refused = bb(root, &["workflow", "execute", run_id, "--json"]);
+    assert!(
+        !refused.status.success(),
+        "legacy execution unexpectedly launched"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("reactivation"), "{stderr}");
+    assert!(stderr.contains("launch snapshot"), "{stderr}");
+
+    bb_ok(root, &["workflow", "pause", "elder"]);
+    let refused = bb(root, &["workflow", "resume", "elder"]);
+    assert!(
+        !refused.status.success(),
+        "resume silently accepted a legacy revision"
+    );
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("reactivation"));
+    let refused = bb(
+        root,
+        &["workflow", "rollback", "elder", "--to", &rev.to_string()],
+    );
+    assert!(
+        !refused.status.success(),
+        "rollback synthesized a legacy snapshot"
+    );
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("verified launch snapshot"));
+
+    let activated = bb_json(
+        root,
+        &[
+            "workflow",
+            "activate",
+            "elder",
+            "--revision",
+            &rev.to_string(),
+            "--json",
+        ],
+    );
+    assert_eq!(activated["state"], "active", "{activated}");
+    assert_eq!(activated["launch_snapshots"].as_array().unwrap().len(), 1);
+    let after_bytes: String = rusqlite::Connection::open(root.join(".bb/plane.db")).unwrap()
+        .query_row("SELECT document FROM workflow_revisions WHERE workflow_id = (SELECT id FROM workflows WHERE name = 'elder') AND revision = ?1", [rev], |r| r.get(0)).unwrap();
+    assert_eq!(
+        after_bytes, original_bytes,
+        "reactivation rewrote immutable legacy document bytes"
+    );
     let run_id = accept_test_run(root, "elder");
     let view = execute(root, &run_id);
     assert_eq!(view["status"]["state"], "succeeded", "{view}");

@@ -418,8 +418,10 @@ rm -rf "$self_drill_tmp"
 # spend reconciliation, mixed unpriced-attempt accounting, atomic migration,
 # enforced workflow run-count admission, and durable guard events.
 # 2026-07-22: raised to the next 256-line boundary for the merged runtime
-# admission/recovery mechanism delta; this is not workload policy or a bypass.
-SPINE_LOC_CAP=22528
+# admission/recovery mechanism delta plus the workflow composition contract
+# and execution engine. The added schema, pinning, fallback, and policy checks
+# remain substrate mechanism; workload judgment stays in tasks and lane cards.
+SPINE_LOC_CAP=23552
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"

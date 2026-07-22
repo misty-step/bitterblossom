@@ -401,3 +401,24 @@ The detailed product contract is `docs/workflow-control-plane.md`.
 `docs/spine.md` documents the currently shipped file-defined runtime during the
 migration. `project.md` records the historical 2026-06-10 pivot and this newer
 direction lock.
+
+
+## Agentic loops and the merge actuator
+
+Bitterblossom has three independent agentic loops: composition, execution, and
+verification/remediation. The final merge gate is not a commissioned gate
+composition or a model judgment. It is a deterministic controller-owned exact-head
+actuator: it re-reads trusted PR, head, check, review, risk, and approval facts,
+invokes the typed merge effect with the exact SHA, and completes Powder from the
+receipt. Independent reviewer judgment remains upstream of that actuator.
+
+A fourth declaration may remain temporarily in workflow documents only as migration
+syntax. It is not a fourth agent workflow and must not become a commissioned
+judgment step.
+
+Agent composition has one desired declaration and one activation-time launch
+snapshot. The declaration names role, pinned agent revision, harness/provider/model
+and effort, skills, MCPs, tool rules, context inputs, seat/run-group limits, and
+ordered narrowing fallbacks. Activation validates enforceability, materializes the
+executable contract, and stores its digest; accepted runs never resolve mutable
+catalog state again.

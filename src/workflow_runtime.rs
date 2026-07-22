@@ -39,7 +39,10 @@ use crate::harness;
 use crate::ledger::{new_id, now, AttemptStats, Ledger};
 use crate::spec::{AgentSpec, AuthClass, Plane, TaskBudget};
 use crate::substrate::{self, ExecMonitor, ExecSnapshot, WorkspacePlan};
-use crate::workflow::{AcceptOutcome, StepAgent, WorkflowDoc, WorkflowStep, ROUTE_DONE};
+use crate::workflow::{
+    AcceptOutcome, LaunchSnapshot, StepAgent, WorkflowDoc, WorkflowPolicies, WorkflowStep,
+    ROUTE_DONE,
+};
 
 /// The completion tool: a branching step's agent writes this file with one
 /// declared outcome. Single-route steps need no result schema.
@@ -362,6 +365,104 @@ fn load_document(ledger: &Ledger, workflow: &str, revision: i64) -> Result<Workf
     Ok(doc)
 }
 
+/// Reconstruct the executable workflow solely from verified activation rows.
+/// The desired revision document is deliberately not read on this path.
+fn load_pinned_document(ledger: &Ledger, workflow: &str, revision: i64) -> Result<WorkflowDoc> {
+    let workflow_row = ledger.workflow_by_name(workflow)?;
+    let mut rows = ledger.require_verified_launch_snapshots(&workflow_row.id, revision)?;
+    let mut snapshots = rows
+        .drain(..)
+        .map(|row| {
+            let snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)
+                .with_context(|| format!("launch snapshot for step '{}' is not valid JSON", row.step))?;
+            if snapshot.workflow_id != workflow_row.id || snapshot.revision != revision || snapshot.step != row.step || snapshot.digest != row.digest {
+                bail!("launch snapshot for step '{}' has mismatched workflow, revision, step, or digest", row.step);
+            }
+            snapshot.verify_digest()?;
+            Ok(snapshot)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    snapshots.sort_by_key(|snapshot| snapshot.step_index);
+    let first = snapshots
+        .first()
+        .context("verified launch snapshot set is empty")?;
+    let steps = snapshots
+        .iter()
+        .map(|snapshot| WorkflowStep {
+            name: snapshot.step.clone(),
+            agent: StepAgent {
+                name: snapshot.name.clone(),
+                version: snapshot.agent_revision,
+                harness: snapshot.harness.clone(),
+                model: snapshot.model.clone(),
+                role: snapshot.role.clone(),
+                bin: snapshot.bin.clone(),
+                args: snapshot.args.clone(),
+                provider: snapshot.provider.clone(),
+                effort: snapshot.effort.clone(),
+                skills: snapshot.skills.clone(),
+                mcps: snapshot.mcps.clone(),
+                tool_rules: snapshot.tool_rules.clone(),
+                context_inputs: snapshot.context_inputs.clone(),
+                fallbacks: snapshot.fallbacks.clone(),
+                secrets: snapshot.secret_refs.clone(),
+                bundle: snapshot.bundle.clone(),
+            },
+            goal: snapshot.step_goal.clone(),
+            host: snapshot.host.clone(),
+            repos: snapshot.repos.clone(),
+            routes: snapshot.routes.clone(),
+            authority: snapshot.authority.clone(),
+        })
+        .collect();
+    Ok(WorkflowDoc {
+        name: workflow.to_string(),
+        goal: first.workflow_goal.clone(),
+        triggers: Vec::new(),
+        steps,
+        policies: WorkflowPolicies {
+            timeout_minutes: first.timeout_minutes,
+            max_runs_per_day: first.max_runs_per_day,
+            max_cost_per_run_usd: first.max_cost_per_run_usd,
+            max_cost_per_day_usd: first.max_cost_per_day_usd,
+            estimated_cost_per_run_usd: first.estimated_cost_per_run_usd,
+            side_effect_policy: first.side_effect_policy.clone(),
+            concurrency: first.concurrency,
+            substrate: first.substrate.clone(),
+            max_rounds: first.max_rounds,
+            max_elapsed_seconds: first.max_elapsed_seconds,
+            seats: first.seats,
+        },
+    })
+}
+
+/// Load the activation-time launch contract. Runtime never resolves a mutable
+/// Roster/catalog entry or reconstructs a composition from the desired TOML.
+fn load_launch_snapshot(
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    step: &str,
+) -> Result<LaunchSnapshot> {
+    let workflow = ledger.workflow_by_name(&run.workflow)?;
+    let row = ledger
+        .require_verified_launch_snapshots(&workflow.id, run.revision)?
+        .into_iter()
+        .find(|row| row.step == step)
+        .with_context(|| format!("workflow '{}' revision {} has no launch snapshot for step '{}'; activate the revision before execution", run.workflow, run.revision, step))?;
+    let snapshot: LaunchSnapshot = serde_json::from_value(row.snapshot)
+        .with_context(|| format!("launch snapshot for step '{step}' is not valid JSON"))?;
+    if snapshot.workflow_id != workflow.id
+        || snapshot.revision != run.revision
+        || snapshot.step != step
+        || row.digest != snapshot.digest
+    {
+        bail!(
+            "launch snapshot for step '{step}' has mismatched workflow, revision, step, or digest"
+        );
+    }
+    snapshot.verify_digest()?;
+    Ok(snapshot)
+}
 // --- run-group state --------------------------------------------------------
 
 pub const RUN_STATES: &[&str] = &[
@@ -1217,6 +1318,9 @@ enum StepDisposition {
         outcome: Option<String>,
         summary: Option<String>,
     },
+    /// The launch never reached adapter execution; an ordered fallback may
+    /// consume this bounded attempt without replaying post-start work.
+    PreExecFailed(String),
     Failed(String),
     Incomplete(String),
     Stopped(String),
@@ -1384,7 +1488,7 @@ fn execute_claimed(
     run: &crate::workflow::WorkflowRunRow,
 ) -> Result<serde_json::Value> {
     let run_id = run.id.as_str();
-    let doc = load_document(ledger, &run.workflow, run.revision)?;
+    let doc = load_pinned_document(ledger, &run.workflow, run.revision)?;
     let started = Instant::now();
 
     let mut current = doc.steps[0].name.clone();
@@ -1414,12 +1518,28 @@ fn execute_claimed(
             break ("stopped", Some(detail), "workflow_run_stopped");
         }
 
-        // Guards, checked before every attempt; first fired wins.
-        if let Some(guard) = fired_guard(ledger, run, &doc, step, started)? {
+        let snapshot = load_launch_snapshot(ledger, run, &step.name)?;
+        // Guards, checked before every attempt; first fired wins. Identity and
+        // cost capability come from the immutable selected snapshot, never the
+        // mutable desired declaration.
+        if let Some(guard) = fired_guard(ledger, run, &doc, step, &snapshot, started)? {
             break ("stopped", Some(guard.clone()), "workflow_run_stopped");
         }
 
-        match run_step(plane, ledger, run, &doc, step)? {
+        let disposition = run_step(plane, ledger, run, &doc, step, &snapshot, started)?;
+        // run_step_once performs the selected snapshot's terminal spend check.
+        // The post-attempt guard is retained for a successful adapter result
+        // that did not pass through that terminal branch, without replacing a
+        // more precise selected-attempt stop reason.
+        if matches!(&disposition, StepDisposition::Succeeded { .. }) {
+            if let Some(reason) = post_attempt_spend_guard(ledger, run, &snapshot)? {
+                break ("stopped", Some(reason), "workflow_run_stopped");
+            }
+        }
+        match disposition {
+            StepDisposition::PreExecFailed(error) => {
+                break ("failed", Some(error), "workflow_run_failed");
+            }
             StepDisposition::Failed(error) => {
                 break ("failed", Some(error), "workflow_run_failed");
             }
@@ -1481,11 +1601,47 @@ fn execute_claimed(
 
 /// Evaluate the run group's guards for the next attempt of `step`. Returns
 /// the fired guard description (also recorded as a guard event) or None.
+fn post_attempt_spend_guard(
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    snapshot: &LaunchSnapshot,
+) -> Result<Option<String>> {
+    let Some(cap) = snapshot.max_cost_per_run_usd else {
+        return Ok(None);
+    };
+    let observed = ledger
+        .workflow_run_status(&run.id)?
+        .and_then(|status| status.cost_usd);
+    let Some(observed) = observed else {
+        return Ok(None);
+    };
+    if !observed.is_finite() || observed < 0.0 {
+        let detail = format!(
+            "spend guard invalid: observed cost {observed:?} is not finite and non-negative"
+        );
+        ledger.record_guard_event(
+            "workflow_guard_spend_invalid",
+            Some(&run.workflow),
+            &detail,
+            1,
+        )?;
+        return Ok(Some(detail));
+    }
+    if observed > cap {
+        let detail =
+            format!("spend guard: observed ${observed:.4} exceeds run-group cap ${cap:.2}");
+        ledger.record_guard_event("workflow_guard_spend", Some(&run.workflow), &detail, 1)?;
+        return Ok(Some(detail));
+    }
+    Ok(None)
+}
+
 fn fired_guard(
     ledger: &Ledger,
     run: &crate::workflow::WorkflowRunRow,
     doc: &WorkflowDoc,
     step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
     started: Instant,
 ) -> Result<Option<String>> {
     let fired = if let Some(reason) = ledger.workflow_run_stop_reason(&run.id)? {
@@ -1493,7 +1649,7 @@ fn fired_guard(
             "workflow_guard_stop_signal",
             format!("stop signal: {reason}"),
         ))
-    } else if let Some(max) = doc.policies.max_rounds {
+    } else if let Some(max) = snapshot.max_rounds {
         let attempts = ledger.workflow_step_attempts(&run.id, &step.name)?;
         (attempts >= max as i64).then(|| {
             (
@@ -1511,7 +1667,7 @@ fn fired_guard(
     let fired = match fired {
         Some(f) => Some(f),
         None => {
-            if let Some(max) = doc.policies.max_elapsed_seconds {
+            if let Some(max) = snapshot.max_elapsed_seconds {
                 if started.elapsed() >= Duration::from_secs(max) {
                     Some((
                         "workflow_guard_elapsed",
@@ -1531,9 +1687,12 @@ fn fired_guard(
     let fired = match fired {
         Some(f) => Some(f),
         None => {
-            if let Some(cap) = doc.policies.max_cost_per_run_usd {
-                let estimate_violation = if !harness::reports_cost(&step.agent.harness) {
-                    let estimate = doc.policies.conservative_cost_estimate();
+            if let Some(cap) = snapshot.max_cost_per_run_usd {
+                let estimate_violation = if !harness::reports_cost(&snapshot.harness) {
+                    let estimate = snapshot
+                        .estimated_cost_per_run_usd
+                        .or_else(|| snapshot.max_cost_per_run_usd.filter(|value| *value != 0.0))
+                        .unwrap_or(1.0);
                     if !estimate.is_finite() || estimate <= 0.0 {
                         bail!(
                             "workflow '{}' has invalid conservative estimate {}",
@@ -1543,13 +1702,13 @@ fn fired_guard(
                     }
                     (estimate > cap).then(|| (
                         "workflow_guard_spend_estimate",
-                        format!("spend estimate: cost-blind harness '{}' reserves ${:.4} > max_cost_per_run_usd ${:.2}; unknown spend is never treated as zero", step.agent.harness, estimate, cap),
+                        format!("spend estimate: cost-blind harness '{}' reserves ${:.4} > max_cost_per_run_usd ${:.2}; unknown spend is never treated as zero", snapshot.harness, estimate, cap),
                     ))
                 } else {
                     None
                 };
                 let spend_is_only_cycle_guard =
-                    doc.policies.max_rounds.is_none() && doc.policies.max_elapsed_seconds.is_none();
+                    snapshot.max_rounds.is_none() && snapshot.max_elapsed_seconds.is_none();
                 let unmetered = if spend_is_only_cycle_guard {
                     let cycle_steps: Vec<&str> = doc
                         .steps_on_cycles()
@@ -1595,30 +1754,29 @@ fn fired_guard(
     Ok(Some(detail))
 }
 
-fn agent_spec_from(agent: &StepAgent) -> AgentSpec {
+fn agent_spec_from(snapshot: &LaunchSnapshot) -> AgentSpec {
     AgentSpec {
-        version: agent.version,
-        harness: agent.harness.clone(),
-        model: agent.model.clone(),
-        role: None,
-        skills: Vec::new(),
-        provider: agent.provider.clone(),
+        version: snapshot.agent_revision,
+        harness: snapshot.harness.clone(),
+        model: snapshot.model.clone(),
+        role: snapshot.role.clone(),
+        skills: snapshot.skills.clone(),
+        provider: snapshot.provider.clone(),
         auth: None,
-        bin: agent.bin.clone(),
-        args: agent.args.clone(),
-        secrets: agent.secrets.clone(),
+        bin: snapshot.bin.clone(),
+        args: snapshot.args.clone(),
+        secrets: snapshot.secret_refs.clone(),
         checkout_secrets: Vec::new(),
         optional_secrets: Vec::new(),
         policy: Default::default(),
         roster: None,
     }
 }
-
 /// Roster v0.2 resolved bundle consumption: the bundle's AGENTS.md joins the
 /// commission and its digest is recorded as provenance. A declared-but-
 /// missing bundle fails honestly instead of launching a different agent.
-fn load_bundle(agent: &StepAgent) -> Result<Option<(String, String)>> {
-    let Some(bundle) = &agent.bundle else {
+fn load_bundle(snapshot: &LaunchSnapshot) -> Result<Option<(String, String)>> {
+    let Some(bundle) = &snapshot.bundle else {
         return Ok(None);
     };
     let path = PathBuf::from(bundle).join("AGENTS.md");
@@ -1626,14 +1784,26 @@ fn load_bundle(agent: &StepAgent) -> Result<Option<(String, String)>> {
         .with_context(|| format!("roster bundle AGENTS.md at {}", path.display()))?;
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+    if snapshot.bundle_digest.as_deref() != Some(digest.as_str()) {
+        bail!(
+            "roster bundle digest changed for agent {}: expected {}, found {}",
+            snapshot.name,
+            snapshot.bundle_digest.as_deref().unwrap_or("-"),
+            digest,
+        );
+    }
     Ok(Some((text, digest)))
 }
-
 /// The step commission: workflow + step goals plus the mechanical completion
 /// contract projected from config (declared outcomes, authority labels).
 /// Projection, not judgment — every semantic token here comes from the
 /// pinned document.
-fn commission(doc: &WorkflowDoc, step: &WorkflowStep, bundle_agents_md: Option<&str>) -> String {
+fn commission(
+    doc: &WorkflowDoc,
+    step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
+    bundle_agents_md: Option<&str>,
+) -> String {
     let mut card = String::new();
     if let Some(agents_md) = bundle_agents_md {
         card.push_str(agents_md.trim_end());
@@ -1643,6 +1813,9 @@ fn commission(doc: &WorkflowDoc, step: &WorkflowStep, bundle_agents_md: Option<&
         "# Workflow step commission\n\nWorkflow: {} — {}\nStep: {}\n\n{}\n",
         doc.name, doc.goal, step.name, step.goal
     ));
+    card.push_str("\n## Resolved composition (activation snapshot)\n```json\n");
+    card.push_str(&serde_json::to_string_pretty(snapshot).expect("snapshot serializes"));
+    card.push_str("\n```\n");
     card.push_str("\n## Completion contract\n");
     if step.routes.len() >= 2 {
         let outcomes: Vec<&str> = step.routes.keys().map(String::as_str).collect();
@@ -1733,6 +1906,42 @@ fn run_step(
     run: &crate::workflow::WorkflowRunRow,
     doc: &WorkflowDoc,
     step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
+    started: Instant,
+) -> Result<StepDisposition> {
+    for index in 0..=snapshot.fallbacks.len() {
+        let resolved = snapshot.resolve_fallback(index)?;
+        match run_step_once(plane, ledger, run, doc, step, &resolved)? {
+            StepDisposition::PreExecFailed(error) if index < snapshot.fallbacks.len() => {
+                let next = index + 1;
+                let resolved = snapshot.resolve_fallback(next)?;
+                if let Some(reason) = fired_guard(ledger, run, doc, step, &resolved, started)? {
+                    return Ok(StepDisposition::Stopped(reason));
+                }
+                ledger.record_guard_event(
+                    "workflow_fallback_selected",
+                    Some(&run.workflow),
+                    &format!(
+                        "step '{}' launch failed at composition index {index}; selected fallback index {next} digest {}: {error}",
+                        step.name, resolved.digest
+                    ),
+                    1,
+                )?;
+            }
+            StepDisposition::PreExecFailed(error) => return Ok(StepDisposition::Failed(error)),
+            disposition => return Ok(disposition),
+        }
+    }
+    unreachable!("fallback loop always returns a disposition")
+}
+
+fn run_step_once(
+    plane: &Plane,
+    ledger: &Ledger,
+    run: &crate::workflow::WorkflowRunRow,
+    doc: &WorkflowDoc,
+    step: &WorkflowStep,
+    snapshot: &LaunchSnapshot,
 ) -> Result<StepDisposition> {
     let attempt = ledger.next_workflow_attempt(&run.id)?;
     let attempt_dir = plane
@@ -1741,19 +1950,19 @@ fn run_step(
         .join(&run.id)
         .join(format!("attempt-{attempt}-{}", step.name));
     std::fs::create_dir_all(&attempt_dir)?;
-    let agent_json = serde_json::to_string(&step.agent)?;
+    let agent_json = serde_json::to_string(snapshot)?;
     let step_run_id = ledger.create_workflow_step_run(
         &run.id,
         &step.name,
         attempt,
         &agent_json,
         &step.goal,
-        &step.authority,
+        &snapshot.authority,
         &attempt_dir.to_string_lossy(),
     )?;
     ledger.set_workflow_run_current_step(&run.id, &step.name)?;
 
-    let fail = |error: String, stats: &AttemptStats| -> Result<StepDisposition> {
+    let fail_terminal = |error: String, stats: &AttemptStats| -> Result<StepDisposition> {
         ledger.finish_workflow_step_run(
             &step_run_id,
             "failed",
@@ -1768,17 +1977,59 @@ fn run_step(
             step.name
         )))
     };
+    let fail_pre_exec = |error: String| -> Result<StepDisposition> {
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "failed",
+            None,
+            None,
+            Some(&error),
+            None,
+            &AttemptStats::default(),
+        )?;
+        Ok(StepDisposition::PreExecFailed(format!(
+            "step '{}' attempt {attempt}: {error}",
+            step.name
+        )))
+    };
+    let fail_stopped = |error: String, stats: &AttemptStats| -> Result<StepDisposition> {
+        ledger.finish_workflow_step_run(
+            &step_run_id,
+            "failed",
+            None,
+            None,
+            Some(&error),
+            None,
+            stats,
+        )?;
+        ledger.record_guard_event(
+            "workflow_guard_spend_invalid",
+            Some(&run.workflow),
+            &error,
+            1,
+        )?;
+        Ok(StepDisposition::Stopped(format!(
+            "step '{}' attempt {attempt}: {error}",
+            step.name
+        )))
+    };
     let none = AttemptStats::default();
+    if let Some(seats) = snapshot.seats {
+        return fail_terminal(
+            format!("policies.seats={seats} is unsupported; seat admission is not enforceable"),
+            &none,
+        );
+    }
     if let Some(v) = budget::metered_parent_key_violation(
-        &step.agent.name,
-        &step.agent.harness,
-        step.agent.provider.as_deref().unwrap_or("openrouter"),
-        &step.agent.secrets,
+        &snapshot.name,
+        &snapshot.harness,
+        snapshot.provider.as_deref().unwrap_or("openrouter"),
+        &snapshot.secret_refs,
         &[],
         None,
         None,
     ) {
-        return fail(v.detail, &none);
+        return fail_pre_exec(v.detail);
     }
     let stop = |reason: String| -> Result<StepDisposition> {
         ledger.finish_workflow_step_run(
@@ -1796,19 +2047,19 @@ fn run_step(
         )))
     };
 
-    let bundle = match load_bundle(&step.agent) {
+    let bundle = match load_bundle(snapshot) {
         Ok(b) => b,
-        Err(e) => return fail(format!("{e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("{e:#}")),
     };
-    let agent = agent_spec_from(&step.agent);
+    let agent = agent_spec_from(snapshot);
     let hermetic = match agent.auth_class() {
         Ok(AuthClass::Api) => true,
         Ok(AuthClass::Subscription) => false,
-        Err(e) => return fail(format!("{e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("{e:#}")),
     };
     let budget = TaskBudget {
         timeout_minutes: Some(
-            doc.policies
+            snapshot
                 .timeout_minutes
                 .unwrap_or(DEFAULT_STEP_TIMEOUT_MINUTES),
         ),
@@ -1816,28 +2067,27 @@ fn run_step(
     };
     let cmd = match harness::build_command(&agent, &budget) {
         Ok(c) => c,
-        Err(e) => return fail(format!("build_command: {e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("build_command: {e:#}")),
     };
     let mut secrets = Vec::new();
-    for name in &step.agent.secrets {
+    for name in &snapshot.secret_refs {
         match std::env::var(name) {
             Ok(value) => secrets.push((name.clone(), value)),
-            Err(_) => return fail(format!("secret env var '{name}' not set"), &none),
+            Err(_) => return fail_pre_exec(format!("secret env var '{name}' not set")),
         }
     }
 
     let substrate_kind = doc.policies.substrate.as_deref().unwrap_or("local");
     if substrate_kind == "local" && !plane.spec.dev && !plane.spec.allow_local_substrate {
-        return fail(
+        return fail_pre_exec(
             "substrate 'local' requires `allow_local_substrate = true` in production \
              or `dev = true` for development/test"
                 .to_string(),
-            &none,
         );
     }
     let substrate = match substrate::for_task(substrate_kind) {
         Ok(s) => s,
-        Err(e) => return fail(format!("{e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("{e:#}")),
     };
     let host = step
         .host
@@ -1865,10 +2115,9 @@ fn run_step(
         }
         if lease_started.elapsed() >= lease_wait {
             let holder = ledger.lease_holder(&host)?;
-            return fail(
-                format!("host lease '{host}' is held by run {holder:?} after bounded wait"),
-                &none,
-            );
+            return fail_pre_exec(format!(
+                "host lease '{host}' is held by run {holder:?} after bounded wait"
+            ));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -1879,10 +2128,15 @@ fn run_step(
     };
     let mut session = match substrate.acquire(&host, &attempt_dir) {
         Ok(s) => s,
-        Err(e) => return fail(format!("acquire: {e:#}"), &none),
+        Err(e) => return fail_pre_exec(format!("acquire: {e:#}")),
     };
 
-    let card = commission(doc, step, bundle.as_ref().map(|(text, _)| text.as_str()));
+    let card = commission(
+        doc,
+        step,
+        snapshot,
+        bundle.as_ref().map(|(text, _)| text.as_str()),
+    );
     let run_context = serde_json::json!({
         "workflow_run_id": run.id,
         "workflow": run.workflow,
@@ -1890,13 +2144,15 @@ fn run_step(
         "step": step.name,
         "attempt": attempt,
         "trigger": { "kind": run.trigger_kind, "dedupe_key": run.dedupe_key },
-        "agent": &step.agent,
-        "authority": &step.authority,
+        "agent": snapshot,
+        "launch_snapshot_digest": snapshot.digest,
+        "authority": &snapshot.authority,
+        "authority_digest": snapshot.authority_digest,
         "bundle_agents_md_sha256": bundle.as_ref().map(|(_, digest)| digest.clone()),
     })
     .to_string();
     let plan = WorkspacePlan {
-        repos: step.repos.clone(),
+        repos: snapshot.repos.clone(),
         card: card.clone(),
         run_context,
         payload: run.payload.clone(),
@@ -1916,7 +2172,7 @@ fn run_step(
     };
     if let Err(e) = session.prepare(&plan) {
         let _ = session.release();
-        return fail(format!("prepare: {e:#}"), &none);
+        return fail_pre_exec(format!("prepare: {e:#}"));
     }
 
     let timeout = Duration::from_secs(60 * budget.timeout_minutes.unwrap_or(1));
@@ -1924,9 +2180,9 @@ fn run_step(
     // refused-credential STOP-and-report guardrail; workflow steps are
     // dispatched lanes and receive exactly the same one.
     let prompt = format!("{}\n\n{card}", harness::commission_prompt());
-    let max_cost = doc.policies.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
-    let side_effect_policy = doc.policies.side_effect_policy.as_deref().unwrap_or("kill");
-    let monitor_needed = max_cost.is_finite() && harness::streams_cost(&step.agent.harness);
+    let max_cost = snapshot.max_cost_per_run_usd.unwrap_or(f64::INFINITY);
+    let side_effect_policy = snapshot.side_effect_policy.as_deref().unwrap_or("kill");
+    let monitor_needed = max_cost.is_finite() && harness::streams_cost(&snapshot.harness);
     let prior_cost_usd = ledger
         .workflow_run_status(&run.id)?
         .and_then(|status| status.cost_usd)
@@ -1935,7 +2191,7 @@ fn run_step(
         ledger,
         run_id: &run.id,
         workflow: &run.workflow,
-        harness: &step.agent.harness,
+        harness: &snapshot.harness,
         max_cost_usd: max_cost,
         prior_cost_usd,
         side_effect_policy,
@@ -1956,7 +2212,14 @@ fn run_step(
         Ok(r) => r,
         Err(e) => {
             let _ = session.release();
-            return fail(format!("execute: {e:#}"), &none);
+            let error = format!("execute: {e:#}");
+            if e.downcast_ref::<substrate::NoWorkloadStarted>().is_some() {
+                return fail_pre_exec(error);
+            }
+            // Session::execute may fail after its child or remote workload has
+            // started. A generic adapter error cannot prove no workload ran,
+            // so it is terminal and must never select an ordered fallback.
+            return fail_terminal(error, &AttemptStats::default());
         }
     };
     session.write_artifact("stdout.txt", exec.stdout.as_bytes())?;
@@ -2049,7 +2312,7 @@ fn run_step(
     }
     if let Some(cost) = parsed.stats.cost_usd {
         if !cost.is_finite() || cost < 0.0 {
-            return fail(
+            return fail_stopped(
                 format!("harness reported unusable cost_usd {cost}"),
                 &parsed.stats,
             );
@@ -2089,7 +2352,7 @@ fn run_step(
     if children_path.exists() {
         let size = std::fs::metadata(&children_path)?.len();
         if size > MAX_CONTRACT_FILE_BYTES {
-            return fail(
+            return fail_terminal(
                 format!("{CHILD_AGENTS_FILENAME} is {size} bytes (max {MAX_CONTRACT_FILE_BYTES})"),
                 &parsed.stats,
             );
@@ -2098,7 +2361,7 @@ fn run_step(
         let decls: Vec<ChildDecl> = match serde_json::from_str(&text) {
             Ok(d) => d,
             Err(e) => {
-                return fail(
+                return fail_terminal(
                     format!("malformed {CHILD_AGENTS_FILENAME}: {e}"),
                     &parsed.stats,
                 )
@@ -2106,7 +2369,7 @@ fn run_step(
         };
         for decl in &decls {
             if decl.name.trim().is_empty() {
-                return fail(
+                return fail_terminal(
                     format!("{CHILD_AGENTS_FILENAME}: child agent name is required"),
                     &parsed.stats,
                 );
@@ -2115,7 +2378,7 @@ fn run_step(
                 // Declared spend only ever adds: a negative entry would
                 // silently offset siblings' costs inside the enforced sum.
                 if cost < 0.0 || !cost.is_finite() {
-                    return fail(
+                    return fail_stopped(
                         format!(
                             "{CHILD_AGENTS_FILENAME}: child agent '{}' declares negative \
                              cost_usd {cost}; declared spend only ever adds",
@@ -2126,14 +2389,15 @@ fn run_step(
                 }
             }
             let (authority, inherited) = match &decl.authority {
-                None => (step.authority.clone(), true),
+                None => (snapshot.authority.clone(), true),
                 Some(declared) => {
-                    if let Some(excess) = declared.iter().find(|a| !step.authority.contains(a)) {
-                        return fail(
+                    if let Some(excess) = declared.iter().find(|a| !snapshot.authority.contains(a))
+                    {
+                        return fail_terminal(
                             format!(
                                 "child agent '{}' declares authority {excess:?} beyond its \
                                  parent step grant {:?}; children inherit or narrow, never broaden",
-                                decl.name, step.authority
+                                decl.name, snapshot.authority
                             ),
                             &parsed.stats,
                         );
@@ -2309,6 +2573,8 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
     )?;
     let status = ledger.workflow_run_status(run_id)?;
     let events = ledger.workflow_run_events(run_id)?;
+    let workflow = ledger.workflow_by_name(&run.workflow)?;
+    let launch_snapshots = ledger.launch_snapshots_for_revision(&workflow.id, run.revision)?;
     let steps = ledger
         .workflow_step_runs(run_id)?
         .into_iter()
@@ -2322,6 +2588,7 @@ pub fn run_detail_view(ledger: &Ledger, run_id: &str) -> Result<serde_json::Valu
     Ok(serde_json::json!({
         "run": run,
         "document": document,
+        "launch_snapshots": launch_snapshots,
         "status": status,
         "events": events,
         "steps": steps,
