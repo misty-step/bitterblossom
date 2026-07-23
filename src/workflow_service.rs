@@ -209,11 +209,15 @@ impl<'a> WorkflowService<'a> {
         self.authorize(Operation::ExecuteWorkflowRun, resource.clone())?;
 
         if let Some(current) = lease.as_ref() {
-            if current.holder_principal != self.auth.principal {
+            let worker_holds_exact_claim = self.auth.role == PrincipalRole::Worker
+                && current.holder_principal == self.auth.principal
+                && self.auth.run_id.as_deref() == Some(run_id)
+                && self.auth.claim_id.as_deref() == Some(current.claim_id.as_str());
+            if !worker_holds_exact_claim {
                 let denial = AuthError::for_operation(
                     DenialClass::IdentityMismatch,
                     Operation::ExecuteWorkflowRun,
-                    "principal does not hold the current run lease",
+                    "run is already claimed by an authenticated execution holder",
                 );
                 self.ledger.record_workflow_auth_denial(
                     &resource,
