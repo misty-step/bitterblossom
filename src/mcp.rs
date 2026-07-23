@@ -326,7 +326,7 @@ fn call_dispatch_tool(plane: &Plane, id: Value, args: &Value) -> Value {
                 },
             })
         }
-        Err(e) => call_error(id, &format!("{e:#}")),
+        Err(e) => call_error_value(id, &e),
     }
 }
 
@@ -560,6 +560,24 @@ fn error_response(id: Value, code: i32, message: &str) -> Value {
 /// A tool that ran but failed returns `isError: true` with the error text as
 /// content, per the MCP `tools/call` error convention (distinct from a
 /// JSON-RPC protocol error).
+fn call_error_value(id: Value, error: &anyhow::Error) -> Value {
+    if let Some(auth) = error.downcast_ref::<crate::auth::AuthError>() {
+        let payload = serde_json::json!({
+            "error": auth.detail,
+            "denial_class": auth.denial_class(),
+        });
+        return json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "content": [{ "type": "text", "text": payload.to_string() }],
+                "isError": true,
+            },
+        });
+    }
+    call_error(id, &format!("{error:#}"))
+}
+
 fn call_error(id: Value, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",

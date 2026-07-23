@@ -63,12 +63,11 @@ pub enum Operation {
     RaiseAsk,
     AnswerAsk,
     DispatchRun,
-    RecordEffect,
     CorrectWorkflow,
 }
 
 impl Operation {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 16] = [
         Self::CreateWorkflow,
         Self::ReviseWorkflow,
         Self::ImportWorkflow,
@@ -84,7 +83,6 @@ impl Operation {
         Self::RaiseAsk,
         Self::AnswerAsk,
         Self::DispatchRun,
-        Self::RecordEffect,
         Self::CorrectWorkflow,
     ];
 
@@ -105,7 +103,6 @@ impl Operation {
             Self::RaiseAsk => "raise_ask",
             Self::AnswerAsk => "answer_ask",
             Self::DispatchRun => "dispatch_run",
-            Self::RecordEffect => "record_effect",
             Self::CorrectWorkflow => "correct_workflow",
         }
     }
@@ -143,12 +140,6 @@ impl Operation {
                 capability: Execution,
                 holder_required: true,
                 operator_allowed: true,
-                controller_allowed: true,
-            },
-            Self::RecordEffect => OperationRule {
-                capability: Execution,
-                holder_required: true,
-                operator_allowed: false,
                 controller_allowed: true,
             },
             Self::RaiseAsk => OperationRule {
@@ -573,13 +564,12 @@ mod tests {
 
     #[test]
     fn operation_matrix_is_exhaustive_and_closed() {
-        assert_eq!(Operation::ALL.len(), 17);
+        assert_eq!(Operation::ALL.len(), 16);
         for operation in Operation::ALL {
             let _ = operation.rule();
             assert!(!operation.as_str().is_empty());
         }
         assert!(Operation::CreateWorkflow.rule().operator_allowed);
-        assert!(!Operation::RecordEffect.rule().operator_allowed);
         assert!(Operation::ExecuteWorkflowRun.rule().holder_required);
     }
 
@@ -621,7 +611,7 @@ mod tests {
             ),
         ];
         for (label, auth, lease, expected) in cases {
-            let result = auth.authorize(Operation::RecordEffect, &resource, Some(&lease));
+            let result = auth.authorize(Operation::ExecuteWorkflowRun, &resource, Some(&lease));
             match expected {
                 None => assert!(result.is_ok(), "{label}: {result:?}"),
                 Some(class) => assert_eq!(result.unwrap_err().class, class, "{label}"),

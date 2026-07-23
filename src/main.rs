@@ -744,7 +744,17 @@ fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     if let Err(e) = run() {
         let msg = format!("{e:#}");
-        eprintln!("error: {msg}");
+        if let Some(auth) = e.downcast_ref::<bitterblossom::auth::AuthError>() {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "error": auth.detail,
+                    "denial_class": auth.denial_class(),
+                })
+            );
+        } else {
+            eprintln!("error: {msg}");
+        }
         canary::report_error("bb.startup", &msg);
         std::process::exit(1);
     }

@@ -1468,41 +1468,43 @@ pub enum ExecutionDisposition {
 
 /// Execute one accepted workflow run to a terminal state. Claims the run
 /// (queued -> running CAS); refuses anything already claimed or terminal.
-pub fn execute_run(plane: &Plane, ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
-    match execute_if_queued(plane, ledger, run_id)? {
-        ExecutionDisposition::Executed(view) => Ok(view),
-        ExecutionDisposition::Deferred { reason } => {
-            bail!(
-                "workflow run {run_id} deferred by admission recheck: {reason}; \
-                 run remains queued"
-            );
-        }
-        ExecutionDisposition::ClaimLost => {
-            let state = ledger
-                .workflow_run_status(run_id)?
-                .map(|s| s.state)
-                .unwrap_or_else(|| "unknown".to_string());
-            bail!("workflow run {run_id} is {state}; only queued runs execute");
-        }
-    }
-}
-
-/// Runner-loop variant of [`execute_run`]: reports a lost claim or an
-/// admission deferral as data, which the serve loop treats as non-events
-/// instead of errors.
-pub fn execute_if_queued(
+/// Execute a run whose live lease was assigned by WorkflowService. This is
+/// crate-private so no transport can bypass principal authorization/audit.
+pub(crate) fn execute_run_as(
     plane: &Plane,
     ledger: &Ledger,
     run_id: &str,
-) -> Result<ExecutionDisposition> {
+    holder_principal: &str,
+    claim_id: &str,
+) -> Result<serde_json::Value> {
     let run = ledger.workflow_run(run_id)?;
-    if !ledger.claim_workflow_run(run_id)? {
-        return Ok(ExecutionDisposition::ClaimLost);
+    let lease = ledger
+        .workflow_run_lease(run_id)?
+        .context("workflow run has no live execution lease")?;
+    if lease.holder_principal != holder_principal || lease.claim_id != claim_id {
+        return Err(crate::auth::AuthError::for_operation(
+            crate::auth::DenialClass::IdentityMismatch,
+            crate::auth::Operation::ExecuteWorkflowRun,
+            "execution claim does not match the live run lease",
+        )
+        .into());
     }
+    match execute_claimed_or_deferred(plane, ledger, run)? {
+        ExecutionDisposition::Executed(view) => Ok(view),
+        ExecutionDisposition::Deferred { reason } => bail!(
+            "workflow run {run_id} deferred by admission recheck: {reason}; run remains queued"
+        ),
+        ExecutionDisposition::ClaimLost => bail!("workflow run {run_id} lost its execution claim"),
+    }
+}
+
+fn execute_claimed_or_deferred(
+    plane: &Plane,
+    ledger: &Ledger,
+    run: crate::workflow::WorkflowRunRow,
+) -> Result<ExecutionDisposition> {
+    let run_id = run.id.as_str();
     if let Some((kind, reason)) = ledger.recheck_workflow_run_admission(plane, run_id)? {
-        // A pending operator stop outranks deferral: honor it terminally
-        // (releasing the pinned reservation) instead of parking the run
-        // behind capacity pressure forever.
         if let Some(stop) = ledger.workflow_run_stop_reason(run_id)? {
             let detail = format!("stop signal: {stop}");
             ledger.record_guard_event(
@@ -1516,8 +1518,6 @@ pub fn execute_if_queued(
                 ledger, run_id,
             )?));
         }
-        // Guard-event once per distinct reason, not once per runner tick:
-        // the previous deferral left the same reason in the status detail.
         let already_deferred = ledger
             .workflow_run_status(run_id)?
             .and_then(|s| s.detail)
@@ -1533,10 +1533,6 @@ pub fn execute_if_queued(
         }
         return Ok(ExecutionDisposition::Deferred { reason });
     }
-    // A claimed run must reach a terminal state even when the executor
-    // itself errors (unreadable pinned doc, fs failure) OR panics: both
-    // become `failed` with the reason recorded, never a phantom `running`,
-    // and a panic never unwinds into the caller's thread.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         execute_claimed(plane, ledger, &run)
     }))

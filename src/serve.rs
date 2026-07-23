@@ -383,19 +383,21 @@ fn workflow_runner_tick(root: &Path) {
             return;
         }
     };
-    use crate::workflow_runtime::ExecutionDisposition;
+    let service = crate::workflow_service::WorkflowService::new(
+        &plane,
+        &ledger,
+        crate::workflow_service::auth_context_for_controller(),
+    )
+    .with_source("serve");
     for id in ids {
-        match crate::workflow_runtime::execute_if_queued(&plane, &ledger, &id) {
-            Ok(ExecutionDisposition::Executed(view)) => eprintln!(
+        match service.execute_workflow_run(&id) {
+            Ok(view) => eprintln!(
                 "workflow run {id} {}",
                 view["status"]["state"].as_str().unwrap_or("-")
             ),
-            // claimed elsewhere between listing and CAS
-            Ok(ExecutionDisposition::ClaimLost) => {}
-            Ok(ExecutionDisposition::Deferred { reason }) => {
-                eprintln!("workflow run {id} deferred: {reason}");
-            }
             Err(e) => {
+                // A concurrent worker/controller may have won the queue CAS.
+                // All other failures remain visible and are reported.
                 eprintln!("workflow run {id}: {e:#}");
                 canary::report_error("bb.workflow.execute", &format!("run {id}: {e:#}"));
             }
@@ -804,6 +806,17 @@ fn json_error(message: String) -> String {
     serde_json::json!({ "error": message }).to_string()
 }
 
+fn json_anyhow_error(error: &anyhow::Error) -> String {
+    if let Some(auth) = error.downcast_ref::<crate::auth::AuthError>() {
+        return serde_json::json!({
+            "error": auth.detail,
+            "denial_class": auth.denial_class(),
+        })
+        .to_string();
+    }
+    serde_json::json!({ "error": format!("{error:#}") }).to_string()
+}
+
 fn read_capped_body(
     request: &mut tiny_http::Request,
     max_body_bytes: usize,
@@ -876,7 +889,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     let path_no_query = url.split('?').next().unwrap_or(&url).to_string();
     if method == "POST" && path_no_query == "/api/asks" {
         let plane = Plane::load(root)?;
-        let ledger = Ledger::open(&plane.db_path())?;
+        let mut ledger = Ledger::open(&plane.db_path())?;
         let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
             Err(error) => {
                 return Ok((
@@ -905,7 +918,23 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             return Ok((401, json_error("bad ask_token for run_id".into())));
         }
         let id = format!("ask-{}", crate::ledger::new_id());
-        let ask = ledger.raise_ask(
+        let auth = ledger
+            .legacy_run_lease(&req.run_id)?
+            .map(|lease| {
+                crate::workflow_service::auth_context_for_worker(
+                    &lease.holder_principal,
+                    &lease.run_id,
+                    &lease.claim_id,
+                )
+            })
+            .unwrap_or_else(|| {
+                crate::auth::AuthContext::worker("worker", &req.run_id, "missing-claim")
+            })
+            .with_transport("http-ask");
+        let ask = match crate::workflow_service::WorkflowService::raise_ask_for(
+            &plane,
+            &mut ledger,
+            auth,
             &id,
             &req.run_id,
             &req.task,
@@ -914,7 +943,13 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             req.context.as_deref(),
             req.blocking,
             req.window_seconds,
-        )?;
+        ) {
+            Ok(ask) => ask,
+            Err(err) => {
+                let status = workflow_error_status(&err);
+                return Ok((status, json_anyhow_error(&err)));
+            }
+        };
         if let Ok(task) = plane.task(&req.task) {
             crate::glass::post_asked(
                 &plane,
@@ -972,7 +1007,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 presented_bearer(request).as_deref(),
             ) {
                 Ok(auth) => auth,
-                Err(error) => return Ok((401, json_error(error.to_string()))),
+                Err(error) => return Ok((401, json_anyhow_error(&error))),
             };
             let (ask, resumed_run_id) =
                 match crate::workflow_service::WorkflowService::answer_ask_for(
@@ -991,7 +1026,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                         } else {
                             409
                         };
-                        return Ok((status, json_error(err.to_string())));
+                        return Ok((status, json_anyhow_error(&err)));
                     }
                 };
             if let Some(resumed_run_id) = &resumed_run_id {
@@ -1333,7 +1368,7 @@ fn workflow_get(ledger: &Ledger, path: &str, url: &str) -> Result<Option<(u16, S
     let respond = |result: Result<serde_json::Value>| -> Result<Option<(u16, String)>> {
         Ok(Some(match result {
             Ok(value) => (200, value.to_string()),
-            Err(err) => (workflow_error_status(&err), json_error(format!("{err:#}"))),
+            Err(err) => (workflow_error_status(&err), json_anyhow_error(&err)),
         }))
     };
     if path == "/api/workflows" {
@@ -1412,7 +1447,7 @@ fn workflow_post(
     let respond = |result: Result<(u16, serde_json::Value)>| -> Result<(u16, String)> {
         Ok(match result {
             Ok((status, value)) => (status, value.to_string()),
-            Err(err) => (workflow_error_status(&err), json_error(format!("{err:#}"))),
+            Err(err) => (workflow_error_status(&err), json_anyhow_error(&err)),
         })
     };
     let doc_request = |body: &str| -> Result<WorkflowDocRequest> {
