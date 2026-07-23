@@ -668,8 +668,8 @@ enum AskCommand {
     Answer {
         ask_id: String,
         answer: String,
-        #[arg(long, default_value = "operator")]
-        answered_by: String,
+        #[arg(long)]
+        answered_by: Option<String>,
         /// Defaults to the `BB_API_BASE_URL` env var if omitted.
         #[arg(long)]
         api_base_url: Option<String>,
@@ -1494,6 +1494,9 @@ fn run() -> Result<()> {
                 let api_base_url = api_base_url
                     .or_else(|| std::env::var("BB_API_BASE_URL").ok())
                     .context("--api-base-url or BB_API_BASE_URL required")?;
+                let authenticated =
+                    bitterblossom::workflow_service::auth_context_for_http(Some(&api_token))?;
+                let answered_by = answered_by.unwrap_or(authenticated.principal);
                 let response =
                     ask::answer(&api_base_url, &api_token, &ask_id, &answer, &answered_by)?;
                 println!("{response}");

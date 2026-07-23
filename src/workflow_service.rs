@@ -254,8 +254,13 @@ impl<'a> WorkflowService<'a> {
                 .ledger
                 .claim_workflow_run_for(run_id, &self.auth.principal, &claim_id, 3600)?
             {
+                let state = self
+                    .ledger
+                    .workflow_run_status(run_id)?
+                    .map(|status| status.state)
+                    .unwrap_or_else(|| "unknown".to_string());
                 return Err(anyhow::anyhow!(
-                    "workflow run {run_id} was claimed before execution"
+                    "workflow run {run_id} is {state}; only queued runs execute"
                 ));
             }
             lease = self.live_lease(Some(run_id))?;
@@ -282,54 +287,6 @@ impl<'a> WorkflowService<'a> {
             &audit_auth,
         )?;
         Ok(result)
-    }
-
-    /// Worker face: assign a queued run using the authenticated worker
-    /// principal/claim, then execute through the same service authorization and
-    /// audit path. A worker cannot choose a different run or claim.
-    pub fn execute_as_worker(&self, run_id: &str) -> Result<serde_json::Value> {
-        if self.auth.role != PrincipalRole::Worker {
-            return self.execute_workflow_run(run_id);
-        }
-        let claim_id = self.auth.claim_id.as_deref().ok_or_else(|| {
-            AuthError::for_operation(
-                DenialClass::ClaimRequired,
-                Operation::ExecuteWorkflowRun,
-                "authenticated worker claim required",
-            )
-        })?;
-        let context_run = self.auth.run_id.as_deref().ok_or_else(|| {
-            AuthError::for_operation(
-                DenialClass::ClaimRequired,
-                Operation::ExecuteWorkflowRun,
-                "authenticated worker run claim required",
-            )
-        })?;
-        if context_run != run_id {
-            let denial = AuthError::for_operation(
-                DenialClass::CrossResource,
-                Operation::ExecuteWorkflowRun,
-                "principal context targets another run",
-            );
-            let resource = AuthorizationResource::run(run_id);
-            self.ledger.record_workflow_auth_denial(
-                &resource,
-                Operation::ExecuteWorkflowRun,
-                &self.auth,
-                &denial,
-            )?;
-            return Err(denial.into());
-        }
-        if self.ledger.workflow_run_lease(run_id)?.is_none()
-            && !self
-                .ledger
-                .claim_workflow_run_for(run_id, &self.auth.principal, claim_id, 3600)?
-        {
-            return Err(anyhow::anyhow!(
-                "workflow run {run_id} was claimed before worker execution"
-            ));
-        }
-        self.execute_workflow_run(run_id)
     }
 
     pub fn stop_workflow_run(
@@ -417,7 +374,17 @@ impl<'a> WorkflowService<'a> {
                 ..AuthorizationResource::default()
             };
             service.authorize(Operation::AnswerAsk, resource.clone())?;
-            service.require_answer_identity(Some(answered_by))?;
+            if let Err(error) = service.require_answer_identity(Some(answered_by)) {
+                if let Some(auth_error) = error.downcast_ref::<AuthError>() {
+                    service.ledger.record_workflow_auth_denial(
+                        &resource,
+                        Operation::AnswerAsk,
+                        &service.auth,
+                        auth_error,
+                    )?;
+                }
+                return Err(error);
+            }
             (ask, resource)
         };
         let run = ledger.run(&ask.run_id)?;
