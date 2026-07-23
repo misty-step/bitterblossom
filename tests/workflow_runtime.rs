@@ -899,6 +899,40 @@ bin = "{}"
     // no OUTCOME.json was written and none was needed
     assert_eq!(view["status"]["state"], "succeeded", "{view}");
     assert_eq!(view["steps"][0]["outcome"], serde_json::Value::Null);
+    let conn = Connection::open(root.join(".bb/plane.db")).unwrap();
+    let receipt: (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT operation, principal, role, decision, denial_class, claim_id
+             FROM auth_events WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(receipt.0, "execute_workflow_run");
+    assert!(!receipt.1.is_empty());
+    assert_eq!(receipt.2, "operator");
+    assert_eq!(receipt.3, "allow");
+    assert!(receipt.4.is_none());
+    assert!(
+        receipt.5.is_some(),
+        "controller execution must audit its exact claim"
+    );
 }
 
 #[test]

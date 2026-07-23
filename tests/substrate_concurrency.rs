@@ -345,10 +345,17 @@ substrate = "local"
     let b = thread::spawn(move || bb(&root_b, &["workflow", "execute", &id_b, "--json"]));
     let a = a.join().unwrap();
     let b = b.join().unwrap();
-    assert_ne!(
-        a.status.success(),
-        b.status.success(),
-        "exactly one executor must win CAS"
+    let successful = usize::from(a.status.success()) + usize::from(b.status.success());
+    assert_eq!(
+        successful,
+        1,
+        "exactly one executor must win CAS\nA status={:?}\nA stdout={}\nA stderr={}\nB status={:?}\nB stdout={}\nB stderr={}",
+        a.status,
+        String::from_utf8_lossy(&a.stdout),
+        String::from_utf8_lossy(&a.stderr),
+        b.status,
+        String::from_utf8_lossy(&b.stdout),
+        String::from_utf8_lossy(&b.stderr),
     );
     let ledger = Ledger::open(&Plane::load(root).unwrap().db_path()).unwrap();
     assert_eq!(ledger.workflow_step_runs(&run_id).unwrap().len(), 1);

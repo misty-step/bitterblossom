@@ -11,7 +11,7 @@ use subtle::ConstantTimeEq;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::ingress;
-use crate::ledger::{ExternalRunCreate, IngressRequest, Ledger, LEDGER_SCHEMA_VERSION};
+use crate::ledger::{ExternalRunCreate, Ledger, LEDGER_SCHEMA_VERSION};
 use crate::recovery;
 use crate::spec::{AuthClass, Plane, TriggerSpec};
 use crate::{canary, dispatch, notify, progress, workflow};
@@ -383,19 +383,21 @@ fn workflow_runner_tick(root: &Path) {
             return;
         }
     };
-    use crate::workflow_runtime::ExecutionDisposition;
+    let service = crate::workflow_service::WorkflowService::new(
+        &plane,
+        &ledger,
+        crate::workflow_service::auth_context_for_controller(),
+    )
+    .with_source("serve");
     for id in ids {
-        match crate::workflow_runtime::execute_if_queued(&plane, &ledger, &id) {
-            Ok(ExecutionDisposition::Executed(view)) => eprintln!(
+        match service.execute_workflow_run(&id) {
+            Ok(view) => eprintln!(
                 "workflow run {id} {}",
                 view["status"]["state"].as_str().unwrap_or("-")
             ),
-            // claimed elsewhere between listing and CAS
-            Ok(ExecutionDisposition::ClaimLost) => {}
-            Ok(ExecutionDisposition::Deferred { reason }) => {
-                eprintln!("workflow run {id} deferred: {reason}");
-            }
             Err(e) => {
+                // A concurrent worker/controller may have won the queue CAS.
+                // All other failures remain visible and are reported.
                 eprintln!("workflow run {id}: {e:#}");
                 canary::report_error("bb.workflow.execute", &format!("run {id}: {e:#}"));
             }
@@ -804,6 +806,17 @@ fn json_error(message: String) -> String {
     serde_json::json!({ "error": message }).to_string()
 }
 
+fn json_anyhow_error(error: &anyhow::Error) -> String {
+    if let Some(auth) = error.downcast_ref::<crate::auth::AuthError>() {
+        return serde_json::json!({
+            "error": auth.detail,
+            "denial_class": auth.denial_class(),
+        })
+        .to_string();
+    }
+    serde_json::json!({ "error": format!("{error:#}") }).to_string()
+}
+
 fn read_capped_body(
     request: &mut tiny_http::Request,
     max_body_bytes: usize,
@@ -876,7 +889,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
     let path_no_query = url.split('?').next().unwrap_or(&url).to_string();
     if method == "POST" && path_no_query == "/api/asks" {
         let plane = Plane::load(root)?;
-        let ledger = Ledger::open(&plane.db_path())?;
+        let mut ledger = Ledger::open(&plane.db_path())?;
         let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
             Err(error) => {
                 return Ok((
@@ -905,7 +918,23 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             return Ok((401, json_error("bad ask_token for run_id".into())));
         }
         let id = format!("ask-{}", crate::ledger::new_id());
-        let ask = ledger.raise_ask(
+        let auth = ledger
+            .legacy_run_lease(&req.run_id)?
+            .map(|lease| {
+                crate::workflow_service::auth_context_for_worker(
+                    &lease.holder_principal,
+                    &lease.run_id,
+                    &lease.claim_id,
+                )
+            })
+            .unwrap_or_else(|| {
+                crate::auth::AuthContext::worker("worker", &req.run_id, "missing-claim")
+            })
+            .with_transport("http-ask");
+        let ask = match crate::workflow_service::WorkflowService::raise_ask_for(
+            &plane,
+            &mut ledger,
+            auth,
             &id,
             &req.run_id,
             &req.task,
@@ -914,7 +943,13 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             req.context.as_deref(),
             req.blocking,
             req.window_seconds,
-        )?;
+        ) {
+            Ok(ask) => ask,
+            Err(err) => {
+                let status = workflow_error_status(&err);
+                return Ok((status, json_anyhow_error(&err)));
+            }
+        };
         if let Ok(task) = plane.task(&req.task) {
             crate::glass::post_asked(
                 &plane,
@@ -968,64 +1003,45 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
                 Ok(req) => req,
                 Err(err) => return Ok((400, json_error(format!("invalid json: {err}")))),
             };
-            let ask = match ledger.ask(id) {
-                Ok(ask) => ask,
-                Err(_) => return Ok((404, json_error(format!("ask {id} not found")))),
+            let auth = match crate::workflow_service::auth_context_for_http(
+                presented_bearer(request).as_deref(),
+            ) {
+                Ok(auth) => auth,
+                Err(error) => return Ok((401, json_anyhow_error(&error))),
             };
-            let run = ledger.run(&ask.run_id)?;
-            let (ask, resumed_run_id) = if run.state == "parked_on_ask" {
-                let packet = match crate::artifacts::read(
-                    &ledger,
-                    &ask.run_id,
-                    dispatch::ASK_PACKET_FILENAME,
-                )? {
-                    crate::artifacts::ReadOutcome::Text { content, .. } => Some(content),
-                    _ => None,
-                };
-                let resume_payload = serde_json::json!({
-                    "ask": {"id": ask.id, "kind": ask.kind, "question": ask.question, "context": ask.context},
-                    "answer": req.answer,
-                    "answered_by": req.answered_by,
-                    "packet": packet,
-                })
-                .to_string();
-                let resume_key = format!("resume:{}", ask.id);
-                let (ask, outcome) = match ledger.answer_ask_and_resume(
+            let (ask, resumed_run_id) =
+                match crate::workflow_service::WorkflowService::answer_ask_for(
+                    &plane,
+                    &mut ledger,
+                    auth,
                     id,
                     &req.answer,
                     &req.answered_by,
-                    IngressRequest {
-                        task: &ask.task,
-                        trigger_kind: "resume",
-                        idempotency_key: Some(&resume_key),
-                        source_event_id: None,
-                        payload: Some(&resume_payload),
-                        parent_run_id: Some(&ask.run_id),
-                    },
                 ) {
                     Ok(result) => result,
                     Err(err) if crate::ledger::is_queue_backpressure(&err) => return Err(err),
-                    Err(err) => return Ok((409, json_error(err.to_string()))),
+                    Err(err) => {
+                        let status = if err.downcast_ref::<crate::auth::AuthError>().is_some() {
+                            workflow_error_status(&err)
+                        } else {
+                            409
+                        };
+                        return Ok((status, json_anyhow_error(&err)));
+                    }
                 };
+            if let Some(resumed_run_id) = &resumed_run_id {
                 if let Ok(task) = plane.task(&ask.task) {
                     crate::glass::post_resumed(
                         &plane,
                         &ledger,
                         &ask.run_id,
-                        &outcome.run_id,
+                        resumed_run_id,
                         &ask.task,
                         &task.agent_name,
                         &ask.id,
                     );
                 }
-                (ask, Some(outcome.run_id))
-            } else {
-                let ask = match ledger.answer_ask(id, &req.answer, &req.answered_by) {
-                    Ok(ask) => ask,
-                    Err(err) => return Ok((409, json_error(err.to_string()))),
-                };
-                (ask, None)
-            };
+            }
             return Ok((
                 200,
                 serde_json::json!({"ask": ask, "resumed_run_id": resumed_run_id}).to_string(),
@@ -1221,6 +1237,12 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
         if !read_authorized(request) {
             return Ok((401, "{\"error\":\"missing or bad bearer token\"}".into()));
         }
+        let auth = match crate::workflow_service::auth_context_for_http(
+            presented_bearer(request).as_deref(),
+        ) {
+            Ok(auth) => auth,
+            Err(error) => return Ok((401, json_error(error.to_string()))),
+        };
         let plane = Plane::load(root)?;
         let ledger = Ledger::open(&plane.db_path())?;
         let body = match read_capped_body(request, plane.spec.ingress.max_body_bytes) {
@@ -1233,7 +1255,7 @@ fn handle_request(root: &Path, request: &mut tiny_http::Request) -> Result<(u16,
             Ok(Ok(body)) => body,
             Ok(Err(bytes)) => return Ok(body_too_large(bytes, plane.spec.ingress.max_body_bytes)),
         };
-        return workflow_post(&plane, &ledger, &path_no_query, &body);
+        return workflow_post(&plane, &ledger, &auth, &path_no_query, &body);
     }
 
     if method == "GET" && url == "/health" {
@@ -1346,7 +1368,7 @@ fn workflow_get(ledger: &Ledger, path: &str, url: &str) -> Result<Option<(u16, S
     let respond = |result: Result<serde_json::Value>| -> Result<Option<(u16, String)>> {
         Ok(Some(match result {
             Ok(value) => (200, value.to_string()),
-            Err(err) => (workflow_error_status(&err), json_error(format!("{err:#}"))),
+            Err(err) => (workflow_error_status(&err), json_anyhow_error(&err)),
         }))
     };
     if path == "/api/workflows" {
@@ -1415,11 +1437,17 @@ struct WorkflowDocRequest {
     note: Option<String>,
 }
 
-fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Result<(u16, String)> {
+fn workflow_post(
+    plane: &Plane,
+    ledger: &Ledger,
+    auth: &crate::auth::AuthContext,
+    path: &str,
+    body: &str,
+) -> Result<(u16, String)> {
     let respond = |result: Result<(u16, serde_json::Value)>| -> Result<(u16, String)> {
         Ok(match result {
             Ok((status, value)) => (status, value.to_string()),
-            Err(err) => (workflow_error_status(&err), json_error(format!("{err:#}"))),
+            Err(err) => (workflow_error_status(&err), json_anyhow_error(&err)),
         })
     };
     let doc_request = |body: &str| -> Result<WorkflowDocRequest> {
@@ -1429,7 +1457,9 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
         return respond((|| {
             let req = doc_request(body)?;
             let (wf, revision) =
-                ledger.create_workflow(&req.document, "http", req.note.as_deref())?;
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .create_workflow(&req.document, req.note.as_deref())?;
             Ok((
                 201,
                 serde_json::json!({ "workflow": wf, "revision": revision }),
@@ -1440,7 +1470,9 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
         return respond((|| {
             let req = doc_request(body)?;
             let (wf, revision, outcome) =
-                ledger.import_workflow(&req.document, "http", req.note.as_deref())?;
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .import_workflow(&req.document, req.note.as_deref())?;
             Ok((
                 200,
                 serde_json::json!({ "workflow": wf, "revision": revision, "outcome": outcome }),
@@ -1461,7 +1493,9 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 .get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("stopped by operator");
-            let status = ledger.request_workflow_run_stop(id, reason)?;
+            let status = crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                .with_source("http")
+                .stop_workflow_run(id, reason)?;
             Ok((200, serde_json::to_value(status)?))
         })());
     }
@@ -1483,7 +1517,9 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
         "revisions" => {
             let req = doc_request(body)?;
             let (wf, revision) =
-                ledger.revise_workflow(name, &req.document, "http", req.note.as_deref())?;
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .revise_workflow(name, &req.document, req.note.as_deref())?;
             Ok((
                 201,
                 serde_json::json!({ "workflow": wf, "revision": revision }),
@@ -1497,11 +1533,10 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 }
                 Some(_) => bail!("revision must be an integer"),
             };
-            let workflow = ledger.activate_workflow_with_reserved_routes(
-                name,
-                revision,
-                &ingress::task_webhook_routes(plane),
-            )?;
+            let workflow =
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .activate_workflow(name, revision)?;
             let snapshots = workflow
                 .active_revision
                 .map(|revision| ledger.launch_snapshots_for_revision(&workflow.id, revision))
@@ -1524,27 +1559,38 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 .unwrap_or("paused by operator");
             Ok((
                 200,
-                serde_json::to_value(ledger.pause_workflow(name, reason)?)?,
+                serde_json::to_value(
+                    crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                        .with_source("http")
+                        .pause_workflow(name, reason)?,
+                )?,
             ))
         }
         "resume" => Ok((
             200,
-            serde_json::to_value(ledger.resume_workflow_with_reserved_routes(
-                name,
-                &ingress::task_webhook_routes(plane),
-            )?)?,
+            serde_json::to_value(
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .resume_workflow(name)?,
+            )?,
         )),
-        "archive" => Ok((200, serde_json::to_value(ledger.archive_workflow(name)?)?)),
+        "archive" => Ok((
+            200,
+            serde_json::to_value(
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .archive_workflow(name)?,
+            )?,
+        )),
         "rollback" => {
             let to = args
                 .get("to")
                 .and_then(|v| v.as_i64())
                 .context("pass {\"to\": <revision>}")?;
-            let (wf, revision) = ledger.rollback_workflow_with_reserved_routes(
-                name,
-                to,
-                &ingress::task_webhook_routes(plane),
-            )?;
+            let (wf, revision) =
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .rollback_workflow(name, to)?;
             Ok((
                 200,
                 serde_json::json!({ "workflow": wf, "revision": revision }),
@@ -1563,16 +1609,15 @@ fn workflow_post(plane: &Plane, ledger: &Ledger, path: &str, body: &str) -> Resu
                 .get("dedupe_key")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let outcome = crate::workflow_runtime::accept(
-                plane,
-                ledger,
-                &crate::workflow_runtime::TriggerEnvelope {
-                    workflow: name.to_string(),
-                    source: crate::workflow_runtime::TriggerSource::from_kind(trigger_kind)?,
-                    payload,
-                    dedupe_key,
-                },
-            )?;
+            let outcome =
+                crate::workflow_service::WorkflowService::new(plane, ledger, auth.clone())
+                    .with_source("http")
+                    .accept(&crate::workflow_runtime::TriggerEnvelope {
+                        workflow: name.to_string(),
+                        source: crate::workflow_runtime::TriggerSource::from_kind(trigger_kind)?,
+                        payload,
+                        dedupe_key,
+                    })?;
             let status = match &outcome {
                 workflow::AcceptOutcome::Accepted { .. } => 201,
                 workflow::AcceptOutcome::Duplicate { .. } => 200,
@@ -1597,6 +1642,13 @@ fn export_workflow_toml(
 }
 
 fn workflow_error_status(err: &anyhow::Error) -> u16 {
+    if let Some(auth) = err.downcast_ref::<crate::auth::AuthError>() {
+        return if auth.class == crate::auth::DenialClass::Unauthenticated {
+            401
+        } else {
+            403
+        };
+    }
     if format!("{err:#}").contains("not found") {
         404
     } else {

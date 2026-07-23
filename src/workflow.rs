@@ -2248,6 +2248,130 @@ impl Ledger {
         }
     }
 
+    pub fn record_workflow_auth_event(
+        &self,
+        workflow: Option<&str>,
+        run_id: Option<&str>,
+        operation: crate::auth::Operation,
+        auth: &crate::auth::AuthContext,
+    ) -> Result<()> {
+        let resource = crate::auth::AuthorizationResource {
+            workflow: workflow.map(str::to_string),
+            run_id: run_id.map(str::to_string),
+            claim_id: auth.claim_id.clone(),
+        };
+        self.record_workflow_auth_event_with_resource(&resource, operation, auth)
+    }
+
+    pub fn record_workflow_auth_event_with_resource(
+        &self,
+        resource: &crate::auth::AuthorizationResource,
+        operation: crate::auth::Operation,
+        auth: &crate::auth::AuthContext,
+    ) -> Result<()> {
+        self.insert_auth_event(resource, operation, auth, "allow", None)?;
+        Ok(())
+    }
+
+    pub fn record_workflow_auth_denial(
+        &self,
+        resource: &crate::auth::AuthorizationResource,
+        operation: crate::auth::Operation,
+        auth: &crate::auth::AuthContext,
+        error: &crate::auth::AuthError,
+    ) -> Result<()> {
+        self.insert_auth_event(
+            resource,
+            operation,
+            auth,
+            "deny",
+            Some(error.denial_class()),
+        )?;
+        Ok(())
+    }
+
+    fn insert_auth_event(
+        &self,
+        resource: &crate::auth::AuthorizationResource,
+        operation: crate::auth::Operation,
+        auth: &crate::auth::AuthContext,
+        decision: &str,
+        denial_class: Option<&str>,
+    ) -> Result<()> {
+        let workflow_id = if let Some(name) = resource.workflow.as_deref() {
+            self.conn
+                .query_row(
+                    "SELECT id FROM workflows WHERE name = ?1",
+                    params![name],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+        } else if let Some(run_id) = resource.run_id.as_deref() {
+            self.conn
+                .query_row(
+                    "SELECT workflow_id FROM workflow_runs WHERE id = ?1",
+                    params![run_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+        let resource_json = serde_json::json!({
+            "workflow": resource.workflow,
+            "run_id": resource.run_id,
+            "claim_id": resource.claim_id,
+        })
+        .to_string();
+        self.conn.execute(
+            "INSERT INTO auth_events
+             (workflow_id, run_id, operation, principal, role, claim_id, decision,
+              denial_class, resource, at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                workflow_id,
+                resource.run_id,
+                operation.as_str(),
+                auth.principal,
+                auth.role.as_str(),
+                resource.claim_id.as_deref().or(auth.claim_id.as_deref()),
+                decision,
+                denial_class,
+                resource_json,
+                now(),
+            ],
+        )?;
+        if let Some(workflow_id) = workflow_id {
+            let data = serde_json::json!({
+                "decision": decision,
+                "operation": operation.as_str(),
+                "principal": auth.principal,
+                "role": auth.role.as_str(),
+                "workflow": resource.workflow,
+                "run_id": resource.run_id,
+                "claim_id": resource.claim_id,
+                "denial_class": denial_class,
+            })
+            .to_string();
+            self.conn.execute(
+                "INSERT INTO workflow_events (workflow_id, run_id, kind, data, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    workflow_id,
+                    resource.run_id,
+                    if decision == "allow" {
+                        "authz_allowed"
+                    } else {
+                        "authz_denied"
+                    },
+                    data,
+                    now(),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
     fn workflow_audit(&self, workflow_id: &str, kind: &str, data: Option<&str>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO workflow_events (workflow_id, kind, data, at) VALUES (?1, ?2, ?3, ?4)",

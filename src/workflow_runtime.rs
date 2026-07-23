@@ -34,6 +34,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::LiveLease;
 use crate::budget;
 use crate::harness;
 use crate::ledger::{new_id, now, AttemptStats, Ledger};
@@ -126,13 +127,12 @@ pub struct TriggerEnvelope {
 /// emitters, synthetic tests, the CLI, and the HTTP API all build a
 /// [`TriggerEnvelope`] and call this one function.
 pub fn accept(plane: &Plane, ledger: &Ledger, envelope: &TriggerEnvelope) -> Result<AcceptOutcome> {
-    ledger.accept_workflow_run(
+    crate::workflow_service::WorkflowService::new(
         plane,
-        &envelope.workflow,
-        envelope.source.kind(),
-        envelope.payload.as_deref(),
-        envelope.dedupe_key.as_deref(),
+        ledger,
+        crate::workflow_service::auth_context_for_controller(),
     )
+    .accept(envelope)
 }
 
 /// Find the active workflow (if any) declaring a webhook trigger on `route`.
@@ -604,12 +604,24 @@ impl Ledger {
             .optional()?)
     }
 
-    /// Claim a queued run for execution: queued -> running CAS, so a serve
-    /// runner and a CLI `bb workflow execute` can never both run one group.
-    /// Store-era runs accepted before this table existed get a status row on
-    /// first claim.
+    /// Claim a queued run for execution. Ownership is durable and explicit:
+    /// principal/claim identity is recorded before any worker effect runs.
     pub fn claim_workflow_run(&self, run_id: &str) -> Result<bool> {
+        self.claim_workflow_run_for(run_id, "bb-controller", "controller", 3600)
+    }
+
+    pub fn claim_workflow_run_for(
+        &self,
+        run_id: &str,
+        holder_principal: &str,
+        claim_id: &str,
+        lease_seconds: i64,
+    ) -> Result<bool> {
         let ts = now();
+        let expires = (time::OffsetDateTime::now_utc()
+            + time::Duration::seconds(lease_seconds.max(1)))
+        .format(&time::format_description::well_known::Rfc3339)
+        .context("format workflow lease expiry")?;
         self.conn.execute(
             "INSERT OR IGNORE INTO workflow_run_status (run_id, state, updated_at)
              VALUES (?1, 'queued', ?2)",
@@ -617,11 +629,50 @@ impl Ledger {
         )?;
         let updated = self.conn.execute(
             "UPDATE workflow_run_status
-             SET state = 'running', started_at = ?2, updated_at = ?2
+             SET state = 'running', started_at = ?2, updated_at = ?2,
+                 holder_principal = ?3, claim_id = ?4, lease_expires_at = ?5
              WHERE run_id = ?1 AND state = 'queued'",
-            params![run_id, ts],
+            params![run_id, ts, holder_principal, claim_id, expires],
         )?;
         Ok(updated == 1)
+    }
+
+    pub fn workflow_run_lease(&self, run_id: &str) -> Result<Option<LiveLease>> {
+        self.conn
+            .query_row(
+                "SELECT run_id, holder_principal, claim_id, lease_expires_at
+             FROM workflow_run_status
+             WHERE run_id = ?1 AND state = 'running' AND holder_principal IS NOT NULL
+               AND claim_id IS NOT NULL AND lease_expires_at IS NOT NULL",
+                params![run_id],
+                |r| {
+                    Ok(LiveLease {
+                        run_id: r.get(0)?,
+                        holder_principal: r.get(1)?,
+                        claim_id: r.get(2)?,
+                        expires_at: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn renew_workflow_run_lease(
+        &self,
+        run_id: &str,
+        claim_id: &str,
+        lease_seconds: i64,
+    ) -> Result<bool> {
+        let expires = (time::OffsetDateTime::now_utc()
+            + time::Duration::seconds(lease_seconds.max(1)))
+        .format(&time::format_description::well_known::Rfc3339)
+        .context("format workflow lease expiry")?;
+        Ok(self.conn.execute(
+            "UPDATE workflow_run_status SET lease_expires_at = ?3, updated_at = ?4
+             WHERE run_id = ?1 AND claim_id = ?2 AND state = 'running'",
+            params![run_id, claim_id, expires, now()],
+        )? == 1)
     }
 
     /// Release a just-claimed run back to `queued` after an admission
@@ -1417,41 +1468,43 @@ pub enum ExecutionDisposition {
 
 /// Execute one accepted workflow run to a terminal state. Claims the run
 /// (queued -> running CAS); refuses anything already claimed or terminal.
-pub fn execute_run(plane: &Plane, ledger: &Ledger, run_id: &str) -> Result<serde_json::Value> {
-    match execute_if_queued(plane, ledger, run_id)? {
-        ExecutionDisposition::Executed(view) => Ok(view),
-        ExecutionDisposition::Deferred { reason } => {
-            bail!(
-                "workflow run {run_id} deferred by admission recheck: {reason}; \
-                 run remains queued"
-            );
-        }
-        ExecutionDisposition::ClaimLost => {
-            let state = ledger
-                .workflow_run_status(run_id)?
-                .map(|s| s.state)
-                .unwrap_or_else(|| "unknown".to_string());
-            bail!("workflow run {run_id} is {state}; only queued runs execute");
-        }
-    }
-}
-
-/// Runner-loop variant of [`execute_run`]: reports a lost claim or an
-/// admission deferral as data, which the serve loop treats as non-events
-/// instead of errors.
-pub fn execute_if_queued(
+/// Execute a run whose live lease was assigned by WorkflowService. This is
+/// crate-private so no transport can bypass principal authorization/audit.
+pub(crate) fn execute_run_as(
     plane: &Plane,
     ledger: &Ledger,
     run_id: &str,
-) -> Result<ExecutionDisposition> {
+    holder_principal: &str,
+    claim_id: &str,
+) -> Result<serde_json::Value> {
     let run = ledger.workflow_run(run_id)?;
-    if !ledger.claim_workflow_run(run_id)? {
-        return Ok(ExecutionDisposition::ClaimLost);
+    let lease = ledger
+        .workflow_run_lease(run_id)?
+        .context("workflow run has no live execution lease")?;
+    if lease.holder_principal != holder_principal || lease.claim_id != claim_id {
+        return Err(crate::auth::AuthError::for_operation(
+            crate::auth::DenialClass::IdentityMismatch,
+            crate::auth::Operation::ExecuteWorkflowRun,
+            "execution claim does not match the live run lease",
+        )
+        .into());
     }
+    match execute_claimed_or_deferred(plane, ledger, run)? {
+        ExecutionDisposition::Executed(view) => Ok(view),
+        ExecutionDisposition::Deferred { reason } => bail!(
+            "workflow run {run_id} deferred by admission recheck: {reason}; run remains queued"
+        ),
+        ExecutionDisposition::ClaimLost => bail!("workflow run {run_id} lost its execution claim"),
+    }
+}
+
+fn execute_claimed_or_deferred(
+    plane: &Plane,
+    ledger: &Ledger,
+    run: crate::workflow::WorkflowRunRow,
+) -> Result<ExecutionDisposition> {
+    let run_id = run.id.as_str();
     if let Some((kind, reason)) = ledger.recheck_workflow_run_admission(plane, run_id)? {
-        // A pending operator stop outranks deferral: honor it terminally
-        // (releasing the pinned reservation) instead of parking the run
-        // behind capacity pressure forever.
         if let Some(stop) = ledger.workflow_run_stop_reason(run_id)? {
             let detail = format!("stop signal: {stop}");
             ledger.record_guard_event(
@@ -1465,8 +1518,6 @@ pub fn execute_if_queued(
                 ledger, run_id,
             )?));
         }
-        // Guard-event once per distinct reason, not once per runner tick:
-        // the previous deferral left the same reason in the status detail.
         let already_deferred = ledger
             .workflow_run_status(run_id)?
             .and_then(|s| s.detail)
@@ -1482,10 +1533,6 @@ pub fn execute_if_queued(
         }
         return Ok(ExecutionDisposition::Deferred { reason });
     }
-    // A claimed run must reach a terminal state even when the executor
-    // itself errors (unreadable pinned doc, fs failure) OR panics: both
-    // become `failed` with the reason recorded, never a phantom `running`,
-    // and a panic never unwinds into the caller's thread.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         execute_claimed(plane, ledger, &run)
     }))

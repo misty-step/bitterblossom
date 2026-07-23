@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS runs (
   cost_usd REAL,
   duration_ms INTEGER,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  holder_principal TEXT,
+  claim_id TEXT,
+  lease_expires_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency
   ON runs(task, idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -296,6 +299,23 @@ CREATE TABLE IF NOT EXISTS workflow_events (
 CREATE INDEX IF NOT EXISTS workflow_events_workflow
   ON workflow_events(workflow_id);
 
+-- Principal authorization receipts are authoritative for every service mutation,
+-- including legacy task dispatches that have no workflow foreign key.
+CREATE TABLE IF NOT EXISTS auth_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id TEXT REFERENCES workflows(id),
+  run_id TEXT,
+  operation TEXT NOT NULL,
+  principal TEXT NOT NULL,
+  role TEXT NOT NULL,
+  claim_id TEXT,
+  decision TEXT NOT NULL,
+  denial_class TEXT,
+  resource TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS auth_events_target ON auth_events(workflow_id, run_id, at);
+
 -- One accepted workflow run pins the revision active at acceptance. New
 -- activations affect new events only; this row never changes revision.
 -- `dedupe_key` (bitterblossom-workflow-runtime-v1) is the normalized
@@ -330,7 +350,10 @@ CREATE TABLE IF NOT EXISTS workflow_run_status (
   stop_reason TEXT,
   cost_usd REAL,                   -- sum of OBSERVED step costs; NULL = none reported
   started_at TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  holder_principal TEXT,
+  claim_id TEXT,
+  lease_expires_at TEXT
 );
 CREATE INDEX IF NOT EXISTS workflow_run_status_queue
   ON workflow_run_status(state, updated_at, run_id);

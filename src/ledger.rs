@@ -351,6 +351,10 @@ impl Ledger {
         // can authenticate its own `bb ask` calls without the operator's
         // global BB_API_TOKEN (least privilege: scoped to this run only).
         ensure_column(&conn, "runs", "ask_token", "TEXT")?;
+        // Principal-auth legacy ask leases are additive for store-era ledgers.
+        ensure_column(&conn, "runs", "holder_principal", "TEXT")?;
+        ensure_column(&conn, "runs", "claim_id", "TEXT")?;
+        ensure_column(&conn, "runs", "lease_expires_at", "TEXT")?;
         // bitterblossom-933: the glass session id for this run's lineage
         // root, stored the first time a post creates one (glass assigns
         // session ids; bb cannot invent its own -- verified live, an
@@ -382,6 +386,10 @@ impl Ledger {
             "REAL NOT NULL DEFAULT 1.0",
         )?;
         ensure_column(&conn, "workflow_events", "run_id", "TEXT")?;
+        // Principal-auth workflow lease ownership is additive for store-era ledgers.
+        ensure_column(&conn, "workflow_run_status", "holder_principal", "TEXT")?;
+        ensure_column(&conn, "workflow_run_status", "claim_id", "TEXT")?;
+        ensure_column(&conn, "workflow_run_status", "lease_expires_at", "TEXT")?;
         // Backfill store-era workflow runs that predate the mutable status table.
         // Runs with step evidence are conservative operator debt; untouched runs
         // remain queued and therefore visible to the bounded worker queue.
@@ -1407,11 +1415,43 @@ impl Ledger {
     }
 
     pub fn set_run_ask_token(&self, run_id: &str, token: &str) -> Result<()> {
+        // The ask capability is not the principal. A live, durable worker lease
+        // is assigned alongside it and must be present for RaiseAsk authorization.
+        let holder = format!("worker:{run_id}");
+        let claim = format!("legacy:{run_id}");
+        let expires = (OffsetDateTime::now_utc() + time::Duration::hours(1))
+            .format(&Rfc3339)
+            .context("format legacy worker lease expiry")?;
         self.conn.execute(
-            "UPDATE runs SET ask_token = ?2, updated_at = ?3 WHERE id = ?1",
-            params![run_id, token, now()],
+            "UPDATE runs
+             SET ask_token = ?2, holder_principal = ?3, claim_id = ?4,
+                 lease_expires_at = ?5, updated_at = ?6
+             WHERE id = ?1",
+            params![run_id, token, holder, claim, expires, now()],
         )?;
         Ok(())
+    }
+
+    pub fn legacy_run_lease(&self, run_id: &str) -> Result<Option<crate::auth::LiveLease>> {
+        self.conn
+            .query_row(
+                "SELECT id, holder_principal, claim_id, lease_expires_at
+                 FROM runs
+                 WHERE id = ?1
+                   AND holder_principal IS NOT NULL
+                   AND claim_id IS NOT NULL AND lease_expires_at IS NOT NULL",
+                params![run_id],
+                |r| {
+                    Ok(crate::auth::LiveLease {
+                        run_id: r.get(0)?,
+                        holder_principal: r.get(1)?,
+                        claim_id: r.get(2)?,
+                        expires_at: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn run_ask_token(&self, run_id: &str) -> Result<Option<String>> {

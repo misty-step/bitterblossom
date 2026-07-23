@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod ask;
 pub mod attention;
+pub mod auth;
 pub mod budget;
 pub mod canary;
 pub mod dispatch;
@@ -24,3 +25,4 @@ pub mod substrate;
 pub mod telemetry;
 pub mod workflow;
 pub mod workflow_runtime;
+pub mod workflow_service;
