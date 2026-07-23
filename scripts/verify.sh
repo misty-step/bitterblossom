@@ -424,9 +424,10 @@ rm -rf "$self_drill_tmp"
 # 2026-07-22: raised to the next 256-line boundary (24576) for the typed
 # workflow activation mechanism expansion: checked grants, action preflight,
 # and immutable activation identity.
-# 2026-07-22: raised to the next 256-line boundary (25600) for centralized
-# principal authentication and cross-face workflow authorization mechanism.
-SPINE_LOC_CAP=25600
+# 2026-07-22: raised to the next 256-line boundary (25856) for the centralized
+# principal-auth/service-parity mechanism and its durable cross-face receipts.
+# This is verified control-plane mechanism; workload judgment remains outside src/.
+SPINE_LOC_CAP=25856
 echo "==> spine LOC bloat tripwire (<= $SPINE_LOC_CAP; mechanism only — the Python conductor died of bloat)"
 loc=$(find src -name '*.rs' -exec cat {} + | grep -vc '^\s*$')
 echo "    src LOC: $loc"
